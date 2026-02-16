@@ -1,0 +1,62 @@
+# Dependencies
+node_modules
+.pnpm-store
+
+# Build outputs
+dist
+.next
+.turbo
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Local debug artifacts
+/.playwright-mcp/
+/tmp_*.json
+/UsersQwQDocumentsGitHubMuseGraphtmp_ops.json
+/nul
+
+# Root-level screenshot artifacts
+/admin-*.png
+/dashboard-*.png
+/final-*.png
+/full-graph-view.png
+/graph-*.png
+/modal-*.png
+/new-project-*.png
+/pricing-*.png
+/project-page*.png
+
+# Test
+coverage
+
+# Prisma
+apps/server/prisma/*.db
+apps/server/prisma/*.db-journal
+/apps/server-py/alembic/__pycache__
+/apps/server-py/__pycache__
+/apps/server-py/alembic/versions/__pycache__
+/apps/server-py/app/__pycache__
+/apps/server-py/app/models/__pycache__
+/apps/server-py/app/routers/__pycache__
+/apps/server-py/app/schemas/__pycache__
+/apps/server-py/app/services/__pycache__
+/apps/server-py/tests/__pycache__

@@ -1,0 +1,121 @@
+from datetime import datetime
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, Field
+
+
+class CogneeAddRequest(BaseModel):
+    text: str
+    ontology: Optional[dict[str, Any]] = None
+
+
+class CogneeOntologyGenerateRequest(BaseModel):
+    text: str = ""
+    requirement: Optional[str] = None
+    model: Optional[str] = None
+
+
+class CogneeOasisAnalyzeRequest(BaseModel):
+    text: str = ""
+    requirement: Optional[str] = None
+    prompt: Optional[str] = None
+    model: Optional[str] = None
+    analysis_model: Optional[str] = None
+    simulation_model: Optional[str] = None
+
+
+class CogneeOasisPrepareRequest(BaseModel):
+    text: str = ""
+    requirement: Optional[str] = None
+    prompt: Optional[str] = None
+    model: Optional[str] = None
+    analysis_model: Optional[str] = None
+    simulation_model: Optional[str] = None
+
+
+class CogneeOasisRunRequest(BaseModel):
+    package: Optional[dict[str, Any]] = None
+
+
+class CogneeOasisReportRequest(BaseModel):
+    model: Optional[str] = None
+    report_model: Optional[str] = None
+
+
+class CogneeSearchRequest(BaseModel):
+    query: str
+    search_type: Literal[
+        "INSIGHTS",
+        "SUMMARIES",
+        "CHUNKS",
+        "GRAPH_COMPLETION",
+        "RAG_COMPLETION",
+        "GRAPH_SUMMARY_COMPLETION",
+    ] = Field(default="INSIGHTS")
+    top_k: int = Field(default=10, ge=1, le=50)
+
+
+class CogneeStatusResponse(BaseModel):
+    dataset_id: Optional[str] = None
+    status: str
+    ontology_status: Optional[str] = None
+    oasis_status: Optional[str] = None
+
+
+class CogneeOntologyResponse(BaseModel):
+    status: str
+    ontology: dict[str, Any]
+
+
+class CogneeOasisAnalyzeResponse(BaseModel):
+    status: str
+    analysis: dict[str, Any]
+    context: dict[str, Any]
+
+
+class CogneeOasisPrepareResponse(BaseModel):
+    status: str
+    package: dict[str, Any]
+
+
+class CogneeOasisRunResponse(BaseModel):
+    status: str
+    run_result: dict[str, Any]
+
+
+class CogneeOasisReportResponse(BaseModel):
+    status: str
+    report: dict[str, Any]
+
+
+class CogneeTaskInfo(BaseModel):
+    task_id: str
+    task_type: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    progress: int = 0
+    message: str = ""
+    result: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class CogneeTaskStartResponse(BaseModel):
+    status: str
+    task: CogneeTaskInfo
+
+
+class CogneeTaskStatusResponse(BaseModel):
+    status: str
+    task: CogneeTaskInfo
+
+
+class CogneeTaskListResponse(BaseModel):
+    status: str
+    tasks: list[CogneeTaskInfo]
+
+
+class CogneeVisualizationResponse(BaseModel):
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]

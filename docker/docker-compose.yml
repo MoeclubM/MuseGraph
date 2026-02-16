@@ -1,0 +1,139 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: musegraph-postgres
+    environment:
+      POSTGRES_USER: musegraph
+      POSTGRES_PASSWORD: musegraph123
+      POSTGRES_DB: musegraph
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U musegraph"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: musegraph-redis
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: musegraph-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: musegraph-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/musegraph123
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "musegraph123", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build:
+      context: ..
+      dockerfile: docker/server-py.Dockerfile
+    container_name: musegraph-server
+    environment:
+      DATABASE_URL: postgresql+asyncpg://musegraph:musegraph123@postgres:5432/musegraph
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRES_HOURS: 168
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      MINIO_USE_SSL: "false"
+      MINIO_BUCKET: musegraph
+      NEO4J_URL: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: musegraph123
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-xxx}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-sk-ant-xxx}
+      COGNEE_LLM_API_KEY: sk-v3DIyFrum1Z1IFUzh3I0QYedgzgkRvKAIIeGsAmP2xcWg4KI
+      COGNEE_LLM_BASE_URL: https://newapi.telecom.moe/v1
+      COGNEE_LLM_MODEL: openai/MiniMax-M2.5
+      LLM_API_KEY: sk-v3DIyFrum1Z1IFUzh3I0QYedgzgkRvKAIIeGsAmP2xcWg4KI
+      LLM_ENDPOINT: https://newapi.telecom.moe/v1
+      LLM_MODEL: openai/MiniMax-M2.5
+      EMBEDDING_API_KEY: sk-v3DIyFrum1Z1IFUzh3I0QYedgzgkRvKAIIeGsAmP2xcWg4KI
+      EMBEDDING_ENDPOINT: https://newapi.telecom.moe/v1
+      EMBEDDING_MODEL: openai/Qwen3-Embedding-0.6B
+      EMBEDDING_DIMENSIONS: "1024"
+      EMBEDDING_PROVIDER: custom
+      LITELLM_DROP_PARAMS: "true"
+      GRAPH_DATABASE_PROVIDER: neo4j
+      GRAPH_DATABASE_URL: bolt://neo4j:7687
+      GRAPH_DATABASE_USERNAME: neo4j
+      GRAPH_DATABASE_PASSWORD: musegraph123
+      ENABLE_BACKEND_ACCESS_CONTROL: "false"
+      APP_URL: http://localhost:3000
+    ports:
+      - "4080:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    volumes:
+      - cognee_data:/usr/local/lib/python3.12/site-packages/cognee/.cognee_system
+      - cognee_storage:/usr/local/lib/python3.12/site-packages/cognee/.data_storage
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/web-vue.Dockerfile
+    container_name: musegraph-web
+    ports:
+      - "3000:3000"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  neo4j_data:
+  cognee_data:
+  cognee_storage:
