@@ -26,12 +26,10 @@ import type { AuthResponse, User } from '@/types'
 const mockUser: User = {
   id: 'user-1',
   email: 'test@example.com',
-  username: 'testuser',
   nickname: 'Test',
   avatar: null,
   balance: 0,
-  role: 'USER',
-  group_id: null,
+  is_admin: false,
   status: 'ACTIVE',
   created_at: '2024-01-01T00:00:00Z',
 }
@@ -70,34 +68,20 @@ describe('Auth API', () => {
     it('should POST to /api/auth/register with all fields', async () => {
       vi.mocked(api.post).mockResolvedValue({ data: mockAuthResponse })
 
-      const result = await register('test@example.com', 'testuser', 'password123', 'Test')
+      const result = await register('test@example.com', 'password123', 'Test')
 
       expect(api.post).toHaveBeenCalledWith('/api/auth/register', {
         email: 'test@example.com',
-        username: 'testuser',
         password: 'password123',
         nickname: 'Test',
       })
       expect(result).toEqual(mockAuthResponse)
     })
 
-    it('should POST without optional nickname', async () => {
-      vi.mocked(api.post).mockResolvedValue({ data: mockAuthResponse })
-
-      await register('test@example.com', 'testuser', 'password123')
-
-      expect(api.post).toHaveBeenCalledWith('/api/auth/register', {
-        email: 'test@example.com',
-        username: 'testuser',
-        password: 'password123',
-        nickname: undefined,
-      })
-    })
-
     it('should propagate error on failure', async () => {
       vi.mocked(api.post).mockRejectedValue(new Error('Email already exists'))
 
-      await expect(register('dup@example.com', 'dup', 'pass')).rejects.toThrow('Email already exists')
+      await expect(register('dup@example.com', 'pass', 'Dup')).rejects.toThrow('Email already exists')
     })
   })
 

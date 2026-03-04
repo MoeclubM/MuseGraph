@@ -4,11 +4,129 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.config import PaymentConfig
 from app.services.ai import DEFAULT_MODEL, call_llm
 from app.services.cognee import get_graph_visualization, search_graph
 from app.services.llm_json import extract_json_object
+
+DEFAULT_OASIS_CONFIG: dict[str, Any] = {
+    "analysis_prompt_prefix": "",
+    "simulation_prompt_prefix": "",
+    "report_prompt_prefix": "",
+    "max_agent_profiles": 16,
+    "max_events": 16,
+    "max_agent_activity": 48,
+    "min_total_hours": 6,
+    "max_total_hours": 336,
+    "min_minutes_per_round": 10,
+    "max_minutes_per_round": 240,
+    "max_posts_per_hour": 20.0,
+    "max_response_delay_minutes": 720,
+    "allowed_platforms": ["twitter", "reddit"],
+    "llm_request_timeout_seconds": 120,
+    "llm_retry_count": 2,
+    "llm_retry_interval_seconds": 1.5,
+}
+
+
+def normalize_oasis_config(raw: Any) -> dict[str, Any]:
+    cfg = raw if isinstance(raw, dict) else {}
+    payload = dict(DEFAULT_OASIS_CONFIG)
+
+    payload["analysis_prompt_prefix"] = str(cfg.get("analysis_prompt_prefix") or "").strip()
+    payload["simulation_prompt_prefix"] = str(cfg.get("simulation_prompt_prefix") or "").strip()
+    payload["report_prompt_prefix"] = str(cfg.get("report_prompt_prefix") or "").strip()
+
+    try:
+        payload["max_agent_profiles"] = max(1, min(64, int(cfg.get("max_agent_profiles", payload["max_agent_profiles"]))))
+    except (TypeError, ValueError):
+        pass
+    try:
+        payload["max_events"] = max(1, min(64, int(cfg.get("max_events", payload["max_events"]))))
+    except (TypeError, ValueError):
+        pass
+    try:
+        payload["max_agent_activity"] = max(1, min(128, int(cfg.get("max_agent_activity", payload["max_agent_activity"]))))
+    except (TypeError, ValueError):
+        pass
+    try:
+        payload["min_total_hours"] = max(1, min(720, int(cfg.get("min_total_hours", payload["min_total_hours"]))))
+    except (TypeError, ValueError):
+        pass
+    try:
+        payload["max_total_hours"] = max(1, min(720, int(cfg.get("max_total_hours", payload["max_total_hours"]))))
+    except (TypeError, ValueError):
+        pass
+    if payload["min_total_hours"] > payload["max_total_hours"]:
+        payload["min_total_hours"], payload["max_total_hours"] = payload["max_total_hours"], payload["min_total_hours"]
+
+    try:
+        payload["min_minutes_per_round"] = max(1, min(720, int(cfg.get("min_minutes_per_round", payload["min_minutes_per_round"]))))
+    except (TypeError, ValueError):
+        pass
+    try:
+        payload["max_minutes_per_round"] = max(1, min(720, int(cfg.get("max_minutes_per_round", payload["max_minutes_per_round"]))))
+    except (TypeError, ValueError):
+        pass
+    if payload["min_minutes_per_round"] > payload["max_minutes_per_round"]:
+        payload["min_minutes_per_round"], payload["max_minutes_per_round"] = payload["max_minutes_per_round"], payload["min_minutes_per_round"]
+
+    try:
+        payload["max_posts_per_hour"] = max(0.2, min(100.0, float(cfg.get("max_posts_per_hour", payload["max_posts_per_hour"]))))
+    except (TypeError, ValueError):
+        pass
+    try:
+        payload["max_response_delay_minutes"] = max(1, min(2880, int(cfg.get("max_response_delay_minutes", payload["max_response_delay_minutes"]))))
+    except (TypeError, ValueError):
+        pass
+    try:
+        payload["llm_request_timeout_seconds"] = max(
+            5,
+            min(1800, int(cfg.get("llm_request_timeout_seconds", payload["llm_request_timeout_seconds"]))),
+        )
+    except (TypeError, ValueError):
+        pass
+    try:
+        payload["llm_retry_count"] = max(
+            0,
+            min(10, int(cfg.get("llm_retry_count", payload["llm_retry_count"]))),
+        )
+    except (TypeError, ValueError):
+        pass
+    try:
+        payload["llm_retry_interval_seconds"] = max(
+            0.0,
+            min(60.0, float(cfg.get("llm_retry_interval_seconds", payload["llm_retry_interval_seconds"]))),
+        )
+    except (TypeError, ValueError):
+        pass
+
+    platforms_raw = cfg.get("allowed_platforms")
+    if isinstance(platforms_raw, list):
+        allowed_platforms: list[str] = []
+        for item in platforms_raw:
+            value = str(item or "").strip().lower()
+            if value in {"twitter", "reddit"} and value not in allowed_platforms:
+                allowed_platforms.append(value)
+        if allowed_platforms:
+            payload["allowed_platforms"] = allowed_platforms
+    return payload
+
+
+async def load_oasis_config(db: AsyncSession | None = None) -> dict[str, Any]:
+    if db is None:
+        return dict(DEFAULT_OASIS_CONFIG)
+    result = await db.execute(select(PaymentConfig).where(PaymentConfig.type == "oasis"))
+    item = result.scalar_one_or_none()
+    cfg = None
+    if item is not None:
+        maybe_config = getattr(item, "config", None)
+        if isinstance(maybe_config, dict):
+            cfg = maybe_config
+    return normalize_oasis_config(cfg)
 
 
 def _as_text_list(results: list[dict[str, Any]]) -> list[str]:
@@ -68,7 +186,12 @@ def _safe_list(value: Any, max_items: int = 12) -> list[str]:
     return items
 
 
-def _safe_agent_profiles(value: Any, max_items: int = 16) -> list[dict[str, Any]]:
+def _safe_agent_profiles(
+    value: Any,
+    max_items: int = 16,
+    *,
+    strict: bool = False,
+) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     profiles: list[dict[str, Any]] = []
@@ -78,14 +201,20 @@ def _safe_agent_profiles(value: Any, max_items: int = 16) -> list[dict[str, Any]
         name = str(item.get("name") or "").strip()
         role = str(item.get("role") or "").strip()
         persona = str(item.get("persona") or "").strip()
+        stance = str(item.get("stance") or "").strip()
         if not name:
             continue
+        if strict and (not role or not persona or not stance):
+            continue
+        role = role or "Participant"
+        persona = persona or f"{name} profile"
+        stance = (stance or "neutral").strip().lower()
         profiles.append(
             {
                 "name": name,
                 "role": role,
                 "persona": persona,
-                "stance": str(item.get("stance") or "neutral").strip() or "neutral",
+                "stance": stance,
                 "likely_actions": _safe_list(item.get("likely_actions"), 6),
             }
         )
@@ -94,7 +223,14 @@ def _safe_agent_profiles(value: Any, max_items: int = 16) -> list[dict[str, Any]
     return profiles
 
 
-def _safe_agent_activity(value: Any, max_items: int = 32) -> list[dict[str, Any]]:
+def _safe_agent_activity(
+    value: Any,
+    max_items: int = 32,
+    *,
+    max_posts_per_hour: float = 20.0,
+    max_response_delay_minutes: int = 720,
+    strict: bool = False,
+) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     rows: list[dict[str, Any]] = []
@@ -102,15 +238,32 @@ def _safe_agent_activity(value: Any, max_items: int = 32) -> list[dict[str, Any]
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "").strip()
+        stance = str(item.get("stance") or "").strip()
+        activity_raw = item.get("activity_level")
+        posts_raw = item.get("posts_per_hour")
+        delay_raw = item.get("response_delay_minutes")
         if not name:
+            continue
+        if strict and (
+            not stance
+            or activity_raw is None
+            or posts_raw is None
+            or delay_raw is None
+        ):
+            continue
+        try:
+            activity_level = float(0.5 if activity_raw is None else activity_raw)
+            posts_per_hour = float(1.0 if posts_raw is None else posts_raw)
+            response_delay_minutes = int(45 if delay_raw is None else delay_raw)
+        except (TypeError, ValueError):
             continue
         rows.append(
             {
                 "name": name,
-                "activity_level": max(0.0, min(1.0, float(item.get("activity_level") or 0.5))),
-                "posts_per_hour": max(0.0, min(20.0, float(item.get("posts_per_hour") or 1.0))),
-                "response_delay_minutes": max(1, min(720, int(item.get("response_delay_minutes") or 60))),
-                "stance": str(item.get("stance") or "neutral").strip() or "neutral",
+                "activity_level": max(0.0, min(1.0, activity_level)),
+                "posts_per_hour": max(0.0, min(max_posts_per_hour, posts_per_hour)),
+                "response_delay_minutes": max(1, min(max_response_delay_minutes, response_delay_minutes)),
+                "stance": (stance or "neutral").strip().lower(),
             }
         )
         if len(rows) >= max_items:
@@ -118,19 +271,98 @@ def _safe_agent_activity(value: Any, max_items: int = 32) -> list[dict[str, Any]
     return rows
 
 
-def sanitize_oasis_simulation_config(data: dict[str, Any], profiles: list[dict[str, Any]]) -> dict[str, Any]:
-    time_cfg = data.get("time_config") if isinstance(data.get("time_config"), dict) else {}
-    events = data.get("events") if isinstance(data.get("events"), list) else []
-    active_platforms = data.get("active_platforms") if isinstance(data.get("active_platforms"), list) else []
-    if not active_platforms:
-        active_platforms = ["twitter", "reddit"]
+def sanitize_oasis_simulation_config(
+    data: dict[str, Any],
+    profiles: list[dict[str, Any]],
+    *,
+    max_events: int = 16,
+    max_agent_activity: int = 48,
+    allowed_platforms: list[str] | None = None,
+    min_total_hours: int = 6,
+    max_total_hours: int = 336,
+    min_minutes_per_round: int = 10,
+    max_minutes_per_round: int = 240,
+    max_posts_per_hour: float = 20.0,
+    max_response_delay_minutes: int = 720,
+    strict: bool = False,
+) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        if strict:
+            raise ValueError("simulation_config_not_object")
+        data = {}
 
+    normalized_profiles = _safe_agent_profiles(
+        profiles,
+        max_items=max(1, min(64, int(max_agent_activity or 48))),
+        strict=False,
+    )
+    if strict and not normalized_profiles:
+        raise ValueError("simulation_profiles_empty")
+
+    allowed = [str(x).strip().lower() for x in (allowed_platforms or ["twitter", "reddit"]) if str(x).strip()]
+    if not allowed:
+        allowed = ["twitter", "reddit"]
+    allowed_set = set(allowed)
+
+    active_platforms_raw = data.get("active_platforms")
+    if strict and not isinstance(active_platforms_raw, list):
+        raise ValueError("simulation_platforms_missing")
+    active_platforms = [
+        str(x).strip().lower()
+        for x in (active_platforms_raw if isinstance(active_platforms_raw, list) else [])
+        if str(x).strip().lower() in allowed_set
+    ][: max(1, len(allowed))]
+    if not active_platforms:
+        if strict:
+            raise ValueError("simulation_platforms_invalid")
+        active_platforms = allowed[: max(1, len(allowed))]
+
+    raw_time_cfg = data.get("time_config")
+    if strict and not isinstance(raw_time_cfg, dict):
+        raise ValueError("simulation_time_config_missing")
+    time_cfg_raw = raw_time_cfg if isinstance(raw_time_cfg, dict) else {}
+
+    if strict:
+        try:
+            total_hours = int(time_cfg_raw.get("total_hours"))
+            minutes_per_round = int(time_cfg_raw.get("minutes_per_round"))
+        except (TypeError, ValueError):
+            raise ValueError("simulation_time_config_invalid_numbers") from None
+    else:
+        total_hours = _to_int(time_cfg_raw.get("total_hours"), 72)
+        minutes_per_round = _to_int(time_cfg_raw.get("minutes_per_round"), 60)
+
+    peak_raw = time_cfg_raw.get("peak_hours")
+    off_peak_raw = time_cfg_raw.get("off_peak_hours")
+    if strict and (not isinstance(peak_raw, list) or not isinstance(off_peak_raw, list)):
+        raise ValueError("simulation_time_config_missing_hours")
+
+    peak_hours = [
+        int(x)
+        for x in (peak_raw if isinstance(peak_raw, list) else [19, 20, 21, 22])
+        if isinstance(x, (int, float)) and 0 <= int(x) <= 23
+    ][:8]
+    off_peak_hours = [
+        int(x)
+        for x in (off_peak_raw if isinstance(off_peak_raw, list) else [1, 2, 3, 4])
+        if isinstance(x, (int, float)) and 0 <= int(x) <= 23
+    ][:8]
+    if strict and (not peak_hours or not off_peak_hours):
+        raise ValueError("simulation_time_config_invalid_hours")
+    if not peak_hours:
+        peak_hours = [19, 20, 21, 22]
+    if not off_peak_hours:
+        off_peak_hours = [1, 2, 3, 4]
+
+    events_raw = data.get("events")
+    if strict and not isinstance(events_raw, list):
+        raise ValueError("simulation_events_missing")
     event_items: list[dict[str, Any]] = []
-    for item in events:
+    for item in (events_raw if isinstance(events_raw, list) else []):
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "").strip()
-        trigger_hour = int(item.get("trigger_hour") or 0)
+        trigger_hour = _to_int(item.get("trigger_hour"), 0)
         if not title:
             continue
         event_items.append(
@@ -140,120 +372,85 @@ def sanitize_oasis_simulation_config(data: dict[str, Any], profiles: list[dict[s
                 "description": str(item.get("description") or "").strip(),
             }
         )
-        if len(event_items) >= 16:
+        if len(event_items) >= max(1, min(64, int(max_events or 16))):
             break
 
-    agent_activity = _safe_agent_activity(data.get("agent_activity"), 48)
+    agent_activity = _safe_agent_activity(
+        data.get("agent_activity"),
+        max(1, min(128, int(max_agent_activity or 48))),
+        max_posts_per_hour=max(0.2, float(max_posts_per_hour or 20.0)),
+        max_response_delay_minutes=max(1, int(max_response_delay_minutes or 720)),
+        strict=strict,
+    )
     if not agent_activity:
-        for idx, profile in enumerate(profiles[:24]):
-            name = str(profile.get("name") or f"Agent{idx + 1}")
-            agent_activity.append(
-                {
-                    "name": name,
-                    "activity_level": 0.45 + (idx % 6) * 0.08,
-                    "posts_per_hour": 0.6 + (idx % 5) * 0.35,
-                    "response_delay_minutes": 15 + (idx % 6) * 20,
-                    "stance": str(profile.get("stance") or "neutral"),
-                }
-            )
+        if strict:
+            raise ValueError("simulation_agent_activity_empty")
+        source_profiles = normalized_profiles or _fallback_agent_profiles()
+        agent_activity = [
+            {
+                "name": str(profile.get("name") or "Core Observer").strip() or "Core Observer",
+                "activity_level": 0.6,
+                "posts_per_hour": max(0.2, min(max_posts_per_hour, 1.2)),
+                "response_delay_minutes": max(1, min(max_response_delay_minutes, 45)),
+                "stance": str(profile.get("stance") or "neutral").strip().lower() or "neutral",
+            }
+            for profile in source_profiles
+        ][: max(1, min(128, int(max_agent_activity or 48)))]
+
+    bounded_min_total_hours = max(1, min(720, int(min_total_hours or 6)))
+    bounded_max_total_hours = max(1, min(720, int(max_total_hours or 336)))
+    if bounded_min_total_hours > bounded_max_total_hours:
+        bounded_min_total_hours, bounded_max_total_hours = bounded_max_total_hours, bounded_min_total_hours
+
+    bounded_min_minutes = max(1, min(720, int(min_minutes_per_round or 10)))
+    bounded_max_minutes = max(1, min(720, int(max_minutes_per_round or 240)))
+    if bounded_min_minutes > bounded_max_minutes:
+        bounded_min_minutes, bounded_max_minutes = bounded_max_minutes, bounded_min_minutes
 
     return {
-        "active_platforms": [str(x).strip().lower() for x in active_platforms if str(x).strip()][:2] or ["twitter", "reddit"],
+        "active_platforms": active_platforms,
         "time_config": {
-            "total_hours": max(6, min(336, int(time_cfg.get("total_hours") or 72))),
-            "minutes_per_round": max(10, min(240, int(time_cfg.get("minutes_per_round") or 60))),
-            "peak_hours": [
-                int(x)
-                for x in (time_cfg.get("peak_hours") or [19, 20, 21, 22])
-                if isinstance(x, (int, float)) and 0 <= int(x) <= 23
-            ][:8]
-            or [19, 20, 21, 22],
-            "off_peak_hours": [
-                int(x)
-                for x in (time_cfg.get("off_peak_hours") or [1, 2, 3, 4, 5])
-                if isinstance(x, (int, float)) and 0 <= int(x) <= 23
-            ][:8]
-            or [1, 2, 3, 4, 5],
+            "total_hours": max(bounded_min_total_hours, min(bounded_max_total_hours, total_hours)),
+            "minutes_per_round": max(bounded_min_minutes, min(bounded_max_minutes, minutes_per_round)),
+            "peak_hours": peak_hours,
+            "off_peak_hours": off_peak_hours,
         },
         "events": event_items,
         "agent_activity": agent_activity,
     }
 
 
-def sanitize_oasis_analysis(data: dict[str, Any], graph_context: dict[str, Any]) -> dict[str, Any]:
-    summary = str(data.get("scenario_summary") or "").strip()
-    return {
-        "scenario_summary": summary,
-        "key_drivers": _safe_list(data.get("key_drivers"), 10),
-        "risk_signals": _safe_list(data.get("risk_signals"), 10),
-        "opportunity_signals": _safe_list(data.get("opportunity_signals"), 10),
-        "timeline": _safe_list(data.get("timeline"), 10),
-        "continuation_guidance": {
-            "must_follow": _safe_list((data.get("continuation_guidance") or {}).get("must_follow"), 8)
-            if isinstance(data.get("continuation_guidance"), dict)
-            else [],
-            "next_steps": _safe_list((data.get("continuation_guidance") or {}).get("next_steps"), 8)
-            if isinstance(data.get("continuation_guidance"), dict)
-            else [],
-            "avoid": _safe_list((data.get("continuation_guidance") or {}).get("avoid"), 8)
-            if isinstance(data.get("continuation_guidance"), dict)
-            else [],
-        },
-        "agent_profiles": _safe_agent_profiles(data.get("agent_profiles")),
-        "evidence": {
-            "insight_count": len(graph_context.get("insights") or []),
-            "relationship_count": len(graph_context.get("relationships") or []),
-            "risk_count": len(graph_context.get("risk_signals") or []),
-            "node_count": int(graph_context.get("node_count") or 0),
-            "edge_count": int(graph_context.get("edge_count") or 0),
-        },
-    }
-
-
-def fallback_oasis_analysis(
-    requirement: str | None,
-    ontology: dict[str, Any] | None,
+def sanitize_oasis_analysis(
+    data: dict[str, Any],
     graph_context: dict[str, Any],
+    *,
+    max_agent_profiles: int = 16,
+    strict: bool = False,
 ) -> dict[str, Any]:
-    entity_names = [
-        str(item.get("name") or "")
-        for item in (ontology or {}).get("entity_types", [])
-        if isinstance(item, dict) and str(item.get("name") or "").strip()
-    ][:10]
-    guidance = [
-        "Keep entity relationships consistent with the knowledge graph.",
-        "Advance existing conflicts before introducing new branches.",
-        "Ground new events in known stakeholders and motives.",
-    ]
-    if requirement:
-        guidance.insert(0, f"Align with requirement: {requirement[:160]}")
-
-    return {
-        "scenario_summary": "OASIS analysis generated with fallback strategy due to limited structured model output.",
-        "key_drivers": entity_names or ["CORE_CONCEPTS"],
-        "risk_signals": (graph_context.get("risk_signals") or [])[:8],
-        "opportunity_signals": (graph_context.get("insights") or [])[:8],
-        "timeline": (graph_context.get("timeline_signals") or [])[:8],
+    payload = data if isinstance(data, dict) else {}
+    summary = str(payload.get("scenario_summary") or "").strip()
+    sanitized = {
+        "scenario_summary": summary,
+        "key_drivers": _safe_list(payload.get("key_drivers"), 10),
+        "risk_signals": _safe_list(payload.get("risk_signals"), 10),
+        "opportunity_signals": _safe_list(payload.get("opportunity_signals"), 10),
+        "timeline": _safe_list(payload.get("timeline"), 10),
         "continuation_guidance": {
-            "must_follow": guidance,
-            "next_steps": [
-                "Reinforce cause-effect links between major entities.",
-                "Reveal one high-impact relationship shift in the next section.",
-            ],
-            "avoid": ["Introducing unrelated entities without graph support."],
+            "must_follow": _safe_list((payload.get("continuation_guidance") or {}).get("must_follow"), 8)
+            if isinstance(payload.get("continuation_guidance"), dict)
+            else [],
+            "next_steps": _safe_list((payload.get("continuation_guidance") or {}).get("next_steps"), 8)
+            if isinstance(payload.get("continuation_guidance"), dict)
+            else [],
+            "avoid": _safe_list((payload.get("continuation_guidance") or {}).get("avoid"), 8)
+            if isinstance(payload.get("continuation_guidance"), dict)
+            else [],
         },
-        "agent_profiles": [],
-        "simulation_config": {
-            "active_platforms": ["twitter", "reddit"],
-            "time_config": {
-                "total_hours": 72,
-                "minutes_per_round": 60,
-                "peak_hours": [19, 20, 21, 22],
-                "off_peak_hours": [1, 2, 3, 4, 5],
-            },
-            "events": [],
-            "agent_activity": [],
-        },
+        "agent_profiles": _safe_agent_profiles(
+            payload.get("agent_profiles"),
+            max_items=max(1, min(64, int(max_agent_profiles or 16))),
+            strict=strict,
+        ),
         "evidence": {
             "insight_count": len(graph_context.get("insights") or []),
             "relationship_count": len(graph_context.get("relationships") or []),
@@ -262,6 +459,18 @@ def fallback_oasis_analysis(
             "edge_count": int(graph_context.get("edge_count") or 0),
         },
     }
+    if strict and not sanitized["scenario_summary"]:
+        raise ValueError("oasis_analysis_summary_empty")
+    if strict and not sanitized["key_drivers"]:
+        raise ValueError("oasis_analysis_key_drivers_empty")
+    if strict and not sanitized["agent_profiles"]:
+        raise ValueError("oasis_analysis_agent_profiles_empty")
+    guidance = sanitized.get("continuation_guidance") if isinstance(sanitized.get("continuation_guidance"), dict) else {}
+    if strict and not _safe_list(guidance.get("must_follow"), 8):
+        raise ValueError("oasis_analysis_guidance_must_follow_empty")
+    if strict and not _safe_list(guidance.get("next_steps"), 8):
+        raise ValueError("oasis_analysis_guidance_next_steps_empty")
+    return sanitized
 
 
 async def generate_oasis_analysis(
@@ -272,12 +481,18 @@ async def generate_oasis_analysis(
     requirement: str | None,
     prompt: str | None,
     model: str | None,
+    oasis_config: dict[str, Any] | None = None,
     db: AsyncSession,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     graph_context = await collect_graph_context(project_id, prompt=prompt)
     selected_model = (model or "").strip() or DEFAULT_MODEL
     content_text = (text or "").strip()
+    if not content_text:
+        raise ValueError("oasis_analysis_source_text_empty")
 
+    cfg = normalize_oasis_config(oasis_config)
+    prompt_prefix = str(cfg.get("analysis_prompt_prefix") or "").strip()
+    prefix_block = f"Additional constraints:\n{prompt_prefix}\n\n" if prompt_prefix else ""
     llm_prompt = (
         "You are an OASIS simulation analyst. Build a structured analysis for downstream continuation generation.\n"
         "Return JSON only with this exact schema:\n"
@@ -291,6 +506,7 @@ async def generate_oasis_analysis(
         '  "agent_profiles": [{"name":"...", "role":"...", "persona":"...", "stance":"...", "likely_actions":["..."]}]\n'
         "}\n"
         "Use concise, factual language. Keep each list item short.\n\n"
+        f"{prefix_block}"
         f"Requirement:\n{(requirement or '').strip()}\n\n"
         f"Prompt Focus:\n{(prompt or '').strip()}\n\n"
         f"Ontology:\n{json.dumps(ontology or {}, ensure_ascii=False)[:5000]}\n\n"
@@ -301,12 +517,16 @@ async def generate_oasis_analysis(
     try:
         llm_result = await call_llm(selected_model, llm_prompt, db)
         parsed = extract_json_object(str(llm_result.get("content") or ""))
-        if parsed:
-            return sanitize_oasis_analysis(parsed, graph_context), graph_context
+        if not isinstance(parsed, dict):
+            raise ValueError("oasis_analysis_llm_response_not_json_or_invalid_schema")
+        return sanitize_oasis_analysis(
+            parsed,
+            graph_context,
+            max_agent_profiles=int(cfg.get("max_agent_profiles") or 16),
+            strict=False,
+        ), graph_context
     except Exception:
-        pass
-
-    return fallback_oasis_analysis(requirement, ontology, graph_context), graph_context
+        return fallback_oasis_analysis(requirement, ontology, graph_context), graph_context
 
 
 async def enrich_simulation_config(
@@ -315,21 +535,30 @@ async def enrich_simulation_config(
     requirement: str | None,
     prompt: str | None,
     model: str | None,
+    oasis_config: dict[str, Any] | None = None,
     db: AsyncSession,
 ) -> dict[str, Any]:
     selected_model = (model or "").strip() or DEFAULT_MODEL
+    cfg = normalize_oasis_config(oasis_config)
+    prompt_prefix = str(cfg.get("simulation_prompt_prefix") or "").strip()
+    prefix_block = f"Additional constraints:\n{prompt_prefix}\n\n" if prompt_prefix else ""
     profiles = analysis.get("agent_profiles") if isinstance(analysis, dict) else []
     guidance = analysis.get("continuation_guidance") if isinstance(analysis, dict) else {}
+    if not isinstance(profiles, list) or not profiles:
+        profiles = _fallback_agent_profiles(requirement)
+    allowed_platforms = cfg.get("allowed_platforms") if isinstance(cfg.get("allowed_platforms"), list) else ["twitter", "reddit"]
+    platform_example = ",".join(f"\"{p}\"" for p in allowed_platforms)
     sim_prompt = (
         "You are an OASIS simulation config planner. Return JSON only.\n"
         "Schema:\n"
         "{\n"
-        '  "active_platforms": ["twitter","reddit"],\n'
+        f'  "active_platforms": [{platform_example}],\n'
         '  "time_config": {"total_hours":72, "minutes_per_round":60, "peak_hours":[19,20,21,22], "off_peak_hours":[1,2,3,4,5]},\n'
         '  "events": [{"title":"...", "trigger_hour":12, "description":"..."}],\n'
         '  "agent_activity": [{"name":"...", "activity_level":0.6, "posts_per_hour":1.2, "response_delay_minutes":45, "stance":"..."}]\n'
         "}\n"
         "Keep event and agent lists concise and realistic.\n\n"
+        f"{prefix_block}"
         f"Requirement:\n{(requirement or '').strip()}\n\n"
         f"Focus:\n{(prompt or '').strip()}\n\n"
         f"Summary:\n{str((analysis or {}).get('scenario_summary') or '')}\n\n"
@@ -340,12 +569,37 @@ async def enrich_simulation_config(
     try:
         llm_result = await call_llm(selected_model, sim_prompt, db)
         parsed = extract_json_object(str(llm_result.get("content") or ""))
-        if parsed:
-            return sanitize_oasis_simulation_config(parsed, profiles if isinstance(profiles, list) else [])
+        if not isinstance(parsed, dict):
+            raise ValueError("oasis_simulation_llm_response_not_json_or_invalid_schema")
+        return sanitize_oasis_simulation_config(
+            parsed,
+            profiles if isinstance(profiles, list) else [],
+            max_events=int(cfg.get("max_events") or 16),
+            max_agent_activity=int(cfg.get("max_agent_activity") or 48),
+            allowed_platforms=allowed_platforms,
+            min_total_hours=int(cfg.get("min_total_hours") or 6),
+            max_total_hours=int(cfg.get("max_total_hours") or 336),
+            min_minutes_per_round=int(cfg.get("min_minutes_per_round") or 10),
+            max_minutes_per_round=int(cfg.get("max_minutes_per_round") or 240),
+            max_posts_per_hour=float(cfg.get("max_posts_per_hour") or 20.0),
+            max_response_delay_minutes=int(cfg.get("max_response_delay_minutes") or 720),
+            strict=False,
+        )
     except Exception:
-        pass
-
-    return sanitize_oasis_simulation_config({}, profiles if isinstance(profiles, list) else [])
+        return sanitize_oasis_simulation_config(
+            {},
+            profiles if isinstance(profiles, list) else [],
+            max_events=int(cfg.get("max_events") or 16),
+            max_agent_activity=int(cfg.get("max_agent_activity") or 48),
+            allowed_platforms=allowed_platforms,
+            min_total_hours=int(cfg.get("min_total_hours") or 6),
+            max_total_hours=int(cfg.get("max_total_hours") or 336),
+            min_minutes_per_round=int(cfg.get("min_minutes_per_round") or 10),
+            max_minutes_per_round=int(cfg.get("max_minutes_per_round") or 240),
+            max_posts_per_hour=float(cfg.get("max_posts_per_hour") or 20.0),
+            max_response_delay_minutes=int(cfg.get("max_response_delay_minutes") or 720),
+            strict=False,
+        )
 
 
 async def analyze_and_enrich_oasis(
@@ -357,6 +611,7 @@ async def analyze_and_enrich_oasis(
     prompt: str | None,
     analysis_model: str | None,
     simulation_model: str | None,
+    oasis_config: dict[str, Any] | None = None,
     db: AsyncSession,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     analysis, context = await generate_oasis_analysis(
@@ -366,6 +621,7 @@ async def analyze_and_enrich_oasis(
         requirement=requirement,
         prompt=prompt,
         model=analysis_model,
+        oasis_config=oasis_config,
         db=db,
     )
     analysis["simulation_config"] = await enrich_simulation_config(
@@ -373,34 +629,218 @@ async def analyze_and_enrich_oasis(
         requirement=requirement,
         prompt=prompt,
         model=simulation_model,
+        oasis_config=oasis_config,
         db=db,
     )
     return analysis, context
 
 
-def _fallback_profiles_from_ontology(ontology: dict[str, Any] | None, limit: int = 20) -> list[dict[str, Any]]:
-    entity_types = (ontology or {}).get("entity_types") if isinstance(ontology, dict) else []
-    profiles: list[dict[str, Any]] = []
+def _fallback_profiles_from_ontology(
+    ontology: dict[str, Any] | None,
+    requirement: str | None = None,
+    *,
+    max_items: int = 12,
+) -> list[dict[str, Any]]:
+    entity_types = ontology.get("entity_types") if isinstance(ontology, dict) else []
     if not isinstance(entity_types, list):
-        return profiles
-    for idx, entity in enumerate(entity_types):
-        if not isinstance(entity, dict):
+        entity_types = []
+
+    suffix = f"（需求：{requirement.strip()}）" if requirement and requirement.strip() else ""
+    profiles: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+
+    for item in entity_types:
+        if isinstance(item, dict):
+            entity_name = str(item.get("name") or item.get("type") or "").strip()
+            description = str(item.get("description") or "").strip()
+        else:
+            entity_name = str(item or "").strip()
+            description = ""
+        if not entity_name or entity_name in seen_names:
             continue
-        name = str(entity.get("name") or "").strip()
-        if not name:
-            continue
+        seen_names.add(entity_name)
         profiles.append(
             {
-                "name": f"{name}_AGENT_{idx + 1}",
-                "role": name,
-                "persona": str(entity.get("description") or f"{name} participant"),
+                "name": f"{entity_name}_AGENT",
+                "role": entity_name,
+                "persona": (description or f"Represent perspective of {entity_name}") + suffix,
                 "stance": "neutral",
-                "likely_actions": ["comment", "share", "respond"],
+                "likely_actions": [
+                    f"Track changes related to {entity_name}",
+                    f"Report major events impacting {entity_name}",
+                ],
             }
         )
-        if len(profiles) >= limit:
+        if len(profiles) >= max(1, min(32, int(max_items or 12))):
             break
-    return profiles
+
+    return profiles or _fallback_agent_profiles(requirement)
+
+
+def fallback_oasis_analysis(
+    requirement: str | None,
+    ontology: dict[str, Any] | None,
+    graph_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    context = graph_context if isinstance(graph_context, dict) else {}
+    profiles = _fallback_profiles_from_ontology(ontology, requirement)
+    entity_names = [
+        str(item.get("name") or "").strip()
+        for item in (ontology.get("entity_types") if isinstance(ontology, dict) else [])
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    ][:6]
+    key_drivers = entity_names or _safe_list(context.get("insights"), 6) or ["Narrative momentum"]
+    must_follow = [f"Prioritize requirement: {requirement.strip()}"] if requirement and requirement.strip() else ["Maintain storyline continuity"]
+
+    analysis_payload = {
+        "scenario_summary": "Fallback OASIS analysis generated from ontology and graph signals.",
+        "key_drivers": key_drivers,
+        "risk_signals": _safe_list(context.get("risk_signals"), 10),
+        "opportunity_signals": _safe_list(context.get("insights"), 10),
+        "timeline": _safe_list(context.get("timeline_signals"), 10),
+        "continuation_guidance": {
+            "must_follow": must_follow,
+            "next_steps": [
+                "Expand high-impact interactions",
+                "Re-check consistency with ontology constraints",
+            ],
+            "avoid": ["Avoid unsupported speculation", "Avoid breaking established facts"],
+        },
+        "agent_profiles": profiles,
+    }
+    sanitized = sanitize_oasis_analysis(
+        analysis_payload,
+        context,
+        max_agent_profiles=max(1, len(profiles)),
+        strict=False,
+    )
+    sanitized["simulation_config"] = sanitize_oasis_simulation_config(
+        {},
+        profiles,
+        strict=False,
+    )
+    return sanitized
+
+
+def _fallback_report_markdown(
+    *,
+    requirement: str | None,
+    analysis: dict[str, Any] | None,
+    run_result: dict[str, Any] | None,
+) -> str:
+    analysis_data = analysis if isinstance(analysis, dict) else {}
+    run_data = run_result if isinstance(run_result, dict) else {}
+    metrics = run_data.get("metrics") if isinstance(run_data.get("metrics"), dict) else {}
+
+    lines = [
+        "# OASIS Analysis Report",
+        "",
+        f"- Requirement: {(requirement or 'N/A').strip() or 'N/A'}",
+        f"- Total Hours: {int(metrics.get('total_hours') or 0)}",
+        f"- Total Rounds: {int(metrics.get('total_rounds') or 0)}",
+        "",
+        "## Executive Summary",
+        str(analysis_data.get("scenario_summary") or "No summary available."),
+    ]
+
+    risk_signals = _safe_list(analysis_data.get("risk_signals"), 10)
+    if risk_signals:
+        lines.extend(["", "## Risk Signals"])
+        lines.extend([f"- {item}" for item in risk_signals])
+
+    opportunity_signals = _safe_list(analysis_data.get("opportunity_signals"), 10)
+    if opportunity_signals:
+        lines.extend(["", "## Opportunity Signals"])
+        lines.extend([f"- {item}" for item in opportunity_signals])
+
+    next_steps = _safe_list(
+        (analysis_data.get("continuation_guidance") or {}).get("next_steps")
+        if isinstance(analysis_data.get("continuation_guidance"), dict)
+        else [],
+        10,
+    )
+    if next_steps:
+        lines.extend(["", "## Recommended Next Steps"])
+        lines.extend([f"- {step}" for step in next_steps])
+
+    return "\n".join(lines).strip()
+
+
+def _fallback_agent_profiles(requirement: str | None = None) -> list[dict[str, Any]]:
+    suffix = f"（需求：{requirement.strip()}）" if requirement and requirement.strip() else ""
+    return [
+        {
+            "name": "Core Observer",
+            "role": "Narrative Analyst",
+            "persona": f"持续跟踪主线叙事与舆论变化的观察者{suffix}",
+            "stance": "neutral",
+            "likely_actions": [
+                "Summarize key turning points",
+                "Monitor audience sentiment shifts",
+                "Highlight emerging risks",
+            ],
+        }
+    ]
+
+
+def _fallback_simulation_config(
+    *,
+    profiles: list[dict[str, Any]],
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
+    allowed_platforms = cfg.get("allowed_platforms") if isinstance(cfg.get("allowed_platforms"), list) else ["twitter", "reddit"]
+    active_platforms = [str(item).strip().lower() for item in allowed_platforms if str(item).strip()]
+    if not active_platforms:
+        active_platforms = ["twitter"]
+
+    min_total_hours = int(cfg.get("min_total_hours") or 6)
+    max_total_hours = int(cfg.get("max_total_hours") or 336)
+    min_minutes_per_round = int(cfg.get("min_minutes_per_round") or 10)
+    max_minutes_per_round = int(cfg.get("max_minutes_per_round") or 240)
+    max_posts_per_hour = float(cfg.get("max_posts_per_hour") or 20.0)
+    max_response_delay_minutes = int(cfg.get("max_response_delay_minutes") or 720)
+
+    total_hours = max(min_total_hours, min(max_total_hours, 72))
+    minutes_per_round = max(min_minutes_per_round, min(max_minutes_per_round, 60))
+
+    agent_activity = [
+        {
+            "name": str(profile.get("name") or "Core Observer").strip() or "Core Observer",
+            "activity_level": 0.6,
+            "posts_per_hour": max(0.2, min(max_posts_per_hour, 1.5)),
+            "response_delay_minutes": max(1, min(max_response_delay_minutes, 45)),
+            "stance": str(profile.get("stance") or "Neutral").strip() or "Neutral",
+        }
+        for profile in profiles
+    ]
+    if not agent_activity:
+        agent_activity = [
+            {
+                "name": "Core Observer",
+                "activity_level": 0.6,
+                "posts_per_hour": max(0.2, min(max_posts_per_hour, 1.5)),
+                "response_delay_minutes": max(1, min(max_response_delay_minutes, 45)),
+                "stance": "Neutral",
+            }
+        ]
+
+    return {
+        "active_platforms": active_platforms,
+        "time_config": {
+            "total_hours": total_hours,
+            "minutes_per_round": minutes_per_round,
+            "peak_hours": [19, 20, 21, 22],
+            "off_peak_hours": [1, 2, 3, 4],
+        },
+        "events": [
+            {
+                "title": "Narrative kickoff",
+                "trigger_hour": 1,
+                "description": "Initial story release and first-wave reactions.",
+            }
+        ],
+        "agent_activity": agent_activity,
+    }
 
 
 def build_oasis_package(
@@ -411,15 +851,40 @@ def build_oasis_package(
     ontology: dict[str, Any] | None,
     analysis: dict[str, Any] | None,
     component_models: dict[str, Any] | None = None,
+    oasis_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     analysis_data = analysis if isinstance(analysis, dict) else {}
-    sim_cfg = analysis_data.get("simulation_config") if isinstance(analysis_data.get("simulation_config"), dict) else {}
-    profiles = analysis_data.get("agent_profiles") if isinstance(analysis_data.get("agent_profiles"), list) else []
+    cfg = normalize_oasis_config(oasis_config)
+    profiles = _safe_agent_profiles(
+        analysis_data.get("agent_profiles"),
+        max_items=max(1, min(64, int(cfg.get("max_agent_profiles") or 16))),
+    )
     if not profiles:
-        profiles = _fallback_profiles_from_ontology(ontology)
+        profiles = _fallback_profiles_from_ontology(
+            ontology if isinstance(ontology, dict) else None,
+            requirement,
+            max_items=max(1, min(64, int(cfg.get("max_agent_profiles") or 16))),
+        )
+
+    raw_sim_cfg = analysis_data.get("simulation_config") if isinstance(analysis_data.get("simulation_config"), dict) else {}
+    if not raw_sim_cfg:
+        raw_sim_cfg = _fallback_simulation_config(profiles=profiles, cfg=cfg)
+    sim_cfg = sanitize_oasis_simulation_config(
+        raw_sim_cfg,
+        profiles,
+        max_events=int(cfg.get("max_events") or 16),
+        max_agent_activity=int(cfg.get("max_agent_activity") or 48),
+        allowed_platforms=cfg.get("allowed_platforms") if isinstance(cfg.get("allowed_platforms"), list) else ["twitter", "reddit"],
+        min_total_hours=int(cfg.get("min_total_hours") or 6),
+        max_total_hours=int(cfg.get("max_total_hours") or 336),
+        min_minutes_per_round=int(cfg.get("min_minutes_per_round") or 10),
+        max_minutes_per_round=int(cfg.get("max_minutes_per_round") or 240),
+        max_posts_per_hour=float(cfg.get("max_posts_per_hour") or 20.0),
+        max_response_delay_minutes=int(cfg.get("max_response_delay_minutes") or 720),
+    )
 
     simulation_id = f"sim_{uuid.uuid4().hex[:12]}"
-    prepared_at = datetime.utcnow().isoformat() + "Z"
+    prepared_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     return {
         "simulation_id": simulation_id,
         "project_id": project_id,
@@ -430,7 +895,7 @@ def build_oasis_package(
         "analysis_summary": str(analysis_data.get("scenario_summary") or ""),
         "continuation_guidance": analysis_data.get("continuation_guidance") or {},
         "profiles": profiles,
-        "simulation_config": sim_cfg or sanitize_oasis_simulation_config({}, profiles),
+        "simulation_config": sim_cfg,
         "component_models": component_models if isinstance(component_models, dict) else {},
     }
 
@@ -522,64 +987,6 @@ def build_oasis_run_result(
     }
 
 
-def _fallback_report_markdown(
-    *,
-    requirement: str | None,
-    analysis: dict[str, Any] | None,
-    run_result: dict[str, Any] | None,
-) -> str:
-    analysis_data = analysis if isinstance(analysis, dict) else {}
-    run_data = run_result if isinstance(run_result, dict) else {}
-    metrics = run_data.get("metrics") if isinstance(run_data.get("metrics"), dict) else {}
-    lines: list[str] = [
-        "# OASIS Analysis Report",
-        "",
-        "## Scenario Summary",
-        str(analysis_data.get("scenario_summary") or "No scenario summary available."),
-        "",
-    ]
-    requirement_text = (requirement or "").strip()
-    if requirement_text:
-        lines.extend(
-            [
-                "## Simulation Requirement",
-                requirement_text,
-                "",
-            ]
-        )
-    lines.extend(
-        [
-            "## Simulation Metrics",
-            f"- Total Hours: {metrics.get('total_hours', '-')}",
-            f"- Minutes Per Round: {metrics.get('minutes_per_round', '-')}",
-            f"- Total Rounds: {metrics.get('total_rounds', '-')}",
-            f"- Active Agents: {metrics.get('active_agents', '-')}",
-            f"- Estimated Posts: {metrics.get('estimated_posts', '-')}",
-            "",
-        ]
-    )
-
-    risk_signals = _safe_list(analysis_data.get("risk_signals"), 8)
-    if risk_signals:
-        lines.append("## Risk Signals")
-        lines.extend([f"- {item}" for item in risk_signals])
-        lines.append("")
-
-    opportunity_signals = _safe_list(analysis_data.get("opportunity_signals"), 8)
-    if opportunity_signals:
-        lines.append("## Opportunity Signals")
-        lines.extend([f"- {item}" for item in opportunity_signals])
-        lines.append("")
-
-    next_steps = _safe_list(((analysis_data.get("continuation_guidance") or {}).get("next_steps")), 8) if isinstance(analysis_data.get("continuation_guidance"), dict) else []
-    if next_steps:
-        lines.append("## Recommended Next Steps")
-        lines.extend([f"- {item}" for item in next_steps])
-        lines.append("")
-
-    return "\n".join(lines).strip()
-
-
 async def generate_oasis_report(
     *,
     package: dict[str, Any],
@@ -587,9 +994,13 @@ async def generate_oasis_report(
     run_result: dict[str, Any] | None,
     requirement: str | None,
     model: str | None,
+    oasis_config: dict[str, Any] | None = None,
     db: AsyncSession,
 ) -> dict[str, Any]:
     selected_model = (model or "").strip() or DEFAULT_MODEL
+    cfg = normalize_oasis_config(oasis_config)
+    prompt_prefix = str(cfg.get("report_prompt_prefix") or "").strip()
+    prefix_block = f"Additional constraints:\n{prompt_prefix}\n\n" if prompt_prefix else ""
     analysis_data = analysis if isinstance(analysis, dict) else {}
     run_data = run_result if isinstance(run_result, dict) else {}
     report_id = f"report_{uuid.uuid4().hex[:12]}"
@@ -606,58 +1017,72 @@ async def generate_oasis_report(
         '  "markdown": "..."\n'
         "}\n"
         "Keep findings concrete and avoid hype.\n\n"
+        f"{prefix_block}"
         f"Requirement:\n{(requirement or '').strip()}\n\n"
         f"Package:\n{json.dumps(package, ensure_ascii=False)[:9000]}\n\n"
         f"Analysis:\n{json.dumps(analysis_data, ensure_ascii=False)[:9000]}\n\n"
         f"Run Result:\n{json.dumps(run_data, ensure_ascii=False)[:9000]}"
     )
 
-    parsed: dict[str, Any] | None = None
     try:
         llm_result = await call_llm(selected_model, prompt, db)
         parsed = extract_json_object(str(llm_result.get("content") or ""))
+        if not isinstance(parsed, dict):
+            raise ValueError("oasis_report_llm_response_not_json_or_invalid_schema")
+
+        title = str(parsed.get("title") or "OASIS Report").strip() or "OASIS Report"
+        summary = str(parsed.get("executive_summary") or analysis_data.get("scenario_summary") or "").strip()
+        if not summary:
+            summary = "Generated report summary is unavailable."
+        markdown = str(parsed.get("markdown") or "").strip() or _fallback_report_markdown(
+            requirement=requirement,
+            analysis=analysis_data,
+            run_result=run_data,
+        )
+        key_findings = _safe_list(parsed.get("key_findings"), 10) or _safe_list(analysis_data.get("key_drivers"), 10) or [
+            "No key findings extracted",
+        ]
+        next_actions = _safe_list(parsed.get("next_actions"), 10) or _safe_list(
+            (analysis_data.get("continuation_guidance") or {}).get("next_steps")
+            if isinstance(analysis_data.get("continuation_guidance"), dict)
+            else [],
+            10,
+        ) or [
+            "Review report context and rerun with more constraints",
+        ]
+
+        return {
+            "report_id": report_id,
+            "simulation_id": str(package.get("simulation_id") or ""),
+            "generated_at": generated_at,
+            "title": title,
+            "executive_summary": summary,
+            "key_findings": key_findings,
+            "next_actions": next_actions,
+            "markdown": markdown,
+            "status": "completed",
+        }
     except Exception:
-        parsed = None
-
-    fallback_markdown = _fallback_report_markdown(
-        requirement=requirement,
-        analysis=analysis_data,
-        run_result=run_data,
-    )
-    title = "OASIS Simulation Report"
-    summary = str(analysis_data.get("scenario_summary") or "").strip() or "No summary available."
-    key_findings = _safe_list(analysis_data.get("key_drivers"), 8)
-    next_actions = _safe_list(
-        ((analysis_data.get("continuation_guidance") or {}).get("next_steps")),
-        8,
-    ) if isinstance(analysis_data.get("continuation_guidance"), dict) else []
-    markdown = fallback_markdown
-
-    if isinstance(parsed, dict):
-        parsed_title = str(parsed.get("title") or "").strip()
-        parsed_summary = str(parsed.get("executive_summary") or "").strip()
-        parsed_markdown = str(parsed.get("markdown") or "").strip()
-        if parsed_title:
-            title = parsed_title
-        if parsed_summary:
-            summary = parsed_summary
-        if parsed_markdown:
-            markdown = parsed_markdown
-        parsed_findings = _safe_list(parsed.get("key_findings"), 10)
-        parsed_actions = _safe_list(parsed.get("next_actions"), 10)
-        if parsed_findings:
-            key_findings = parsed_findings
-        if parsed_actions:
-            next_actions = parsed_actions
-
-    return {
-        "report_id": report_id,
-        "simulation_id": str(package.get("simulation_id") or ""),
-        "generated_at": generated_at,
-        "title": title,
-        "executive_summary": summary,
-        "key_findings": key_findings,
-        "next_actions": next_actions,
-        "markdown": markdown,
-        "status": "completed",
-    }
+        markdown = _fallback_report_markdown(
+            requirement=requirement,
+            analysis=analysis_data,
+            run_result=run_data,
+        )
+        key_findings = _safe_list(analysis_data.get("key_drivers"), 8) or ["Fallback report generated"]
+        next_actions = _safe_list(
+            (analysis_data.get("continuation_guidance") or {}).get("next_steps")
+            if isinstance(analysis_data.get("continuation_guidance"), dict)
+            else [],
+            8,
+        ) or ["Review simulation assumptions and rerun generation"]
+        return {
+            "report_id": report_id,
+            "simulation_id": str(package.get("simulation_id") or ""),
+            "generated_at": generated_at,
+            "title": "OASIS Fallback Report",
+            "executive_summary": "Fallback report generated due to unavailable or invalid LLM output.",
+            "key_findings": key_findings,
+            "next_actions": next_actions,
+            "markdown": markdown,
+            "status": "completed",
+        }

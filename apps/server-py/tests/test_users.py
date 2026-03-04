@@ -40,7 +40,6 @@ class TestGetUser:
         body = resp.json()
         assert body["id"] == fake_user.id
         assert body["email"] == fake_user.email
-        assert body["username"] == fake_user.username
 
     @pytest.mark.asyncio
     async def test_get_user_forbidden(self, client: AsyncClient, mock_db: AsyncMock):

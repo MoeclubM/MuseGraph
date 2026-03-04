@@ -7,12 +7,10 @@ from pydantic import BaseModel
 class UserResponse(BaseModel):
     id: str
     email: str
-    username: str
     nickname: Optional[str] = None
     avatar: Optional[str] = None
     balance: float
-    role: str
-    group_id: Optional[str] = None
+    is_admin: bool
     status: str
     created_at: datetime
 

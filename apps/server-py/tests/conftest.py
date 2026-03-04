@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,9 +22,20 @@ from httpx import ASGITransport, AsyncClient
 # This prevents real connections to PostgreSQL, Redis, MinIO, Cognee, etc.
 # ---------------------------------------------------------------------------
 
+# 0. Patch bcrypt to avoid PyO3 initialization issues
+_bcrypt_mock = MagicMock()
+_bcrypt_mock.gensalt = MagicMock(return_value=b'$2b$12$mockedsalt')
+_bcrypt_mock.hashpw = MagicMock(return_value=b'$2b$12$mockedhash')
+_bcrypt_mock.checkpw = MagicMock(return_value=True)
+
 # 1. Patch storage (MinIO) so ensure_bucket() is a no-op
 _storage_mock = MagicMock()
 _storage_mock.ensure_bucket = MagicMock()
+_storage_module = SimpleNamespace(
+    ensure_bucket=_storage_mock.ensure_bucket,
+    minio_client=MagicMock(),
+    upload_file=MagicMock(return_value="mock-file"),
+)
 
 # 2. Patch redis module-level client
 _redis_mock = AsyncMock()
@@ -32,9 +44,9 @@ _redis_mock.set = AsyncMock()
 _redis_mock.delete = AsyncMock()
 
 with (
+    patch.dict("sys.modules", {"bcrypt": _bcrypt_mock}),
     patch.dict("sys.modules", {"app.services.cognee": MagicMock()}),
-    patch("app.storage.ensure_bucket", _storage_mock.ensure_bucket),
-    patch("app.storage.minio_client", MagicMock()),
+    patch.dict("sys.modules", {"app.storage": _storage_module}),
     patch("app.redis.redis_client", _redis_mock),
     patch("app.redis.get_redis", AsyncMock(return_value=_redis_mock)),
 ):
@@ -48,7 +60,6 @@ with (
 
 TEST_USER_ID = str(uuid.uuid4())
 TEST_USER_EMAIL = "test@example.com"
-TEST_USER_USERNAME = "testuser"
 
 
 class FakeUser:
@@ -59,11 +70,10 @@ class FakeUser:
         *,
         id: str = TEST_USER_ID,
         email: str = TEST_USER_EMAIL,
-        username: str = TEST_USER_USERNAME,
         nickname: str = "Test User",
         avatar: str | None = None,
         balance: Decimal = Decimal("100.0000"),
-        role: str = "USER",
+        is_admin: bool = False,
         group_id: str | None = None,
         status: str = "ACTIVE",
         password_hash: str = "hashed",
@@ -72,11 +82,10 @@ class FakeUser:
     ):
         self.id = id
         self.email = email
-        self.username = username
         self.nickname = nickname
         self.avatar = avatar
         self.balance = balance
-        self.role = role
+        self.is_admin = is_admin
         self.group_id = group_id
         self.status = status
         self.password_hash = password_hash
@@ -97,13 +106,12 @@ def fake_user() -> FakeUser:
 
 @pytest.fixture()
 def fake_admin_user() -> FakeUser:
-    """Return a test user with ADMIN role."""
+    """Return a test user with admin permission."""
     return FakeUser(
         id=str(uuid.uuid4()),
         email="admin@example.com",
-        username="adminuser",
         nickname="Admin",
-        role="ADMIN",
+        is_admin=True,
     )
 
 

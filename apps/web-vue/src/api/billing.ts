@@ -1,5 +1,5 @@
 import api from './index'
-import type { PricingRule } from '@/types'
+import type { PaymentOrderListResponse, PricingRule } from '@/types'
 
 export async function getPricing(): Promise<PricingRule[]> {
   const { data } = await api.get<PricingRule[]>('/api/billing/pricing')
@@ -18,20 +18,28 @@ export async function getBalance(): Promise<{
 export async function deposit(
   amount: number,
   paymentMethod?: string
-): Promise<any> {
-  const { data } = await api.post('/api/payment/create', {
+): Promise<{
+  order_no: string
+  amount: number
+  status: string
+  payment_url?: string
+}> {
+  const { data } = await api.post<{
+    order_no: string
+    amount: number
+    status: string
+    payment_url?: string
+  }>('/api/payment/create', {
+    type: 'RECHARGE',
     amount,
     payment_method: paymentMethod || 'alipay',
   })
   return data
 }
 
-export async function getPlans(): Promise<any[]> {
-  const { data } = await api.get('/api/payment/plans')
-  return data
-}
-
-export async function getOrderStatus(orderNo: string): Promise<any> {
-  const { data } = await api.get(`/api/payment/order/${orderNo}`)
+export async function getPaymentOrders(page = 1, pageSize = 20): Promise<PaymentOrderListResponse> {
+  const { data } = await api.get<PaymentOrderListResponse>('/api/payment/orders', {
+    params: { page, page_size: pageSize },
+  })
   return data
 }

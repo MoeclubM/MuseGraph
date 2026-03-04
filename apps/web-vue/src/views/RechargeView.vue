@@ -4,7 +4,8 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
-import { getBalance, deposit } from '@/api/billing'
+import { getBalance, deposit, getPaymentOrders } from '@/api/billing'
+import type { PaymentOrder } from '@/types'
 import { Wallet, CreditCard, Banknote, CheckCircle } from 'lucide-vue-next'
 
 const balance = ref(0)
@@ -16,12 +17,15 @@ const loading = ref(false)
 const balanceLoading = ref(true)
 const success = ref(false)
 const error = ref<string | null>(null)
+const orders = ref<PaymentOrder[]>([])
+const ordersLoading = ref(false)
+const ordersError = ref<string | null>(null)
 
 const presetAmounts = [10, 20, 50, 100, 200, 500]
 
 const paymentMethods = [
   { value: 'alipay', label: 'Alipay', icon: CreditCard },
-  { value: 'wechat', label: 'WeChat Pay', icon: Banknote },
+  { value: 'wxpay', label: 'WeChat Pay', icon: Banknote },
 ]
 
 async function loadBalance() {
@@ -38,6 +42,20 @@ async function loadBalance() {
   }
 }
 
+async function loadOrders() {
+  ordersLoading.value = true
+  ordersError.value = null
+  try {
+    const data = await getPaymentOrders(1, 20)
+    orders.value = data.orders || []
+  } catch {
+    ordersError.value = 'Failed to load recharge orders'
+    orders.value = []
+  } finally {
+    ordersLoading.value = false
+  }
+}
+
 async function handleDeposit() {
   const numAmount = parseFloat(amount.value)
   if (!numAmount || numAmount <= 0) {
@@ -48,10 +66,14 @@ async function handleDeposit() {
   error.value = null
   success.value = false
   try {
-    await deposit(numAmount, paymentMethod.value)
+    const order = await deposit(numAmount, paymentMethod.value)
+    if (order?.payment_url) {
+      window.location.href = order.payment_url
+      return
+    }
     success.value = true
     amount.value = ''
-    await loadBalance()
+    await Promise.all([loadBalance(), loadOrders()])
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.response?.data?.message || e.message || 'Deposit failed'
   } finally {
@@ -63,34 +85,51 @@ function selectPreset(val: number) {
   amount.value = val.toString()
 }
 
-onMounted(loadBalance)
+function orderStatusClass(status: string): string {
+  const value = (status || '').toUpperCase()
+  if (value === 'PAID' || value === 'SUCCESS') return 'text-emerald-700 dark:text-emerald-300'
+  if (value === 'PENDING' || value === 'UNPAID') return 'text-amber-700 dark:text-amber-300'
+  if (value === 'FAILED' || value === 'CANCELLED') return 'text-red-700 dark:text-red-300'
+  return 'text-stone-600 dark:text-zinc-300'
+}
+
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString()
+}
+
+onMounted(async () => {
+  await Promise.all([loadBalance(), loadOrders()])
+})
 </script>
 
 <template>
   <AppLayout>
-    <div class="p-6 max-w-2xl mx-auto">
-      <div class="mb-6">
-        <h1 class="text-2xl font-bold text-white">Recharge</h1>
-        <p class="text-sm text-slate-400 mt-1">Top up your account balance</p>
+    <div class="mx-auto w-full max-w-2xl space-y-5">
+      <div>
+        <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Recharge</h1>
+        <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">Top up your account balance</p>
       </div>
 
       <!-- Balance Card -->
-      <Card class="mb-6">
+      <Card>
         <div class="flex items-center gap-4">
-          <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600/20">
-            <Wallet class="w-6 h-6 text-blue-400" />
+          <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-amber-500/15 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
+            <Wallet class="w-6 h-6" />
           </div>
           <div class="flex-1">
-            <p class="text-sm text-slate-400">Current Balance</p>
-            <p v-if="balanceLoading" class="text-2xl font-bold text-white">--</p>
-            <p v-else class="text-2xl font-bold text-white">${{ balance.toFixed(2) }}</p>
+            <p class="text-sm text-stone-600 dark:text-zinc-400">Current Balance</p>
+            <p v-if="balanceLoading" class="text-2xl font-bold text-stone-900 dark:text-stone-100">--</p>
+            <p v-else class="text-2xl font-bold text-stone-900 dark:text-stone-100">${{ balance.toFixed(2) }}</p>
           </div>
           <div class="text-right space-y-1">
-            <p class="text-xs text-slate-500">
-              Today: <span class="text-slate-300">{{ dailyUsage }} ops</span>
+            <p class="text-xs text-stone-500 dark:text-zinc-400">
+              Today: <span class="text-stone-700 dark:text-zinc-200">{{ dailyUsage }} ops</span>
             </p>
-            <p class="text-xs text-slate-500">
-              This month: <span class="text-slate-300">{{ monthlyUsage }} ops</span>
+            <p class="text-xs text-stone-500 dark:text-zinc-400">
+              This month: <span class="text-stone-700 dark:text-zinc-200">{{ monthlyUsage }} ops</span>
             </p>
           </div>
         </div>
@@ -98,34 +137,30 @@ onMounted(loadBalance)
 
       <!-- Recharge Form -->
       <Card>
-        <h2 class="text-base font-semibold text-slate-200 mb-4">Add Funds</h2>
+        <h2 class="mb-4 text-base font-semibold text-stone-900 dark:text-stone-100">Add Funds</h2>
 
-        <div v-if="success" class="mb-4 flex items-center gap-2 rounded-lg bg-emerald-900/30 border border-emerald-800 px-4 py-3 text-sm text-emerald-300">
+        <div v-if="success" class="mb-4 flex items-center gap-2 rounded-lg border border-emerald-300/70 bg-emerald-100 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-700/50 dark:bg-emerald-900/20 dark:text-emerald-300">
           <CheckCircle class="w-4 h-4" />
           Deposit successful! Your balance has been updated.
         </div>
 
-        <div v-if="error" class="mb-4 rounded-lg bg-red-900/30 border border-red-800 px-4 py-3 text-sm text-red-300">
+        <div v-if="error" class="mb-4 rounded-lg border border-red-300/80 bg-red-100 px-4 py-3 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
           {{ error }}
         </div>
 
         <!-- Preset Amounts -->
         <div class="mb-4">
-          <label class="block text-sm font-medium text-slate-300 mb-2">Quick Select</label>
+          <label class="mb-2 block text-sm font-medium text-stone-700 dark:text-zinc-300">Quick Select</label>
           <div class="grid grid-cols-3 gap-2">
-            <button
+            <Button
               v-for="preset in presetAmounts"
               :key="preset"
-              class="rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors"
-              :class="
-                amount === preset.toString()
-                  ? 'border-blue-500 bg-blue-600/20 text-blue-300'
-                  : 'border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-200'
-              "
+              :variant="amount === preset.toString() ? 'primary' : 'secondary'"
+              class="h-auto px-4 py-2.5 text-sm font-medium"
               @click="selectPreset(preset)"
             >
               ${{ preset }}
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -141,22 +176,18 @@ onMounted(loadBalance)
 
         <!-- Payment Method -->
         <div class="mb-6">
-          <label class="block text-sm font-medium text-slate-300 mb-2">Payment Method</label>
+          <label class="mb-2 block text-sm font-medium text-stone-700 dark:text-zinc-300">Payment Method</label>
           <div class="grid grid-cols-2 gap-2">
-            <button
+            <Button
               v-for="method in paymentMethods"
               :key="method.value"
-              class="flex items-center gap-2 rounded-lg border px-4 py-3 text-sm transition-colors"
-              :class="
-                paymentMethod === method.value
-                  ? 'border-blue-500 bg-blue-600/20 text-blue-300'
-                  : 'border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-200'
-              "
+              :variant="paymentMethod === method.value ? 'primary' : 'secondary'"
+              class="h-auto w-full justify-start px-4 py-3 text-sm"
               @click="paymentMethod = method.value"
             >
               <component :is="method.icon" class="w-4 h-4" />
               {{ method.label }}
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -171,6 +202,50 @@ onMounted(loadBalance)
           <Wallet class="w-4 h-4" />
           Deposit ${{ amount || '0' }}
         </Button>
+      </Card>
+
+      <Card class="mt-6">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="text-base font-semibold text-stone-900 dark:text-stone-100">Recharge Orders</h2>
+          <Button size="sm" variant="secondary" :loading="ordersLoading" @click="loadOrders">
+            Refresh
+          </Button>
+        </div>
+
+        <div v-if="ordersError" class="mb-3 rounded-lg border border-red-300/80 bg-red-100 px-4 py-3 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
+          {{ ordersError }}
+        </div>
+
+        <div v-if="ordersLoading" class="text-sm text-stone-600 dark:text-zinc-400">Loading orders...</div>
+
+        <div v-else-if="orders.length" class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-stone-300/80 text-left text-xs uppercase tracking-wide text-stone-500 dark:border-zinc-700 dark:text-zinc-400">
+                <th class="px-2 py-2">Order No</th>
+                <th class="px-2 py-2">Amount</th>
+                <th class="px-2 py-2">Status</th>
+                <th class="px-2 py-2">Method</th>
+                <th class="px-2 py-2">Created</th>
+                <th class="px-2 py-2">Paid</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="order in orders" :key="order.order_no" class="border-b border-stone-200/80 text-stone-700 dark:border-zinc-800/70 dark:text-zinc-300">
+                <td class="px-2 py-2 font-mono text-xs">{{ order.order_no }}</td>
+                <td class="px-2 py-2">${{ Number(order.amount || 0).toFixed(2) }}</td>
+                <td class="px-2 py-2">
+                  <span :class="orderStatusClass(order.status)">{{ order.status }}</span>
+                </td>
+                <td class="px-2 py-2">{{ order.payment_method || '—' }}</td>
+                <td class="px-2 py-2">{{ formatDateTime(order.created_at) }}</td>
+                <td class="px-2 py-2">{{ formatDateTime(order.paid_at) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p v-else class="text-sm text-stone-500 dark:text-zinc-400">No recharge orders yet.</p>
       </Card>
     </div>
   </AppLayout>

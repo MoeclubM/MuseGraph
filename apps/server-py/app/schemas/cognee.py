@@ -5,41 +5,57 @@ from pydantic import BaseModel, Field
 
 
 class CogneeAddRequest(BaseModel):
-    text: str
+    text: str = ""
     ontology: Optional[dict[str, Any]] = None
+    chapter_ids: Optional[list[str]] = None
+    build_mode: Literal["rebuild", "incremental"] = "rebuild"
+
+    model_config = {"extra": "forbid"}
 
 
 class CogneeOntologyGenerateRequest(BaseModel):
     text: str = ""
     requirement: Optional[str] = None
     model: Optional[str] = None
+    chapter_ids: Optional[list[str]] = None
+
+    model_config = {"extra": "forbid"}
 
 
 class CogneeOasisAnalyzeRequest(BaseModel):
     text: str = ""
     requirement: Optional[str] = None
     prompt: Optional[str] = None
-    model: Optional[str] = None
     analysis_model: Optional[str] = None
     simulation_model: Optional[str] = None
+    chapter_ids: Optional[list[str]] = None
+
+    model_config = {"extra": "forbid"}
 
 
 class CogneeOasisPrepareRequest(BaseModel):
     text: str = ""
     requirement: Optional[str] = None
     prompt: Optional[str] = None
-    model: Optional[str] = None
     analysis_model: Optional[str] = None
     simulation_model: Optional[str] = None
+    chapter_ids: Optional[list[str]] = None
+
+    model_config = {"extra": "forbid"}
 
 
 class CogneeOasisRunRequest(BaseModel):
     package: Optional[dict[str, Any]] = None
+    chapter_ids: Optional[list[str]] = None
+
+    model_config = {"extra": "forbid"}
 
 
 class CogneeOasisReportRequest(BaseModel):
-    model: Optional[str] = None
     report_model: Optional[str] = None
+    chapter_ids: Optional[list[str]] = None
+
+    model_config = {"extra": "forbid"}
 
 
 class CogneeSearchRequest(BaseModel):
@@ -53,6 +69,11 @@ class CogneeSearchRequest(BaseModel):
         "GRAPH_SUMMARY_COMPLETION",
     ] = Field(default="INSIGHTS")
     top_k: int = Field(default=10, ge=1, le=50)
+    use_reranker: bool = False
+    reranker_model: Optional[str] = None
+    reranker_top_n: Optional[int] = Field(default=None, ge=1, le=50)
+
+    model_config = {"extra": "forbid"}
 
 
 class CogneeStatusResponse(BaseModel):

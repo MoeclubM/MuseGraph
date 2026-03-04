@@ -4,9 +4,11 @@ import { z } from 'zod';
 export const UserSchema = z.object({
   id: z.string(),
   email: z.string().email(),
-  username: z.string(),
+  nickname: z.string().nullable().optional(),
+  avatar: z.string().nullable().optional(),
   balance: z.number(),
-  role: z.enum(['USER', 'ADMIN']),
+  is_admin: z.boolean(),
+  group_id: z.string().nullable().optional(),
   status: z.enum(['ACTIVE', 'SUSPENDED', 'DELETED']),
   createdAt: z.date(),
   updatedAt: z.date(),
@@ -21,7 +23,7 @@ export const LoginSchema = z.object({
 
 export const RegisterSchema = z.object({
   email: z.string().email(),
-  username: z.string().min(3).max(20),
+  nickname: z.string().min(1).max(100),
   password: z.string().min(6),
 });
 
@@ -34,7 +36,6 @@ export const TextProjectSchema = z.object({
   userId: z.string(),
   title: z.string(),
   description: z.string().optional(),
-  content: z.string().optional(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -44,13 +45,11 @@ export type TextProject = z.infer<typeof TextProjectSchema>;
 export const CreateProjectSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().max(1000).optional(),
-  content: z.string().optional(),
 });
 
 export const UpdateProjectSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   description: z.string().max(1000).optional(),
-  content: z.string().optional(),
 });
 
 export type CreateProjectInput = z.infer<typeof CreateProjectSchema>;
@@ -89,7 +88,7 @@ export const TextOperationRequestSchema = z.object({
   type: OperationTypeSchema,
   input: z.string().optional(),
   model: z.string().optional(),
-  options: z.record(z.any()).optional(),
+  chapter_ids: z.array(z.string()).optional(),
 });
 
 export type TextOperationRequest = z.infer<typeof TextOperationRequestSchema>;

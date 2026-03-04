@@ -15,7 +15,7 @@ router = APIRouter()
 
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(user_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    if current_user.id != user_id and current_user.role != "ADMIN":
+    if current_user.id != user_id and not current_user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -26,7 +26,7 @@ async def get_user(user_id: str, current_user: User = Depends(get_current_user),
 
 @router.get("/{user_id}/usage", response_model=UserUsageResponse)
 async def get_user_usage(user_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    if current_user.id != user_id and current_user.role != "ADMIN":
+    if current_user.id != user_id and not current_user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     now = datetime.now(timezone.utc)

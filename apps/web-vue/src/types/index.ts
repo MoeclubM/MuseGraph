@@ -15,6 +15,13 @@ export interface ProjectOntology {
   entity_types: OntologyEntityType[]
   edge_types: OntologyEdgeType[]
   analysis_summary?: string
+  _meta?: {
+    model?: string | null
+    provider?: string | null
+    api_called?: boolean
+    input_tokens?: number
+    output_tokens?: number
+  }
 }
 
 export interface ContinuationGuidance {
@@ -77,7 +84,7 @@ export interface ProjectOasisAnalysis {
 export interface OasisTask {
   task_id: string
   task_type: string
-  status: 'pending' | 'processing' | 'completed' | 'failed'
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
   created_at: string
   updated_at: string
   progress: number
@@ -92,14 +99,71 @@ export type ComponentModelConfig = Record<string, string>
 export interface User {
   id: string
   email: string
-  username: string
   nickname: string | null
   avatar: string | null
   balance: number
-  role: 'USER' | 'ADMIN'
-  group_id: string | null
+  is_admin: boolean
   status: 'ACTIVE' | 'SUSPENDED' | 'DELETED'
   created_at: string
+}
+
+export interface UserUsage {
+  total_requests: number
+  total_tokens: number
+  total_cost: number
+  daily_requests: number
+  monthly_requests: number
+}
+
+export interface AdminUser {
+  id: string
+  email: string
+  nickname: string | null
+  is_admin: boolean
+  status: 'ACTIVE' | 'SUSPENDED' | 'DELETED'
+  balance: number
+  created_at: string
+  usage?: {
+    total_requests: number
+    input_tokens: number
+    output_tokens: number
+    total_tokens: number
+    total_cost: number
+  } | null
+  recharge?: {
+    total_orders: number
+    paid_orders: number
+    total_amount: number
+    paid_amount: number
+    last_order_at: string | null
+  } | null
+  token_usage?: {
+    total_tokens: number
+    request_count: number
+    total_cost: number
+  } | null
+  recharge_summary?: {
+    total_orders: number
+    paid_orders: number
+    paid_amount: number
+  } | null
+  // 兼容后端可能返回的扁平化聚合字段
+  total_tokens?: number
+  total_requests?: number
+  total_cost?: number
+  total_orders?: number
+  paid_orders?: number
+  paid_amount?: number
+}
+
+export interface ProjectChapter {
+  id: string
+  project_id: string
+  title: string
+  content: string
+  order_index: number
+  created_at: string
+  updated_at: string
 }
 
 export interface Project {
@@ -107,12 +171,12 @@ export interface Project {
   user_id: string
   title: string
   description: string | null
-  content: string | null
   simulation_requirement?: string | null
   component_models?: ComponentModelConfig | null
   ontology_schema?: ProjectOntology | null
   oasis_analysis?: ProjectOasisAnalysis | null
   cognee_dataset_id: string | null
+  chapters?: ProjectChapter[]
   created_at: string
   updated_at: string
 }
@@ -167,76 +231,82 @@ export interface PaginatedResponse<T> {
 }
 
 export interface UserListResponse {
-  users: Record<string, any>[]
+  users: AdminUser[]
   total: number
   page: number
   page_size: number
-}
-
-export interface OrderListResponse {
-  orders: Record<string, any>[]
-  total: number
-  page: number
-  page_size: number
-}
-
-export interface UserGroup {
-  id: string
-  name: string
-  display_name: string
-  description: string | null
-  color: string | null
-  icon: string | null
-  price: number | null
-  features: Record<string, any> | null
-  quotas: Record<string, any> | null
-  allowed_models: string[] | null
-  is_active: boolean
-  is_default: boolean
-  sort_order: number
 }
 
 export interface PricingRule {
   id: string
   model: string
+  billing_mode: 'TOKEN' | 'REQUEST'
   input_price: number
   output_price: number
-}
-
-export interface Plan {
-  id: string
-  name: string
-  display_name: string
-  description: string | null
-  price: number
-  original_price: number | null
-  duration: number
-  features: string[] | Record<string, any> | null
-  quotas: Record<string, any> | null
-  allowed_models: string[] | null
-  is_active: boolean
-  sort_order: number
+  token_unit: number
+  request_price: number
+  is_active?: boolean
 }
 
 export interface StatsResponse {
   total_users: number
   total_projects: number
   total_operations: number
+  completed_operations: number
+  failed_operations: number
   total_revenue: number
+  total_usage_cost: number
+  total_balance: number
+  average_balance: number
+  total_request_count: number
+  total_input_tokens: number
+  total_output_tokens: number
+  total_tokens: number
   daily_active_users: number
-}
-
-export interface Order {
-  id: string
-  order_no: string
-  user_id: string
-  type: string
-  amount: number
-  status: 'PENDING' | 'PAID' | 'CANCELLED' | 'REFUNDED' | 'EXPIRED'
-  payment_method: string | null
-  payment_id: string | null
-  paid_at: string | null
-  created_at: string
+  last_24h_request_count: number
+  last_24h_cost: number
+  last_24h_input_tokens: number
+  last_24h_output_tokens: number
+  last_24h_tokens: number
+  last_7d_cost: number
+  last_30d_cost: number
+  top_users: {
+    user_id: string
+    email: string
+    nickname: string | null
+    request_count: number
+    input_tokens: number
+    output_tokens: number
+    total_tokens: number
+    cost: number
+  }[]
+  top_models: {
+    model: string
+    request_count: number
+    input_tokens: number
+    output_tokens: number
+    total_tokens: number
+    cost: number
+  }[]
+  daily_usage: {
+    date: string
+    request_count: number
+    active_users: number
+    input_tokens: number
+    output_tokens: number
+    total_tokens: number
+    cost: number
+  }[]
+  usage_audit: {
+    usage_without_operation: number
+    usage_without_project: number
+    usage_with_missing_operation_record: number
+    usage_with_missing_project_record: number
+    usage_with_project_user_mismatch: number
+    usage_with_operation_user_mismatch: number
+    usage_operation_value_mismatch: number
+    negative_balance_users: number
+  }
 }
 
 export interface Provider {
@@ -245,17 +315,58 @@ export interface Provider {
   provider: string
   base_url: string | null
   models: string[] | null
+  embedding_models?: string[] | null
   is_active: boolean
   priority: number
 }
 
-export interface ModelPermission {
-  id: string
-  model: string
-  group_id: string
-  daily_limit: number
-  monthly_limit: number
-  is_active: boolean
+export interface OasisConfig {
+  analysis_prompt_prefix: string
+  simulation_prompt_prefix: string
+  report_prompt_prefix: string
+  max_agent_profiles: number
+  max_events: number
+  max_agent_activity: number
+  min_total_hours: number
+  max_total_hours: number
+  min_minutes_per_round: number
+  max_minutes_per_round: number
+  max_posts_per_hour: number
+  max_response_delay_minutes: number
+  allowed_platforms: string[]
+  llm_request_timeout_seconds: number
+  llm_retry_count: number
+  llm_retry_interval_seconds: number
+}
+
+export interface PaymentOrder {
+  id?: string
+  order_no: string
+  user_id?: string
+  type?: string
+  amount: number
+  status: string
+  payment_method: string | null
+  created_at: string
+  paid_at: string | null
+}
+
+export interface PaymentOrderListResponse {
+  orders: PaymentOrder[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface PaymentConfig {
+  enabled: boolean
+  url: string
+  pid: string
+  key: string
+  has_key: boolean
+  payment_type: string
+  notify_url: string
+  return_url: string
 }
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info'
@@ -265,3 +376,54 @@ export interface ToastMessage {
   message: string
   type: ToastType
 }
+
+export interface SimulationRuntime {
+  simulation_id: string
+  project_id: string
+  status: string
+  simulation_config: Record<string, any>
+  profiles: Record<string, any>[]
+  run_state: Record<string, any>
+  env_status: Record<string, any>
+  metadata?: {
+    source_chapter_ids?: string[]
+    content_hash?: string
+    generated_at?: string
+    [key: string]: any
+  }
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface ReportRuntime {
+  report_id: string
+  simulation_id: string
+  status: string
+  title: string
+  executive_summary: string
+  markdown: string
+  key_findings?: string[]
+  next_actions?: string[]
+  generated_at?: string | null
+}
+
+// Simulation UI Types
+export interface LogEntry {
+  id: string
+  timestamp: string
+  level: 'info' | 'warning' | 'error' | 'success'
+  message: string
+  source?: string
+}
+
+export interface SimulationAction {
+  action_id: string
+  round_num: number
+  agent: string
+  action_type: 'post' | 'comment' | 'react' | 'share'
+  summary: string
+  created_at: string
+  platform?: string
+}
+
+export type ViewMode = 'graph' | 'split' | 'workbench'

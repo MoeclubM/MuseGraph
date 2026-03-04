@@ -13,20 +13,15 @@ from app.database import Base
 from app.models import (  # noqa: F401
     AIProviderConfig,
     Deposit,
-    ModelPermission,
     Order,
     PaymentConfig,
-    Plan,
     PricingRule,
     PromptTemplate,
     Session,
-    Subscription,
     TextOperation,
     TextProject,
     Usage,
     User,
-    UserGroup,
-    UserQuota,
 )
 
 # this is the Alembic Config object

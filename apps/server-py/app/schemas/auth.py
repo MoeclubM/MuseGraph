@@ -6,9 +6,8 @@ from pydantic import BaseModel, EmailStr, Field
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    username: str = Field(min_length=3, max_length=50)
     password: str = Field(min_length=6, max_length=128)
-    nickname: Optional[str] = None
+    nickname: str = Field(min_length=1, max_length=100)
 
 
 class LoginRequest(BaseModel):
@@ -19,12 +18,10 @@ class LoginRequest(BaseModel):
 class UserResponse(BaseModel):
     id: str
     email: str
-    username: str
     nickname: Optional[str] = None
     avatar: Optional[str] = None
     balance: float
-    role: str
-    group_id: Optional[str] = None
+    is_admin: bool
     status: str
     created_at: datetime
 

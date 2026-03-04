@@ -1,5 +1,5 @@
 import api from './index'
-import type { Project, Operation } from '@/types'
+import type { Project, Operation, ProjectChapter } from '@/types'
 
 export interface ModelInfo {
   id: string
@@ -7,8 +7,21 @@ export interface ModelInfo {
   name: string
 }
 
+export interface RunOperationPayload {
+  type: string
+  input?: string
+  model?: string
+  chapter_ids?: string[]
+  use_rag?: boolean
+}
+
 export async function getModels(): Promise<ModelInfo[]> {
   const { data } = await api.get<{ models: ModelInfo[] }>('/api/ai/models')
+  return data.models
+}
+
+export async function getEmbeddingModels(): Promise<ModelInfo[]> {
+  const { data } = await api.get<{ models: ModelInfo[] }>('/api/ai/embedding-models')
   return data.models
 }
 
@@ -25,7 +38,6 @@ export async function getProject(id: string): Promise<Project> {
 export async function createProject(payload: {
   title: string
   description?: string
-  content?: string
   simulation_requirement?: string
   component_models?: Record<string, string>
 }): Promise<Project> {
@@ -35,7 +47,7 @@ export async function createProject(payload: {
 
 export async function updateProject(
   id: string,
-  payload: Partial<Pick<Project, 'title' | 'description' | 'content' | 'simulation_requirement' | 'component_models' | 'oasis_analysis'>>
+  payload: Partial<Pick<Project, 'title' | 'description' | 'simulation_requirement' | 'component_models' | 'oasis_analysis'>>
 ): Promise<Project> {
   const { data } = await api.put<Project>(`/api/projects/${id}`, payload)
   return data
@@ -47,12 +59,7 @@ export async function deleteProject(id: string): Promise<void> {
 
 export async function runOperation(
   projectId: string,
-  payload: {
-    type: string
-    input?: string
-    model?: string
-    options?: Record<string, any>
-  }
+  payload: RunOperationPayload
 ): Promise<Operation> {
   const { data } = await api.post<Operation>(
     `/api/projects/${projectId}/operation`,
@@ -61,46 +68,50 @@ export async function runOperation(
   return data
 }
 
-export async function runOperationStream(
-  projectId: string,
-  payload: {
-    type: string
-    input?: string
-    model?: string
-    options?: Record<string, any>
-  }
-): Promise<Operation> {
-  const { data } = await api.post<Operation>(
-    `/api/projects/${projectId}/operation/stream`,
-    payload
-  )
-  return data
-}
-
-export function getOperationStreamUrl(projectId: string, operationId: string): string {
-  const base = import.meta.env.VITE_API_URL || ''
-  return `${base}/api/projects/${projectId}/operation/${operationId}/stream`
-}
-
 export async function getOperations(projectId: string): Promise<Operation[]> {
   const { data } = await api.get<Operation[]>(`/api/projects/${projectId}/operations`)
   return data
 }
 
-export async function runOperationWithFile(
+export async function listProjectChapters(projectId: string): Promise<ProjectChapter[]> {
+  const { data } = await api.get<ProjectChapter[]>(`/api/projects/${projectId}/chapters`)
+  return data
+}
+
+export async function createProjectChapter(
   projectId: string,
-  file: File,
-  type: string,
-  model?: string
-): Promise<Operation> {
-  const formData = new FormData()
-  formData.append('file', file)
-  formData.append('type', type)
-  if (model) formData.append('model', model)
-  const { data } = await api.post<Operation>(
-    `/api/projects/${projectId}/operation/upload`,
-    formData,
-    { headers: { 'Content-Type': 'multipart/form-data' } }
-  )
+  payload: {
+    title?: string
+    content?: string
+    order_index?: number
+  }
+): Promise<ProjectChapter> {
+  const { data } = await api.post<ProjectChapter>(`/api/projects/${projectId}/chapters`, payload)
+  return data
+}
+
+export async function updateProjectChapter(
+  projectId: string,
+  chapterId: string,
+  payload: {
+    title?: string
+    content?: string
+    order_index?: number
+  }
+): Promise<ProjectChapter> {
+  const { data } = await api.put<ProjectChapter>(`/api/projects/${projectId}/chapters/${chapterId}`, payload)
+  return data
+}
+
+export async function deleteProjectChapter(projectId: string, chapterId: string): Promise<void> {
+  await api.delete(`/api/projects/${projectId}/chapters/${chapterId}`)
+}
+
+export async function reorderProjectChapters(
+  projectId: string,
+  chapterIdsInOrder: string[]
+): Promise<ProjectChapter[]> {
+  const chapters = chapterIdsInOrder.map((id, index) => ({ id, order_index: index }))
+  const { data } = await api.post<ProjectChapter[]>(`/api/projects/${projectId}/chapters/reorder`, { chapters })
   return data
 }

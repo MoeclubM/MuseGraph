@@ -1,4 +1,4 @@
-from app.routers import admin, ai, auth, billing, cognee_graph, export, groups, payment, projects, users
+from app.routers import admin, ai, auth, billing, cognee_graph, export, payment, projects, report, simulation, users
 
 __all__ = [
     "admin",
@@ -7,8 +7,9 @@ __all__ = [
     "billing",
     "cognee_graph",
     "export",
-    "groups",
     "payment",
     "projects",
+    "simulation",
+    "report",
     "users",
 ]

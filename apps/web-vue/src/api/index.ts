@@ -2,9 +2,15 @@ import axios from 'axios'
 import router from '@/router'
 import { useToast } from '@/composables/useToast'
 
+function withRequestIdSuffix(message: string, requestId?: string): string {
+  if (!requestId) return message
+  return `${message} (request-id: ${requestId})`
+}
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '',
-  timeout: 120000,
+  // Long-running AI tasks (generation/graph/oasis) may exceed 2 minutes.
+  timeout: 600000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -22,21 +28,24 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     const { error: showError } = useToast()
+    const requestId = error.response?.headers?.['x-request-id']
     const message = error.response?.data?.detail || error.response?.data?.message || error.message || 'An unexpected error occurred'
 
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
       localStorage.removeItem('user')
-      router.push('/login')
-      showError('Session expired. Please sign in again.')
+      const currentPath = router.currentRoute.value.path || '/'
+      const redirectTarget = currentPath.startsWith('/admin') ? '/admin/login' : '/login'
+      router.push({ path: redirectTarget, query: { redirect: currentPath } })
+      showError(withRequestIdSuffix('Session expired. Please sign in again.', requestId))
     } else if (error.response?.status === 403) {
-      showError('You do not have permission to perform this action.')
+      showError(withRequestIdSuffix('You do not have permission to perform this action.', requestId))
     } else if (error.response?.status === 429) {
-      showError('Too many requests. Please try again later.')
+      showError(withRequestIdSuffix('Too many requests. Please try again later.', requestId))
     } else if (error.response?.status && error.response.status >= 500) {
-      showError('Server error. Please try again later.')
+      showError(withRequestIdSuffix('Server error. Please try again later.', requestId))
     } else {
-      showError(message)
+      showError(withRequestIdSuffix(message, requestId))
     }
 
     return Promise.reject(error)

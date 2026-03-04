@@ -24,7 +24,7 @@ def _make_fake_project(
     user_id: str = TEST_USER_ID,
     title: str = "Test Project",
     description: str | None = "A test project",
-    content: str | None = "Some content",
+    chapter_content: str | None = "Some content",
     cognee_dataset_id: str | None = None,
 ):
     """Return a lightweight object that behaves like a ``TextProject`` row."""
@@ -33,7 +33,17 @@ def _make_fake_project(
         user_id=user_id,
         title=title,
         description=description,
-        content=content,
+        chapters=[
+            SimpleNamespace(
+                id=str(uuid.uuid4()),
+                project_id=project_id or "proj-1",
+                title="Main Draft",
+                content=chapter_content or "",
+                order_index=0,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        ],
         simulation_requirement=None,
         component_models=None,
         ontology_schema=None,
@@ -83,15 +93,15 @@ class TestCreateProject:
         resp = await client.post("/api/projects", json={
             "title": "My Novel",
             "description": "A great story",
-            "content": "Chapter 1...",
         })
 
         assert resp.status_code == 201
         body = resp.json()
         assert body["title"] == "My Novel"
         assert body["description"] == "A great story"
-        assert body["content"] == "Chapter 1..."
         assert body["user_id"] == TEST_USER_ID
+        assert "content" not in body
+        assert isinstance(body.get("chapters"), list)
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +146,7 @@ class TestGetProject:
         body = resp.json()
         assert body["title"] == "Single Project"
         assert body["id"] == project.id
+        assert len(body["chapters"]) == 1
 
     @pytest.mark.asyncio
     async def test_get_project_not_found(self, client: AsyncClient, mock_db: AsyncMock):

@@ -48,13 +48,14 @@ onMounted(() => {
       :value="modelValue"
       :placeholder="placeholder"
       :readonly="readonly"
-      class="w-full flex-1 resize-none rounded-lg border border-slate-700 bg-slate-800/50 px-4 py-3 text-sm text-slate-100 placeholder-slate-500 leading-relaxed focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
+      class="w-full flex-1 resize-none rounded-lg border border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-800 placeholder-stone-400 leading-relaxed focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500 transition-colors dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-zinc-100 dark:placeholder-zinc-500"
       @input="onInput"
     />
     <div class="flex items-center justify-end px-1 py-1.5">
-      <span class="text-xs text-slate-500">
+      <span class="text-xs text-stone-500 dark:text-zinc-500">
         {{ modelValue.length.toLocaleString() }} characters
       </span>
     </div>
   </div>
 </template>
+

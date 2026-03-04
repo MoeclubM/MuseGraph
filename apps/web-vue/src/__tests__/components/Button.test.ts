@@ -23,7 +23,7 @@ describe('Button Component', () => {
 
     it('should apply primary variant classes by default', () => {
       const wrapper = mount(Button)
-      expect(wrapper.classes().join(' ')).toContain('bg-blue-600')
+      expect(wrapper.classes().join(' ')).toContain('bg-amber-600')
     })
 
     it('should apply md size classes by default', () => {
@@ -88,7 +88,7 @@ describe('Button Component', () => {
         props: { variant: 'primary' },
       })
       const cls = wrapper.classes().join(' ')
-      expect(cls).toContain('bg-blue-600')
+      expect(cls).toContain('bg-amber-600')
       expect(cls).toContain('text-white')
     })
 
@@ -97,8 +97,8 @@ describe('Button Component', () => {
         props: { variant: 'secondary' },
       })
       const cls = wrapper.classes().join(' ')
-      expect(cls).toContain('bg-slate-700')
-      expect(cls).toContain('text-slate-200')
+      expect(cls).toContain('bg-stone-200')
+      expect(cls).toContain('text-stone-800')
     })
 
     it('should apply danger variant classes', () => {
@@ -116,7 +116,7 @@ describe('Button Component', () => {
       })
       const cls = wrapper.classes().join(' ')
       expect(cls).toContain('bg-transparent')
-      expect(cls).toContain('text-slate-300')
+      expect(cls).toContain('text-stone-700')
     })
   })
 

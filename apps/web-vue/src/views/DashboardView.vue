@@ -1,141 +1,213 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useProjectStore } from '@/stores/project'
-import { useToast } from '@/composables/useToast'
 import AppLayout from '@/components/layout/AppLayout.vue'
-import AppSidebar from '@/components/layout/AppSidebar.vue'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
-import Input from '@/components/ui/Input.vue'
-import Modal from '@/components/ui/Modal.vue'
-import { Plus, FileText, Clock } from 'lucide-vue-next'
+import { getBalance } from '@/api/billing'
+import { getUserUsage } from '@/api/users'
+import { useAuthStore } from '@/stores/auth'
+import {
+  Wallet,
+  Coins,
+  ReceiptText,
+  CalendarDays,
+  FolderOpen,
+  CreditCard,
+  PlusCircle,
+} from 'lucide-vue-next'
 
 const router = useRouter()
-const projectStore = useProjectStore()
-const toast = useToast()
+const authStore = useAuthStore()
 
-const showCreateModal = ref(false)
-const newTitle = ref('')
-const newDescription = ref('')
-const creating = ref(false)
+const loading = ref(true)
+const loadError = ref<string | null>(null)
+const balance = ref(0)
+const dailyUsage = ref(0)
+const monthlyUsage = ref(0)
+const totalTokens = ref(0)
+const totalCost = ref(0)
+const totalRequests = ref(0)
 
-onMounted(() => {
-  projectStore.fetchProjects()
-})
+function formatUsd(value: number): string {
+  return `$${Number(value || 0).toFixed(2)}`
+}
 
-async function handleCreate() {
-  if (!newTitle.value.trim()) return
-  creating.value = true
+function formatTokens(value: number): string {
+  return Number(value || 0).toLocaleString()
+}
+
+async function loadDashboardStats() {
+  loading.value = true
+  loadError.value = null
   try {
-    const project = await projectStore.createProject({
-      title: newTitle.value.trim(),
-      description: newDescription.value.trim() || undefined,
-    })
-    showCreateModal.value = false
-    newTitle.value = ''
-    newDescription.value = ''
-    toast.success('Project created successfully')
-    router.push(`/projects/${project.id}`)
-  } catch {
-    // API interceptor handles the error toast
+    if (!authStore.user?.id) {
+      await authStore.fetchMe()
+    }
+    const userId = authStore.user?.id
+    if (!userId) {
+      throw new Error('无法获取当前用户信息')
+    }
+
+    const [balanceData, usageData] = await Promise.all([
+      getBalance(),
+      getUserUsage(userId),
+    ])
+
+    balance.value = balanceData.balance || 0
+    dailyUsage.value = balanceData.daily_usage || 0
+    monthlyUsage.value = balanceData.monthly_usage || 0
+
+    totalTokens.value = usageData.total_tokens || 0
+    totalCost.value = usageData.total_cost || 0
+    totalRequests.value = usageData.total_requests || 0
+
+    authStore.setBalance(balance.value)
+  } catch (e: any) {
+    loadError.value = e?.response?.data?.detail || e?.message || '加载统计数据失败'
   } finally {
-    creating.value = false
+    loading.value = false
   }
 }
 
-function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
+onMounted(() => {
+  void loadDashboardStats()
+})
 </script>
 
 <template>
   <AppLayout>
-    <template #sidebar>
-      <AppSidebar @create="showCreateModal = true" />
-    </template>
-
-    <div class="p-6 max-w-5xl mx-auto">
-      <div class="flex items-center justify-between mb-6">
+    <div class="mx-auto w-full max-w-6xl space-y-5">
+      <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 class="text-2xl font-bold text-white">Dashboard</h1>
-          <p class="text-sm text-slate-400 mt-1">Manage your writing projects</p>
+          <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Dashboard</h1>
+          <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">余额、Token 消耗与费用总览</p>
         </div>
-        <Button variant="primary" @click="showCreateModal = true">
-          <Plus class="w-4 h-4" />
-          New Project
-        </Button>
+        <Button variant="secondary" @click="loadDashboardStats">刷新</Button>
       </div>
 
-      <div v-if="projectStore.loading" class="flex items-center justify-center py-20">
-        <div class="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
+      <div v-if="loading" class="flex items-center justify-center py-20">
+        <div class="h-8 w-8 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />
       </div>
 
-      <div v-else-if="projectStore.projects.length === 0" class="text-center py-20">
-        <FileText class="w-12 h-12 mx-auto text-slate-600 mb-4" />
-        <h2 class="text-lg font-medium text-slate-300 mb-2">No projects yet</h2>
-        <p class="text-sm text-slate-500 mb-6">Create your first project to get started with AI-powered writing.</p>
-        <Button variant="primary" @click="showCreateModal = true">
-          <Plus class="w-4 h-4" />
-          Create Project
-        </Button>
+      <div v-else-if="loadError" class="rounded-xl border border-red-400/40 bg-red-100/50 p-4 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
+        {{ loadError }}
       </div>
 
-      <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <Card
-          v-for="project in projectStore.projects"
-          :key="project.id"
-          class="cursor-pointer hover:border-slate-600 transition-colors group"
-          @click="router.push(`/projects/${project.id}`)"
-        >
-          <div class="flex flex-col h-full">
-            <h3 class="text-base font-semibold text-slate-100 group-hover:text-blue-400 transition-colors truncate">
-              {{ project.title }}
-            </h3>
-            <p v-if="project.description" class="text-sm text-slate-400 mt-1 line-clamp-2">
-              {{ project.description }}
-            </p>
-            <p v-if="project.content" class="text-xs text-slate-500 mt-2 line-clamp-2">
-              {{ project.content.substring(0, 120) }}{{ project.content.length > 120 ? '...' : '' }}
-            </p>
-            <div class="flex items-center gap-1.5 mt-auto pt-3 text-xs text-slate-500">
-              <Clock class="w-3.5 h-3.5" />
-              {{ formatDate(project.updated_at) }}
+      <template v-else>
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <Card class="border-amber-400/40">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-sm text-stone-600 dark:text-zinc-400">当前余额</p>
+                <p class="mt-1 text-2xl font-bold text-stone-900 dark:text-stone-100">{{ formatUsd(balance) }}</p>
+              </div>
+              <div class="rounded-lg bg-amber-500/15 p-2 text-amber-700 dark:text-amber-300">
+                <Wallet class="h-5 w-5" />
+              </div>
             </div>
+          </Card>
+
+          <Card>
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-sm text-stone-600 dark:text-zinc-400">累计已用 Token</p>
+                <p class="mt-1 text-2xl font-bold text-stone-900 dark:text-stone-100">{{ formatTokens(totalTokens) }}</p>
+              </div>
+              <div class="rounded-lg bg-stone-900/10 p-2 text-stone-700 dark:bg-zinc-700/30 dark:text-zinc-200">
+                <Coins class="h-5 w-5" />
+              </div>
+            </div>
+          </Card>
+
+          <Card>
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-sm text-stone-600 dark:text-zinc-400">累计已用金额</p>
+                <p class="mt-1 text-2xl font-bold text-stone-900 dark:text-stone-100">{{ formatUsd(totalCost) }}</p>
+              </div>
+              <div class="rounded-lg bg-stone-900/10 p-2 text-stone-700 dark:bg-zinc-700/30 dark:text-zinc-200">
+                <ReceiptText class="h-5 w-5" />
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <Card>
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-sm text-stone-600 dark:text-zinc-400">今日已用金额</p>
+                <p class="mt-1 text-xl font-semibold text-stone-900 dark:text-stone-100">{{ formatUsd(dailyUsage) }}</p>
+              </div>
+              <CalendarDays class="h-5 w-5 text-stone-500 dark:text-zinc-400" />
+            </div>
+          </Card>
+
+          <Card>
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-sm text-stone-600 dark:text-zinc-400">本月已用金额</p>
+                <p class="mt-1 text-xl font-semibold text-stone-900 dark:text-stone-100">{{ formatUsd(monthlyUsage) }}</p>
+              </div>
+              <CalendarDays class="h-5 w-5 text-stone-500 dark:text-zinc-400" />
+            </div>
+          </Card>
+
+          <Card>
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-sm text-stone-600 dark:text-zinc-400">累计请求数</p>
+                <p class="mt-1 text-xl font-semibold text-stone-900 dark:text-stone-100">{{ totalRequests.toLocaleString() }}</p>
+              </div>
+              <ReceiptText class="h-5 w-5 text-stone-500 dark:text-zinc-400" />
+            </div>
+          </Card>
+        </div>
+
+        <Card>
+          <div class="mb-4 flex items-center justify-between">
+            <h2 class="text-base font-semibold text-stone-900 dark:text-stone-100">快捷入口</h2>
+          </div>
+          <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <Button
+              variant="secondary"
+              class="h-auto w-full justify-between px-4 py-3 text-left hover:border-amber-500/60 dark:hover:border-amber-500/60"
+              @click="router.push('/projects')"
+            >
+              <div>
+                <p class="text-sm font-medium text-stone-900 dark:text-stone-100">项目与章节</p>
+                <p class="mt-0.5 text-xs text-stone-600 dark:text-zinc-400">管理项目、进入创作工作台</p>
+              </div>
+              <FolderOpen class="h-4 w-4 text-stone-500 dark:text-zinc-400" />
+            </Button>
+
+            <Button
+              variant="secondary"
+              class="h-auto w-full justify-between px-4 py-3 text-left hover:border-amber-500/60 dark:hover:border-amber-500/60"
+              @click="router.push('/pricing')"
+            >
+              <div>
+                <p class="text-sm font-medium text-stone-900 dark:text-stone-100">模型定价</p>
+                <p class="mt-0.5 text-xs text-stone-600 dark:text-zinc-400">查看 Token/次计费规则</p>
+              </div>
+              <CreditCard class="h-4 w-4 text-stone-500 dark:text-zinc-400" />
+            </Button>
+
+            <Button
+              variant="secondary"
+              class="h-auto w-full justify-between border-amber-500/50 bg-amber-500/10 px-4 py-3 text-left hover:bg-amber-500/20 dark:border-amber-500/50 dark:bg-amber-500/10 dark:hover:bg-amber-500/20"
+              @click="router.push('/recharge')"
+            >
+              <div>
+                <p class="text-sm font-medium text-stone-900 dark:text-stone-100">去充值</p>
+                <p class="mt-0.5 text-xs text-stone-700 dark:text-amber-200/80">余额不足时可直接补充</p>
+              </div>
+              <PlusCircle class="h-4 w-4 text-amber-700 dark:text-amber-300" />
+            </Button>
           </div>
         </Card>
-      </div>
+      </template>
     </div>
-
-    <Modal :show="showCreateModal" title="New Project" @close="showCreateModal = false">
-      <form class="space-y-4" @submit.prevent="handleCreate">
-        <Input
-          v-model="newTitle"
-          label="Title"
-          placeholder="Project title"
-        />
-        <div class="space-y-1.5">
-          <label class="block text-sm font-medium text-slate-300">Description (optional)</label>
-          <textarea
-            v-model="newDescription"
-            placeholder="Brief description of your project"
-            rows="3"
-            class="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-        </div>
-        <div class="flex justify-end gap-3 pt-2">
-          <Button variant="ghost" @click="showCreateModal = false">Cancel</Button>
-          <Button type="submit" variant="primary" :loading="creating" :disabled="!newTitle.trim()">
-            Create
-          </Button>
-        </div>
-      </form>
-    </Modal>
   </AppLayout>
 </template>

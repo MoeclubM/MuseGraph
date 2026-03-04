@@ -1,11 +1,39 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Loader2 } from 'lucide-vue-next'
+import { cva, type VariantProps } from 'class-variance-authority'
+import { cn } from '@/lib/utils'
+
+const buttonVariants = cva(
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-[color,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 disabled:pointer-events-none disabled:opacity-50',
+  {
+    variants: {
+      variant: {
+        primary: 'bg-amber-600 text-white shadow-sm hover:bg-amber-700',
+        secondary: 'border border-stone-300 bg-stone-100 text-stone-800 shadow-sm hover:bg-stone-200 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700',
+        danger: 'bg-red-600 text-white shadow-sm hover:bg-red-700 focus-visible:ring-red-500/60',
+        ghost: 'bg-transparent text-stone-700 hover:bg-stone-200 hover:text-stone-900 dark:text-zinc-200 dark:hover:bg-zinc-800 dark:hover:text-zinc-100',
+      },
+      size: {
+        sm: 'h-8 px-3 text-xs',
+        md: 'h-9 px-4 py-2',
+        lg: 'h-10 px-6',
+      },
+    },
+    defaultVariants: {
+      variant: 'primary',
+      size: 'md',
+    },
+  }
+)
+
+type ButtonVariant = VariantProps<typeof buttonVariants>['variant']
+type ButtonSize = VariantProps<typeof buttonVariants>['size']
 
 const props = withDefaults(
   defineProps<{
-    variant?: 'primary' | 'secondary' | 'danger' | 'ghost'
-    size?: 'sm' | 'md' | 'lg'
+    variant?: ButtonVariant
+    size?: ButtonSize
     loading?: boolean
     disabled?: boolean
     type?: 'button' | 'submit' | 'reset'
@@ -20,23 +48,12 @@ const props = withDefaults(
 )
 
 const classes = computed(() => {
-  const base =
-    'inline-flex items-center justify-center font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-900 disabled:opacity-50 disabled:cursor-not-allowed'
-
-  const variants: Record<string, string> = {
-    primary: 'bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500',
-    secondary: 'bg-slate-700 text-slate-200 hover:bg-slate-600 focus:ring-slate-500',
-    danger: 'bg-red-600 text-white hover:bg-red-700 focus:ring-red-500',
-    ghost: 'bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white focus:ring-slate-500',
-  }
-
-  const sizes: Record<string, string> = {
-    sm: 'px-3 py-1.5 text-sm gap-1.5',
-    md: 'px-4 py-2 text-sm gap-2',
-    lg: 'px-6 py-3 text-base gap-2',
-  }
-
-  return [base, variants[props.variant], sizes[props.size]].join(' ')
+  return cn(
+    buttonVariants({
+      variant: props.variant,
+      size: props.size,
+    })
+  )
 })
 </script>
 
@@ -50,3 +67,4 @@ const classes = computed(() => {
     <slot />
   </button>
 </template>
+

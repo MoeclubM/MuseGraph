@@ -22,7 +22,7 @@ const colorClasses = computed(() => {
     success: 'bg-emerald-900/80 border-emerald-700 text-emerald-100',
     error: 'bg-red-900/80 border-red-700 text-red-100',
     warning: 'bg-amber-900/80 border-amber-700 text-amber-100',
-    info: 'bg-blue-900/80 border-blue-700 text-blue-100',
+    info: 'bg-stone-900/80 border-stone-700 text-stone-100',
   }
   return colors[props.type]
 })
@@ -32,7 +32,7 @@ const iconColor = computed(() => {
     success: 'text-emerald-400',
     error: 'text-red-400',
     warning: 'text-amber-400',
-    info: 'text-blue-400',
+    info: 'text-stone-300',
   }
   return colors[props.type]
 })

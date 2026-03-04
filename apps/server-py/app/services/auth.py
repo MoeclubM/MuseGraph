@@ -1,28 +1,32 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from passlib.context import CryptContext
+import bcrypt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.user import Session, User, UserGroup
+from app.models.user import Session, User
 from app.redis import redis_client
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    # Truncate to 72 bytes for bcrypt
+    password_bytes = password.encode('utf-8')[:72]
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password_bytes, salt).decode('utf-8')
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    # Truncate to 72 bytes for bcrypt
+    plain_bytes = plain.encode('utf-8')[:72]
+    hashed_bytes = hashed.encode('utf-8')
+    return bcrypt.checkpw(plain_bytes, hashed_bytes)
 
 
 async def create_session(user_id: str, db: AsyncSession) -> str:
     token = uuid.uuid4().hex + uuid.uuid4().hex
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.JWT_EXPIRES_HOURS)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.SESSION_EXPIRES_HOURS)
     session = Session(user_id=user_id, token=token, expires_at=expires_at)
     db.add(session)
     await db.flush()
@@ -30,7 +34,7 @@ async def create_session(user_id: str, db: AsyncSession) -> str:
     await redis_client.set(
         f"session:{token}",
         user_id,
-        ex=settings.JWT_EXPIRES_HOURS * 3600,
+        ex=settings.SESSION_EXPIRES_HOURS * 3600,
     )
     return token
 
@@ -44,27 +48,22 @@ async def delete_session(token: str, db: AsyncSession) -> None:
 
 
 async def register_user(
-    email: str, username: str, password: str, nickname: str | None, db: AsyncSession
+    email: str, password: str, nickname: str, db: AsyncSession
 ) -> User:
-    # Check existing
-    result = await db.execute(select(User).where((User.email == email) | (User.username == username)))
+    normalized_email = email.strip().lower()
+
+    # Check existing email
+    result = await db.execute(select(User).where(User.email == normalized_email))
     existing = result.scalar_one_or_none()
     if existing:
-        field = "email" if existing.email == email else "username"
-        raise ValueError(f"{field} already exists")
+        raise ValueError("email already exists")
 
-    # Get default group (use first() in case multiple are marked default)
-    result = await db.execute(
-        select(UserGroup).where(UserGroup.is_default == True).order_by(UserGroup.created_at)
-    )
-    default_group = result.scalars().first()
+    display_nickname = nickname.strip()
 
     user = User(
-        email=email,
-        username=username,
+        email=normalized_email,
         password_hash=hash_password(password),
-        nickname=nickname or username,
-        group_id=default_group.id if default_group else None,
+        nickname=display_nickname,
     )
     db.add(user)
     await db.flush()

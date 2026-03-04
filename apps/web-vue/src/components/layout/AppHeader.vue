@@ -1,23 +1,53 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { getBalance } from '@/api/billing'
 import {
   LayoutDashboard,
+  FolderOpen,
   CreditCard,
   LogOut,
   Shield,
   Wallet,
   ChevronDown,
-  User,
 } from 'lucide-vue-next'
+import ThemeModeSwitch from './ThemeModeSwitch.vue'
+import Button from '@/components/ui/Button.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const showUserMenu = ref(false)
+const balanceLoading = ref(false)
+const menuBalance = ref<number | null>(null)
+const displayName = computed(() => authStore.user?.nickname || authStore.user?.email || 'User')
+const displayInitial = computed(() => displayName.value.charAt(0).toUpperCase())
+const displayBalance = computed(() => {
+  if (menuBalance.value !== null) return menuBalance.value
+  return authStore.user?.balance || 0
+})
+
+function formatUsd(value: number): string {
+  return `$${Number(value || 0).toFixed(2)}`
+}
+
+async function refreshBalance() {
+  if (!authStore.isAuthenticated) return
+  balanceLoading.value = true
+  try {
+    const data = await getBalance()
+    menuBalance.value = data.balance || 0
+    authStore.setBalance(menuBalance.value)
+  } finally {
+    balanceLoading.value = false
+  }
+}
 
 function toggleMenu() {
   showUserMenu.value = !showUserMenu.value
+  if (showUserMenu.value) {
+    void refreshBalance()
+  }
 }
 
 function closeMenu() {
@@ -30,17 +60,18 @@ function delayedCloseMenu() {
 
 async function handleLogout() {
   await authStore.logout()
+  menuBalance.value = null
   router.push('/login')
 }
 </script>
 
 <template>
-  <header class="sticky top-0 z-40 border-b border-slate-700/50 bg-slate-900/80 backdrop-blur-md">
-    <div class="mx-auto flex h-14 max-w-7xl items-center justify-between px-4 sm:px-6">
+  <header class="sticky top-0 z-40 border-b border-stone-300/80 bg-[#f7f3e8]/95 backdrop-blur-md dark:border-zinc-700/60 dark:bg-zinc-900/90">
+    <div class="flex h-14 w-full items-center justify-between px-2 sm:px-3">
       <div class="flex items-center gap-6">
-        <router-link to="/dashboard" class="flex items-center gap-2 text-lg font-bold text-white">
-          <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
-            <span class="text-sm font-bold">M</span>
+        <router-link to="/dashboard" class="flex items-center gap-2 text-lg font-bold text-stone-800 dark:text-stone-100">
+          <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-600">
+            <span class="text-sm font-bold text-white">M</span>
           </div>
           MuseGraph
         </router-link>
@@ -48,16 +79,24 @@ async function handleLogout() {
         <nav v-if="authStore.isAuthenticated" class="hidden sm:flex items-center gap-1">
           <router-link
             to="/dashboard"
-            class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
-            active-class="bg-slate-800 text-white"
+            class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-stone-600 hover:bg-stone-200 hover:text-stone-900 transition-colors dark:text-stone-300 dark:hover:bg-zinc-800 dark:hover:text-stone-100"
+            active-class="bg-stone-200 text-stone-900 dark:bg-zinc-800 dark:text-stone-100"
           >
             <LayoutDashboard class="w-4 h-4" />
             Dashboard
           </router-link>
           <router-link
+            to="/projects"
+            class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-stone-600 hover:bg-stone-200 hover:text-stone-900 transition-colors dark:text-stone-300 dark:hover:bg-zinc-800 dark:hover:text-stone-100"
+            active-class="bg-stone-200 text-stone-900 dark:bg-zinc-800 dark:text-stone-100"
+          >
+            <FolderOpen class="w-4 h-4" />
+            Projects
+          </router-link>
+          <router-link
             to="/pricing"
-            class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
-            active-class="bg-slate-800 text-white"
+            class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-stone-600 hover:bg-stone-200 hover:text-stone-900 transition-colors dark:text-stone-300 dark:hover:bg-zinc-800 dark:hover:text-stone-100"
+            active-class="bg-stone-200 text-stone-900 dark:bg-zinc-800 dark:text-stone-100"
           >
             <CreditCard class="w-4 h-4" />
             Pricing
@@ -65,18 +104,23 @@ async function handleLogout() {
         </nav>
       </div>
 
-      <div v-if="authStore.isAuthenticated" class="relative">
-        <button
-          class="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
+      <div v-if="authStore.isAuthenticated" class="flex items-center gap-2">
+        <ThemeModeSwitch />
+
+        <div class="relative">
+        <Button
+          variant="ghost"
+          size="sm"
+          class="h-auto px-3 py-1.5 text-sm text-stone-700 dark:text-stone-300"
           @click="toggleMenu"
           @blur="delayedCloseMenu"
         >
-          <div class="flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 text-xs font-medium text-white">
-            {{ authStore.user?.username?.charAt(0)?.toUpperCase() || 'U' }}
+          <div class="flex h-7 w-7 items-center justify-center rounded-full bg-amber-600 text-xs font-medium text-white">
+            {{ displayInitial }}
           </div>
-          <span class="hidden sm:inline">{{ authStore.user?.nickname || authStore.user?.username }}</span>
+          <span class="hidden sm:inline">{{ displayName }}</span>
           <ChevronDown class="w-4 h-4" />
-        </button>
+        </Button>
 
         <Transition
           enter-active-class="transition-all duration-150"
@@ -86,17 +130,23 @@ async function handleLogout() {
         >
           <div
             v-if="showUserMenu"
-            class="absolute right-0 mt-1 w-48 rounded-lg border border-slate-700 bg-slate-800 py-1 shadow-xl"
+            class="absolute right-0 mt-1 w-48 rounded-lg border border-stone-300 bg-[#fbf7ef] py-1 shadow-xl dark:border-zinc-700 dark:bg-zinc-800"
           >
-            <div class="px-3 py-2 border-b border-slate-700">
-              <p class="text-sm font-medium text-slate-200">{{ authStore.user?.username }}</p>
-              <p class="text-xs text-slate-400">{{ authStore.user?.email }}</p>
+            <div class="px-3 py-2 border-b border-stone-300 dark:border-zinc-700">
+              <p class="text-sm font-medium text-stone-800 dark:text-stone-200">{{ displayName }}</p>
+              <p class="text-xs text-stone-500 dark:text-stone-400">{{ authStore.user?.email }}</p>
+            </div>
+            <div class="px-3 py-2 border-b border-stone-300 dark:border-zinc-700">
+              <p class="text-[11px] uppercase tracking-wide text-stone-500 dark:text-zinc-400">Balance</p>
+              <p class="text-sm font-semibold text-stone-800 dark:text-stone-100">
+                {{ balanceLoading ? 'Loading...' : formatUsd(displayBalance) }}
+              </p>
             </div>
 
             <router-link
               v-if="authStore.isAdmin"
               to="/admin"
-              class="flex items-center gap-2 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white"
+              class="flex items-center gap-2 px-3 py-2 text-sm text-stone-700 hover:bg-stone-200 hover:text-stone-900 dark:text-stone-300 dark:hover:bg-zinc-700 dark:hover:text-stone-100"
               @click="closeMenu"
             >
               <Shield class="w-4 h-4" />
@@ -105,34 +155,38 @@ async function handleLogout() {
 
             <router-link
               to="/recharge"
-              class="flex items-center gap-2 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white"
+              class="flex items-center gap-2 px-3 py-2 text-sm text-stone-700 hover:bg-stone-200 hover:text-stone-900 dark:text-stone-300 dark:hover:bg-zinc-700 dark:hover:text-stone-100"
               @click="closeMenu"
             >
               <Wallet class="w-4 h-4" />
               Recharge
             </router-link>
 
-            <button
-              class="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-slate-700 hover:text-red-300"
+            <Button
+              variant="ghost"
+              size="sm"
+              class="h-auto w-full justify-start px-3 py-2 text-sm text-red-600 hover:bg-stone-200 hover:text-red-700 dark:text-red-400 dark:hover:bg-zinc-700 dark:hover:text-red-300"
               @click="handleLogout"
             >
               <LogOut class="w-4 h-4" />
               Logout
-            </button>
+            </Button>
           </div>
         </Transition>
+        </div>
       </div>
 
       <div v-else class="flex items-center gap-2">
+        <ThemeModeSwitch />
         <router-link
           to="/login"
-          class="rounded-lg px-3 py-1.5 text-sm text-slate-300 hover:text-white transition-colors"
+          class="rounded-lg px-3 py-1.5 text-sm text-stone-700 hover:text-stone-900 transition-colors dark:text-stone-300 dark:hover:text-stone-100"
         >
           Sign In
         </router-link>
         <router-link
           to="/register"
-          class="rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 transition-colors"
+          class="rounded-lg bg-amber-600 px-3 py-1.5 text-sm text-white hover:bg-amber-700 transition-colors"
         >
           Sign Up
         </router-link>

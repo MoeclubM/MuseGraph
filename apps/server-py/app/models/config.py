@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,7 +17,7 @@ class AIProviderConfig(Base):
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     api_key: Mapped[str] = mapped_column(String(500), nullable=False)
     base_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    models: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    models: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -29,22 +29,12 @@ class PricingRule(Base):
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
     model: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
-    input_price: Mapped[float] = mapped_column(Numeric(10, 6), nullable=False)
-    output_price: Mapped[float] = mapped_column(Numeric(10, 6), nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-
-class ModelPermission(Base):
-    __tablename__ = "model_permissions"
-    __table_args__ = (UniqueConstraint("model", "group_id", name="uq_model_permissions_model_group"),)
-
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
-    model: Mapped[str] = mapped_column(String(100), nullable=False)
-    group_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
-    daily_limit: Mapped[int] = mapped_column(Integer, default=0)
-    monthly_limit: Mapped[int] = mapped_column(Integer, default=0)
+    # TOKEN: price per `token_unit` tokens; REQUEST: fixed price per request
+    billing_mode: Mapped[str] = mapped_column(String(20), default="TOKEN", nullable=False)
+    input_price: Mapped[float] = mapped_column(Numeric(10, 6), default=0, nullable=False)
+    output_price: Mapped[float] = mapped_column(Numeric(10, 6), default=0, nullable=False)
+    token_unit: Mapped[int] = mapped_column(Integer, default=1_000_000, nullable=False)
+    request_price: Mapped[float] = mapped_column(Numeric(10, 6), default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
