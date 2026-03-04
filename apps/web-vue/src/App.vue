@@ -11,7 +11,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-900 text-slate-100">
+  <div class="min-h-screen bg-[#f7f3e8] text-stone-900 dark:bg-zinc-900 dark:text-zinc-100">
     <router-view />
     <ToastContainer />
   </div>

@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import Input from '@/components/ui/Input.vue'
 import Button from '@/components/ui/Button.vue'
+import ThemeModeSwitch from '@/components/layout/ThemeModeSwitch.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -35,14 +36,17 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-slate-900 px-4">
-    <div class="w-full max-w-sm">
+  <div class="relative flex min-h-screen items-center justify-center bg-[#f7f3e8] px-4 dark:bg-zinc-950">
+    <div class="absolute right-4 top-4">
+      <ThemeModeSwitch />
+    </div>
+    <div class="w-full max-w-sm rounded-2xl border border-stone-300 bg-[#fbf7ef] p-5 shadow-lg sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/90">
       <div class="mb-8 text-center">
-        <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600">
+        <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-600">
           <span class="text-xl font-bold text-white">M</span>
         </div>
-        <h1 class="text-2xl font-bold text-white">Welcome back</h1>
-        <p class="mt-1 text-sm text-slate-400">Sign in to your MuseGraph account</p>
+        <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Welcome back</h1>
+        <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Sign in to your MuseGraph account</p>
       </div>
 
       <form class="space-y-4" @submit.prevent="handleLogin">
@@ -71,10 +75,16 @@ async function handleLogin() {
         </Button>
       </form>
 
-      <p class="mt-6 text-center text-sm text-slate-400">
+      <p class="mt-6 text-center text-sm text-stone-500 dark:text-stone-400">
         Don't have an account?
-        <router-link to="/register" class="text-blue-400 hover:text-blue-300 font-medium">
+        <router-link to="/register" class="font-medium text-amber-700 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300">
           Sign up
+        </router-link>
+      </p>
+      <p class="mt-3 text-center text-xs text-stone-500 dark:text-stone-400">
+        Admin?
+        <router-link to="/admin/login" class="font-medium text-amber-700 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300">
+          Sign in here
         </router-link>
       </p>
     </div>

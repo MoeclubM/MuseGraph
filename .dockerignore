@@ -1,24 +1,40 @@
+.git
+.gitignore
+.dockerignore
+
+# JS/TS build artifacts
 node_modules
+.pnpm-store
+.turbo
 .next
 dist
-.turbo
+build
 *.tsbuildinfo
-.git
+coverage
+
+# Python build/test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Local env and logs
 .env
 .env.local
 .env.*.local
-coverage
 *.log
-.DS_Store
-Thumbs.db
+
+# Local debug/temp artifacts
+.playwright-mcp
+tmp_*.json
+UsersQwQDocumentsGitHubMuseGraphtmp_ops.json
+nul
+*.output
+
+# IDE / OS
 .idea
 .vscode
-nul
-target
-apps/server-rust/target
-*.md
-docker/*.Dockerfile
-docker/docker-compose*.yml
-.dockerignore
-README.md
-*.output
+.DS_Store
+Thumbs.db

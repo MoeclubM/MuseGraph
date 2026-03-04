@@ -14,12 +14,10 @@ import * as authApi from '@/api/auth'
 const mockUser = {
   id: 'user-1',
   email: 'test@example.com',
-  username: 'testuser',
   nickname: 'Test',
   avatar: null,
   balance: 0,
-  role: 'USER' as const,
-  group_id: null,
+  is_admin: false,
   status: 'ACTIVE' as const,
   created_at: '2024-01-01T00:00:00Z',
 }
@@ -189,9 +187,9 @@ describe('Auth Store', () => {
   })
 
   describe('isAdmin', () => {
-    it('should return true when user role is ADMIN', async () => {
+    it('should return true when user is admin', async () => {
       const adminResponse = {
-        user: { ...mockUser, role: 'ADMIN' as const },
+        user: { ...mockUser, is_admin: true },
         token: 'admin-token',
       }
       vi.mocked(authApi.login).mockResolvedValue(adminResponse)
@@ -202,7 +200,7 @@ describe('Auth Store', () => {
       expect(store.isAdmin).toBe(true)
     })
 
-    it('should return false when user role is USER', async () => {
+    it('should return false when user is not admin', async () => {
       vi.mocked(authApi.login).mockResolvedValue(mockAuthResponse)
 
       const store = useAuthStore()

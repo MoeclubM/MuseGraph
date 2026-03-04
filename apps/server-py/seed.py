@@ -17,92 +17,24 @@ async def seed():
     async with async_session() as db:
         # Check if already seeded
         from sqlalchemy import select, func
-        count = (await db.execute(select(func.count(UserGroup.id)))).scalar()
+        count = (await db.execute(select(func.count(User.id)))).scalar()
         if count and count > 0:
             print("Database already seeded. Skipping.")
             return
 
         print("Seeding database...")
 
-        # 1. User Groups
-        free_group = UserGroup(
-            id=str(uuid.uuid4()),
-            name="free",
-            display_name="Free",
-            description="Free tier with basic features",
-            color="#6B7280",
-            icon="user",
-            allowed_models=["gpt-4o-mini"],
-            quotas={"daily_requests": 20, "monthly_requests": 200},
-            features={"max_projects": 5, "export": False, "graph": False},
-            price=Decimal("0"),
-            sort_order=0,
-            is_active=True,
-            is_default=True,
-        )
-        basic_group = UserGroup(
-            id=str(uuid.uuid4()),
-            name="basic",
-            display_name="Basic",
-            description="Basic plan with more features",
-            color="#3B82F6",
-            icon="star",
-            allowed_models=["gpt-4o-mini", "gpt-4o"],
-            quotas={"daily_requests": 100, "monthly_requests": 2000},
-            features={"max_projects": 20, "export": True, "graph": True},
-            price=Decimal("9.99"),
-            sort_order=1,
-            is_active=True,
-            is_default=False,
-        )
-        pro_group = UserGroup(
-            id=str(uuid.uuid4()),
-            name="pro",
-            display_name="Pro",
-            description="Professional plan with all features",
-            color="#8B5CF6",
-            icon="crown",
-            allowed_models=["gpt-4o-mini", "gpt-4o", "claude-3-5-sonnet-20241022"],
-            quotas={"daily_requests": 500, "monthly_requests": 10000},
-            features={"max_projects": -1, "export": True, "graph": True},
-            price=Decimal("29.99"),
-            sort_order=2,
-            is_active=True,
-            is_default=False,
-        )
-        enterprise_group = UserGroup(
-            id=str(uuid.uuid4()),
-            name="enterprise",
-            display_name="Enterprise",
-            description="Enterprise plan with unlimited access",
-            color="#F59E0B",
-            icon="building",
-            allowed_models=["gpt-4o-mini", "gpt-4o", "claude-3-5-sonnet-20241022", "claude-3-opus-20240229"],
-            quotas={"daily_requests": -1, "monthly_requests": -1},
-            features={"max_projects": -1, "export": True, "graph": True, "priority_support": True},
-            price=Decimal("99.99"),
-            sort_order=3,
-            is_active=True,
-            is_default=False,
-        )
-        db.add_all([free_group, basic_group, pro_group, enterprise_group])
-        await db.flush()
-        print("  Created user groups")
-
-        # 2. Optional admin user (requires explicit env vars)
+        # 1. Optional admin user (requires explicit email/password env vars)
         if (
             settings.SEED_ADMIN_EMAIL
-            and settings.SEED_ADMIN_USERNAME
             and settings.SEED_ADMIN_PASSWORD
         ):
             admin_user = User(
                 id=str(uuid.uuid4()),
                 email=settings.SEED_ADMIN_EMAIL,
-                username=settings.SEED_ADMIN_USERNAME,
                 password_hash=hash_password(settings.SEED_ADMIN_PASSWORD),
                 nickname=settings.SEED_ADMIN_NICKNAME or "Administrator",
-                role="ADMIN",
-                group_id=enterprise_group.id,
+                is_admin=True,
                 balance=Decimal("9999"),
                 status="ACTIVE",
             )
@@ -110,57 +42,43 @@ async def seed():
             await db.flush()
             print(f"  Created admin user ({settings.SEED_ADMIN_EMAIL})")
         else:
-            print("  Skipped admin user creation (set SEED_ADMIN_* env vars to enable)")
+            print("  Skipped admin user creation (set SEED_ADMIN_EMAIL + SEED_ADMIN_PASSWORD to enable)")
 
-        # 3. Plans
-        plans = [
-            Plan(
-                name="basic_monthly", display_name="Basic Monthly",
-                description="Basic plan billed monthly",
-                target_group_id=basic_group.id,
-                price=Decimal("9.99"), original_price=Decimal("14.99"),
-                duration=30, is_active=True, sort_order=0,
-                features={"max_projects": 20, "export": True, "graph": True},
-                quotas={"daily_requests": 100, "monthly_requests": 2000},
-                allowed_models=["gpt-4o-mini", "gpt-4o"],
-            ),
-            Plan(
-                name="pro_monthly", display_name="Pro Monthly",
-                description="Pro plan billed monthly",
-                target_group_id=pro_group.id,
-                price=Decimal("29.99"), original_price=Decimal("39.99"),
-                duration=30, is_active=True, sort_order=1,
-                features={"max_projects": -1, "export": True, "graph": True},
-                quotas={"daily_requests": 500, "monthly_requests": 10000},
-                allowed_models=["gpt-4o-mini", "gpt-4o", "claude-3-5-sonnet-20241022"],
-            ),
-            Plan(
-                name="enterprise_monthly", display_name="Enterprise Monthly",
-                description="Enterprise plan billed monthly",
-                target_group_id=enterprise_group.id,
-                price=Decimal("99.99"),
-                duration=30, is_active=True, sort_order=2,
-                features={"max_projects": -1, "export": True, "graph": True, "priority_support": True},
-                quotas={"daily_requests": -1, "monthly_requests": -1},
-                allowed_models=["gpt-4o-mini", "gpt-4o", "claude-3-5-sonnet-20241022", "claude-3-opus-20240229"],
-            ),
-        ]
-        db.add_all(plans)
-        await db.flush()
-        print("  Created plans")
-
-        # 4. Pricing Rules
+        # 2. Pricing Rules
         pricing_rules = [
-            PricingRule(model="gpt-4o-mini", input_price=0.00015, output_price=0.0006, is_active=True),
-            PricingRule(model="gpt-4o", input_price=0.0025, output_price=0.01, is_active=True),
-            PricingRule(model="claude-3-5-sonnet-20241022", input_price=0.003, output_price=0.015, is_active=True),
-            PricingRule(model="claude-3-opus-20240229", input_price=0.015, output_price=0.075, is_active=True),
+            PricingRule(
+                model="gpt-4o-mini",
+                billing_mode="TOKEN",
+                input_price=0.15,
+                output_price=0.6,
+                token_unit=1_000_000,
+                request_price=0,
+                is_active=True,
+            ),
+            PricingRule(
+                model="gpt-4o",
+                billing_mode="TOKEN",
+                input_price=2.5,
+                output_price=10,
+                token_unit=1_000_000,
+                request_price=0,
+                is_active=True,
+            ),
+            PricingRule(
+                model="claude-3-5-sonnet-20241022",
+                billing_mode="TOKEN",
+                input_price=3,
+                output_price=15,
+                token_unit=1_000_000,
+                request_price=0,
+                is_active=True,
+            ),
         ]
         db.add_all(pricing_rules)
         await db.flush()
         print("  Created pricing rules")
 
-        # 5. Prompt Templates
+        # 3. Prompt Templates
         templates = [
             PromptTemplate(
                 name="create_default", type="CREATE",

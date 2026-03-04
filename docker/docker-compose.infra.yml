@@ -19,6 +19,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: musegraph-redis
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
     ports:
       - "16379:6379"
     volumes:

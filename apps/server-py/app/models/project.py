@@ -18,7 +18,6 @@ class TextProject(Base):
     user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     simulation_requirement: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     component_models: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     ontology_schema: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
@@ -29,6 +28,34 @@ class TextProject(Base):
 
     user: Mapped["User"] = relationship("User", back_populates="projects")
     operations: Mapped[list["TextOperation"]] = relationship("TextOperation", back_populates="project", cascade="all, delete-orphan")
+    chapters: Mapped[list["ProjectChapter"]] = relationship(
+        "ProjectChapter",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        order_by="ProjectChapter.order_index",
+    )
+
+
+class ProjectChapter(Base):
+    __tablename__ = "text_project_chapters"
+    __table_args__ = (
+        Index("ix_text_project_chapters_project_id", "project_id"),
+        Index("ix_text_project_chapters_project_order", "project_id", "order_index"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("text_projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="Main Draft")
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    order_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    project: Mapped["TextProject"] = relationship("TextProject", back_populates="chapters")
 
 
 class TextOperation(Base):

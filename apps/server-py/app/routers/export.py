@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.dependencies import get_current_user
@@ -22,11 +23,15 @@ async def export(
     if format not in ("txt", "json", "md", "html"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported format")
 
-    result = await db.execute(select(TextProject).where(TextProject.id == project_id))
+    result = await db.execute(
+        select(TextProject)
+        .where(TextProject.id == project_id)
+        .options(selectinload(TextProject.chapters))
+    )
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    if project.user_id != user.id and user.role != "ADMIN":
+    if project.user_id != user.id and not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     try:

@@ -4,6 +4,7 @@ node_modules
 
 # Build outputs
 dist
+build
 .next
 .turbo
 *.tsbuildinfo
@@ -47,16 +48,25 @@ pnpm-debug.log*
 
 # Test
 coverage
+playwright-report
+test-results
 
 # Prisma
 apps/server/prisma/*.db
 apps/server/prisma/*.db-journal
-/apps/server-py/alembic/__pycache__
-/apps/server-py/__pycache__
-/apps/server-py/alembic/versions/__pycache__
-/apps/server-py/app/__pycache__
-/apps/server-py/app/models/__pycache__
-/apps/server-py/app/routers/__pycache__
-/apps/server-py/app/schemas/__pycache__
-/apps/server-py/app/services/__pycache__
-/apps/server-py/tests/__pycache__
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.musegraph/
+.coverage
+htmlcov/
+
+# Local audit/tool artifacts
+.codex-secret-scan/
+.golutra/
+apps/server-py/coverage.xml

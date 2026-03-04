@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import * as d3 from 'd3'
 import type { GraphData, GraphNode, GraphEdge } from '@/types'
 
@@ -15,18 +15,36 @@ const container = ref<HTMLDivElement | null>(null)
 const selectedNode = ref<GraphNode | null>(null)
 
 const NODE_COLORS: Record<string, string> = {
-  PERSON: '#3b82f6',
-  PLACE: '#10b981',
-  ORGANIZATION: '#f59e0b',
-  CONCEPT: '#8b5cf6',
-  EVENT: '#ef4444',
-  OBJECT: '#06b6d4',
-  DATE: '#ec4899',
-  DEFAULT: '#64748b',
+  Entity: '#a16207',
+  EntityType: '#0f766e',
+  TextSummary: '#be185d',
+  DocumentChunk: '#6d28d9',
+  TextDocument: '#78716c',
+  PERSON: '#2563eb',
+  PLACE: '#0f766e',
+  ORGANIZATION: '#c2410c',
+  CONCEPT: '#7c3aed',
+  EVENT: '#dc2626',
+  OBJECT: '#0891b2',
+  DATE: '#db2777',
+  DEFAULT: '#a8a29e',
+}
+
+function normalizeNodeType(type: string): string {
+  const raw = String(type || '').trim()
+  if (!raw) return 'Entity'
+  const key = raw.replace(/[^a-zA-Z0-9_]/g, '').toLowerCase()
+  if (key === 'entitytype') return 'EntityType'
+  if (key === 'textsummary' || key === 'summary') return 'TextSummary'
+  if (key === 'documentchunk' || key === 'chunk') return 'DocumentChunk'
+  if (key === 'textdocument' || key === 'document') return 'TextDocument'
+  if (key === 'entity') return 'Entity'
+  return raw
 }
 
 function getNodeColor(type: string): string {
-  return NODE_COLORS[type?.toUpperCase()] || NODE_COLORS.DEFAULT
+  const normalized = normalizeNodeType(type)
+  return NODE_COLORS[normalized] || NODE_COLORS[normalized.toUpperCase()] || NODE_COLORS.DEFAULT
 }
 
 const KNOWN_NODE_KEYS = new Set(['id', 'label', 'type', 'x', 'y', 'fx', 'fy', 'vx', 'vy', 'index'])
@@ -34,6 +52,21 @@ const KNOWN_NODE_KEYS = new Set(['id', 'label', 'type', 'x', 'y', 'fx', 'fy', 'v
 function extraProps(node: GraphNode): [string, any][] {
   return Object.entries(node).filter(([key]) => !KNOWN_NODE_KEYS.has(key))
 }
+
+const legendItems = computed(() => {
+  const counts = new Map<string, number>()
+  for (const node of props.data?.nodes || []) {
+    const type = normalizeNodeType(node.type)
+    counts.set(type, (counts.get(type) || 0) + 1)
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([type, count]) => ({
+      type,
+      count,
+      color: getNodeColor(type),
+    }))
+})
 
 let simulation: d3.Simulation<any, any> | null = null
 
@@ -45,6 +78,10 @@ function renderGraph() {
 
   const width = el.clientWidth
   const height = el.clientHeight
+  const isDark = document.documentElement.classList.contains('dark')
+  const edgeColor = isDark ? '#71717a' : '#a8a29e'
+  const labelColor = isDark ? '#a1a1aa' : '#57534e'
+  const nodeTextColor = isDark ? '#e4e4e7' : '#44403c'
 
   if (props.data.nodes.length === 0) return
 
@@ -68,7 +105,7 @@ function renderGraph() {
     .attr('orient', 'auto')
     .append('path')
     .attr('d', 'M0,-5L10,0L0,5')
-    .attr('fill', '#475569')
+    .attr('fill', edgeColor)
 
   const g = svg.append('g')
 
@@ -117,7 +154,7 @@ function renderGraph() {
     .selectAll('line')
     .data(links)
     .join('line')
-    .attr('stroke', '#475569')
+    .attr('stroke', edgeColor)
     .attr('stroke-width', 1.5)
     .attr('marker-end', 'url(#arrowhead)')
 
@@ -129,7 +166,7 @@ function renderGraph() {
     .join('text')
     .text((d: any) => d.label || '')
     .attr('font-size', '9px')
-    .attr('fill', '#64748b')
+    .attr('fill', labelColor)
     .attr('text-anchor', 'middle')
     .attr('dy', -4)
 
@@ -170,7 +207,7 @@ function renderGraph() {
     .append('text')
     .text((d: any) => d.label || d.id)
     .attr('font-size', '11px')
-    .attr('fill', '#e2e8f0')
+    .attr('fill', nodeTextColor)
     .attr('text-anchor', 'middle')
     .attr('dy', -18)
 
@@ -213,19 +250,19 @@ onUnmounted(() => {
 
 <template>
   <div class="relative w-full h-full min-h-[200px]">
-    <div ref="container" class="w-full h-full bg-slate-900 rounded-lg border border-slate-700/50 overflow-hidden" />
+    <div ref="container" class="w-full h-full bg-stone-100 rounded-lg border border-stone-300/80 overflow-hidden dark:bg-zinc-900 dark:border-zinc-700/50" />
 
     <!-- Legend -->
-    <div class="absolute top-3 left-3 bg-slate-800/90 backdrop-blur-sm rounded-lg border border-slate-700/50 p-3">
-      <p class="text-xs font-medium text-slate-400 mb-2">Entity Types</p>
+    <div class="absolute top-3 left-3 bg-stone-50/95 backdrop-blur-sm rounded-lg border border-stone-300/80 p-3 dark:bg-zinc-800/90 dark:border-zinc-700/60">
+      <p class="text-xs font-medium text-stone-500 dark:text-zinc-400 mb-2">Node Types</p>
       <div class="space-y-1">
         <div
-          v-for="(color, type) in NODE_COLORS"
-          :key="type"
+          v-for="item in legendItems"
+          :key="item.type"
           class="flex items-center gap-2"
         >
-          <span class="w-3 h-3 rounded-full" :style="{ backgroundColor: color }" />
-          <span class="text-xs text-slate-400">{{ type }}</span>
+          <span class="w-3 h-3 rounded-full" :style="{ backgroundColor: item.color }" />
+          <span class="text-xs text-stone-600 dark:text-zinc-400">{{ item.type }} ({{ item.count }})</span>
         </div>
       </div>
     </div>
@@ -239,7 +276,7 @@ onUnmounted(() => {
     >
       <div
         v-if="selectedNode"
-        class="absolute bottom-3 left-3 right-3 bg-slate-800/90 backdrop-blur-sm rounded-lg border border-slate-700/50 p-4"
+        class="absolute bottom-3 left-3 right-3 bg-stone-50/95 backdrop-blur-sm rounded-lg border border-stone-300/80 p-4 dark:bg-zinc-800/90 dark:border-zinc-700/60"
       >
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-2">
@@ -247,13 +284,13 @@ onUnmounted(() => {
               class="w-3 h-3 rounded-full"
               :style="{ backgroundColor: getNodeColor(selectedNode.type) }"
             />
-            <span class="text-sm font-medium text-slate-200">{{ selectedNode.label }}</span>
-            <span class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-slate-400">
+            <span class="text-sm font-medium text-stone-700 dark:text-zinc-200">{{ selectedNode.label }}</span>
+            <span class="text-xs px-1.5 py-0.5 rounded bg-stone-200 text-stone-600 dark:bg-zinc-700 dark:text-zinc-400">
               {{ selectedNode.type }}
             </span>
           </div>
           <button
-            class="text-slate-500 hover:text-slate-300 transition-colors"
+            class="text-stone-500 hover:text-stone-700 dark:text-zinc-500 dark:hover:text-zinc-300 transition-colors"
             @click="selectedNode = null"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -263,12 +300,12 @@ onUnmounted(() => {
         </div>
         <div v-if="extraProps(selectedNode).length > 0" class="space-y-1">
           <div
-            v-for="[key, value] in extraProps(selectedNode)"
-            :key="key"
-            class="flex gap-2 text-xs"
-          >
-            <span class="text-slate-500">{{ key }}:</span>
-            <span class="text-slate-300">{{ value }}</span>
+          v-for="[key, value] in extraProps(selectedNode)"
+          :key="key"
+          class="flex gap-2 text-xs"
+        >
+            <span class="text-stone-500 dark:text-zinc-500">{{ key }}:</span>
+            <span class="text-stone-700 dark:text-zinc-300">{{ value }}</span>
           </div>
         </div>
       </div>

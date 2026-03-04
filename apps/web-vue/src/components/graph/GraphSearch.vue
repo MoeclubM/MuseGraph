@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Search, Loader2 } from 'lucide-vue-next'
+import { Search } from 'lucide-vue-next'
 import { searchGraph } from '@/api/graph'
+import Input from '@/components/ui/Input.vue'
+import Select from '@/components/ui/Select.vue'
+import Checkbox from '@/components/ui/Checkbox.vue'
+import Button from '@/components/ui/Button.vue'
+import Alert from '@/components/ui/Alert.vue'
 
 const props = defineProps<{
   projectId: string
@@ -13,6 +18,9 @@ const results = ref<any[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const hasSearched = ref(false)
+const useReranker = ref(false)
+const rerankerTopN = ref<number>(6)
+const rerankerModel = ref('')
 
 const searchTypes = [
   { value: 'INSIGHTS', label: 'Insights' },
@@ -40,7 +48,13 @@ async function handleSearch() {
   error.value = null
   hasSearched.value = true
   try {
-    results.value = await searchGraph(props.projectId, query.value, searchType.value)
+    const topN = Number(rerankerTopN.value || 0)
+    results.value = await searchGraph(props.projectId, query.value, {
+      searchType: searchType.value,
+      useReranker: useReranker.value,
+      rerankerModel: rerankerModel.value.trim() || undefined,
+      rerankerTopN: useReranker.value ? Math.max(1, Math.min(50, topN || 6)) : undefined,
+    })
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.response?.data?.message || e.message || 'Search failed'
     results.value = []
@@ -54,52 +68,78 @@ async function handleSearch() {
   <div class="flex flex-col gap-3">
     <div class="flex gap-2">
       <div class="relative flex-1">
-        <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-        <input
+        <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-500 dark:text-zinc-500" />
+        <Input
           v-model="query"
           type="text"
           placeholder="Search knowledge graph..."
-          class="w-full rounded-lg border border-slate-700 bg-slate-800 pl-9 pr-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          input-class="pl-9 pr-3"
           @keydown.enter="handleSearch"
         />
       </div>
-      <select
+      <Select
         v-model="searchType"
-        class="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-300 focus:border-blue-500 focus:outline-none"
+        class="w-44"
       >
         <option v-for="st in searchTypes" :key="st.value" :value="st.value">
           {{ st.label }}
         </option>
-      </select>
-      <button
-        class="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
+      </Select>
+      <Button
         :disabled="loading || !query.trim()"
+        :loading="loading"
         @click="handleSearch"
       >
-        <Loader2 v-if="loading" class="w-4 h-4 animate-spin" />
-        <span v-else>Search</span>
-      </button>
+        Search
+      </Button>
     </div>
 
-    <div v-if="error" class="rounded-lg bg-red-900/30 border border-red-800 px-3 py-2 text-sm text-red-300">
-      {{ error }}
+    <div class="flex flex-wrap items-center gap-3 rounded-md border border-stone-300/70 bg-stone-100/70 px-3 py-2 dark:border-zinc-700/60 dark:bg-zinc-800/40">
+      <label class="inline-flex items-center gap-2 text-xs text-stone-700 dark:text-zinc-300">
+        <Checkbox v-model="useReranker" />
+        Enable reranker
+      </label>
+      <Input
+        v-model.number="rerankerTopN"
+        type="number"
+        :min="1"
+        :max="50"
+        class="w-24"
+        placeholder="Top N"
+      />
+      <Input
+        v-model="rerankerModel"
+        type="text"
+        class="min-w-[180px] flex-1"
+        placeholder="Optional reranker model (fallback: project graph_reranker)"
+      />
     </div>
+
+    <Alert v-if="error" variant="destructive">
+      {{ error }}
+    </Alert>
 
     <div v-if="hasSearched && !loading && results.length === 0 && !error" class="text-center py-6">
-      <p class="text-sm text-slate-500">No results found</p>
+      <p class="text-sm text-stone-500 dark:text-zinc-500">No results found</p>
     </div>
 
     <div v-if="results.length > 0" class="space-y-2 max-h-80 overflow-y-auto">
       <div
         v-for="(result, idx) in results"
         :key="idx"
-        class="rounded-lg border border-slate-700/50 bg-slate-800/50 p-3"
+        class="rounded-lg border border-stone-300/70 bg-stone-100/70 p-3 dark:border-zinc-700/60 dark:bg-zinc-800/40"
       >
-        <p class="text-sm text-slate-200 whitespace-pre-wrap">
+        <p class="text-sm text-stone-700 dark:text-zinc-200 whitespace-pre-wrap">
           {{ extractText(result) }}
         </p>
         <div v-if="result.score" class="mt-1">
-          <span class="text-xs text-slate-500">Score: {{ result.score.toFixed(3) }}</span>
+          <span class="text-xs text-stone-500 dark:text-zinc-500">Score: {{ result.score.toFixed(3) }}</span>
+        </div>
+        <div v-if="result.reranker_score !== undefined && result.reranker_score !== null" class="mt-1">
+          <span class="text-xs text-amber-700 dark:text-amber-300">
+            Rerank: {{ Number(result.reranker_score).toFixed(3) }}
+            <span v-if="result.reranker_source">({{ result.reranker_source }})</span>
+          </span>
         </div>
       </div>
     </div>

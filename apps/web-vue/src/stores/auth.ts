@@ -8,7 +8,7 @@ export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(null)
 
   const isAuthenticated = computed(() => !!token.value)
-  const isAdmin = computed(() => user.value?.role === 'ADMIN')
+  const isAdmin = computed(() => !!user.value?.is_admin)
 
   function init() {
     const savedToken = localStorage.getItem('token')
@@ -36,8 +36,8 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.setItem('user', JSON.stringify(res.user))
   }
 
-  async function register(email: string, username: string, password: string, nickname?: string) {
-    const res = await authApi.register(email, username, password, nickname)
+  async function register(email: string, password: string, nickname: string) {
+    const res = await authApi.register(email, password, nickname)
     token.value = res.token
     user.value = res.user
     localStorage.setItem('token', res.token)
@@ -48,6 +48,15 @@ export const useAuthStore = defineStore('auth', () => {
     const me = await authApi.getMe()
     user.value = me
     localStorage.setItem('user', JSON.stringify(me))
+  }
+
+  function setBalance(balance: number) {
+    if (!user.value) return
+    user.value = {
+      ...user.value,
+      balance,
+    }
+    localStorage.setItem('user', JSON.stringify(user.value))
   }
 
   async function logout() {
@@ -71,6 +80,7 @@ export const useAuthStore = defineStore('auth', () => {
     login,
     register,
     fetchMe,
+    setBalance,
     logout,
   }
 })

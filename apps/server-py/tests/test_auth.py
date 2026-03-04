@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -56,10 +56,10 @@ class TestRegister:
         now = datetime.now(timezone.utc)
 
         def _side_effect_add(obj):
-            if hasattr(obj, "email") and hasattr(obj, "username"):
+            if hasattr(obj, "email") and hasattr(obj, "password_hash"):
                 obj.id = obj.id or "user-test-id"
                 obj.balance = obj.balance or Decimal("0")
-                obj.role = obj.role or "USER"
+                obj.is_admin = bool(getattr(obj, "is_admin", False))
                 obj.status = obj.status or "ACTIVE"
                 obj.created_at = obj.created_at or now
             elif hasattr(obj, "token") and hasattr(obj, "expires_at"):
@@ -83,7 +83,7 @@ class TestRegister:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             resp = await ac.post("/api/auth/register", json={
                 "email": "new@example.com",
-                "username": "newuser",
+                "nickname": "New User",
                 "password": "securepass123",
             })
 
@@ -91,7 +91,7 @@ class TestRegister:
         body = resp.json()
         assert isinstance(body["token"], str) and len(body["token"]) >= 32
         assert body["user"]["email"] == "new@example.com"
-        assert body["user"]["username"] == "newuser"
+        assert body["user"]["nickname"] == "New User"
 
     @pytest.mark.asyncio
     async def test_register_duplicate_email(self):
@@ -100,7 +100,7 @@ class TestRegister:
         mock_db.flush = AsyncMock()
         mock_db.commit = AsyncMock()
         mock_db.rollback = AsyncMock()
-        existing = FakeUser(email="dup@example.com", username="other")
+        existing = FakeUser(email="dup@example.com")
         mock_db.execute = AsyncMock(return_value=_make_scalar_result(existing))
 
         async def _override_get_db():
@@ -112,7 +112,7 @@ class TestRegister:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             resp = await ac.post("/api/auth/register", json={
                 "email": "dup@example.com",
-                "username": "dupuser",
+                "nickname": "Dup",
                 "password": "securepass123",
             })
 
@@ -143,7 +143,6 @@ class TestLogin:
 
         user = FakeUser(
             email="login@example.com",
-            username="loginuser",
             password_hash=hash_password("correctpassword"),
             status="ACTIVE",
         )
@@ -168,12 +167,15 @@ class TestLogin:
 
     @pytest.mark.asyncio
     async def test_login_invalid_credentials(self):
+        from tests.conftest import _bcrypt_mock
+
         mock_db = AsyncMock()
         mock_db.add = MagicMock()
         mock_db.commit = AsyncMock()
         mock_db.rollback = AsyncMock()
 
-        user = FakeUser(email="login@example.com", password_hash=hash_password("correctpassword"))
+        # Use a mock password hash
+        user = FakeUser(email="login@example.com", password_hash="$2b$12$incorrecthash")
         mock_db.execute = AsyncMock(return_value=_make_scalar_result(user))
 
         async def _override_get_db():
@@ -181,12 +183,18 @@ class TestLogin:
 
         app.dependency_overrides[get_db] = _override_get_db
 
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            resp = await ac.post("/api/auth/login", json={
-                "email": "login@example.com",
-                "password": "wrongpassword",
-            })
+        # Temporarily change bcrypt.checkpw to return False for this test
+        original_checkpw = _bcrypt_mock.checkpw
+        _bcrypt_mock.checkpw = MagicMock(return_value=False)
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                resp = await ac.post("/api/auth/login", json={
+                    "email": "login@example.com",
+                    "password": "wrongpassword",
+                })
+        finally:
+            _bcrypt_mock.checkpw = original_checkpw
 
         assert resp.status_code == 401
         assert resp.json()["detail"] == "Invalid credentials"
@@ -227,5 +235,4 @@ class TestMe:
         body = resp.json()
         assert body["id"] == fake_user.id
         assert body["email"] == fake_user.email
-        assert body["username"] == fake_user.username
-        assert body["role"] == "USER"
+        assert body["is_admin"] is False

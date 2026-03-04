@@ -14,7 +14,7 @@ router = APIRouter()
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest, response: Response, db: AsyncSession = Depends(get_db)):
     try:
-        user = await register_user(body.email, body.username, body.password, body.nickname, db)
+        user = await register_user(body.email, body.password, body.nickname, db)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     token = await create_session(user.id, db)

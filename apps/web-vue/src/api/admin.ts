@@ -1,47 +1,117 @@
 import api from './index'
-import type { StatsResponse, UserListResponse, OrderListResponse, UserGroup, Provider, ModelPermission } from '@/types'
+import type {
+  StatsResponse,
+  UserListResponse,
+  Provider,
+  PricingRule,
+  AdminUser,
+  PaymentConfig,
+  OasisConfig,
+  PaymentOrderListResponse,
+} from '@/types'
+
+interface ProviderMutationPayload {
+  name: string
+  provider: string
+  api_key: string
+  base_url?: string | null
+  is_active?: boolean
+  priority?: number
+}
+
+interface ProviderUpdatePayload {
+  name?: string
+  provider?: string
+  api_key?: string
+  base_url?: string | null
+  is_active?: boolean
+  priority?: number
+}
+
+interface ProviderModelListPayload {
+  provider_id: string
+  models?: string[]
+  embedding_models?: string[]
+}
+
+type ProviderModelKind = 'chat' | 'embedding'
+
+function providerModelPath(providerId: string, kind: ProviderModelKind): string {
+  return kind === 'embedding'
+    ? `/api/admin/providers/${providerId}/embedding-models`
+    : `/api/admin/providers/${providerId}/models`
+}
+
+function normalizeProviderModelList(payload: ProviderModelListPayload, kind: ProviderModelKind): string[] {
+  return kind === 'embedding'
+    ? (payload.embedding_models ?? payload.models ?? [])
+    : (payload.models ?? payload.embedding_models ?? [])
+}
 
 export async function getStats(): Promise<StatsResponse> {
   const { data } = await api.get<StatsResponse>('/api/admin/stats')
   return data
 }
 
-export async function getUsers(page = 1, pageSize = 20): Promise<UserListResponse> {
+export async function getUsers(
+  page = 1,
+  pageSize = 20,
+  filters?: {
+    search?: string
+    is_admin?: boolean
+    status?: 'ACTIVE' | 'SUSPENDED' | 'DELETED'
+  }
+): Promise<UserListResponse> {
   const { data } = await api.get<UserListResponse>('/api/admin/users', {
-    params: { page, page_size: pageSize },
+    params: { page, page_size: pageSize, ...(filters || {}) },
   })
   return data
 }
 
-export async function getGroups(): Promise<UserGroup[]> {
-  const { data } = await api.get<UserGroup[]>('/api/admin/groups')
+export async function createUser(payload: {
+  email: string
+  password: string
+  nickname: string
+  is_admin?: boolean
+  status?: 'ACTIVE' | 'SUSPENDED' | 'DELETED'
+  balance?: number
+}): Promise<AdminUser> {
+  const { data } = await api.post<AdminUser>('/api/admin/users', payload)
   return data
 }
 
-export async function updateUserGroup(userId: string, groupId: string): Promise<void> {
-  await api.post(`/api/admin/groups/user/${userId}`, null, { params: { group_id: groupId } })
-}
-
-export async function getProviders(): Promise<any[]> {
-  const { data } = await api.get('/api/admin/providers')
+export async function updateUser(userId: string, payload: {
+  email?: string
+  nickname?: string
+  is_admin?: boolean
+  status?: 'ACTIVE' | 'SUSPENDED' | 'DELETED'
+  balance?: number
+}): Promise<AdminUser> {
+  const { data } = await api.put<AdminUser>(`/api/admin/users/${userId}`, payload)
   return data
 }
 
-export async function createProvider(provider: {
-  name: string
-  provider: string
-  api_key: string
-  base_url?: string
-  models?: string[]
-  is_active?: boolean
-  priority?: number
-}): Promise<any> {
-  const { data } = await api.post('/api/admin/providers', provider)
+export async function addUserBalance(userId: string, amount: number): Promise<AdminUser> {
+  const { data } = await api.post<AdminUser>(`/api/admin/users/${userId}/balance`, { amount })
   return data
 }
 
-export async function updateProvider(providerId: string, provider: Record<string, any>): Promise<any> {
-  const { data } = await api.put(`/api/admin/providers/${providerId}`, provider)
+export async function deleteUser(userId: string): Promise<void> {
+  await api.delete(`/api/admin/users/${userId}`)
+}
+
+export async function getProviders(): Promise<Provider[]> {
+  const { data } = await api.get<Provider[]>('/api/admin/providers')
+  return data
+}
+
+export async function createProvider(provider: ProviderMutationPayload): Promise<Provider> {
+  const { data } = await api.post<Provider>('/api/admin/providers', provider)
+  return data
+}
+
+export async function updateProvider(providerId: string, provider: ProviderUpdatePayload): Promise<Provider> {
+  const { data } = await api.put<Provider>(`/api/admin/providers/${providerId}`, provider)
   return data
 }
 
@@ -49,123 +119,168 @@ export async function deleteProvider(providerId: string): Promise<void> {
   await api.delete(`/api/admin/providers/${providerId}`)
 }
 
-export async function createGroup(group: {
-  name: string
-  display_name: string
-  description?: string
-  color?: string
-  icon?: string
-  allowed_models?: string[]
-  quotas?: Record<string, any>
-  features?: Record<string, any>
-  price?: number
-  sort_order?: number
-  is_active?: boolean
-  is_default?: boolean
-}): Promise<any> {
-  const { data } = await api.post('/api/admin/groups', group)
-  return data
+export async function discoverProviderModels(providerId: string, persist = false): Promise<{ discovered: string[]; models: string[]; persisted: boolean }> {
+  const { data } = await api.post<{ provider_id: string; provider_name: string; discovered: string[]; models: string[]; persisted: boolean }>(
+    `${providerModelPath(providerId, 'chat')}/discover`,
+    null,
+    { params: { persist } },
+  )
+  return { discovered: data.discovered, models: data.models, persisted: data.persisted }
 }
 
-export async function updateGroup(groupId: string, group: Record<string, any>): Promise<any> {
-  const { data } = await api.put(`/api/admin/groups/${groupId}`, group)
-  return data
+export async function discoverProviderEmbeddingModels(
+  providerId: string,
+  persist = false
+): Promise<{ discovered: string[]; embedding_models: string[]; persisted: boolean }> {
+  const { data } = await api.post<{ provider_id: string; provider_name: string; discovered: string[]; embedding_models?: string[]; models?: string[]; persisted: boolean }>(
+    `${providerModelPath(providerId, 'embedding')}/discover`,
+    null,
+    { params: { persist } },
+  )
+  return {
+    discovered: data.discovered,
+    embedding_models: data.embedding_models ?? data.models ?? [],
+    persisted: data.persisted,
+  }
 }
 
-export async function deleteGroup(groupId: string): Promise<void> {
-  await api.delete(`/api/admin/groups/${groupId}`)
+export async function addProviderModel(providerId: string, model: string): Promise<string[]> {
+  const { data } = await api.post<ProviderModelListPayload>(providerModelPath(providerId, 'chat'), { model })
+  return normalizeProviderModelList(data, 'chat')
 }
 
-export async function createPricingRule(rule: {
-  model: string
-  input_price: number
-  output_price: number
-  is_active?: boolean
-}): Promise<any> {
-  const { data } = await api.post('/api/admin/pricing', rule)
-  return data
-}
-
-export async function updatePricingRule(ruleId: string, rule: Record<string, any>): Promise<any> {
-  const { data } = await api.put(`/api/admin/pricing/${ruleId}`, rule)
-  return data
-}
-
-export async function getOrders(page = 1, pageSize = 20): Promise<OrderListResponse> {
-  const { data } = await api.get<OrderListResponse>('/api/admin/orders', {
-    params: { page, page_size: pageSize },
+export async function removeProviderModel(providerId: string, model: string): Promise<string[]> {
+  const { data } = await api.delete<ProviderModelListPayload>(providerModelPath(providerId, 'chat'), {
+    params: { model },
   })
+  return normalizeProviderModelList(data, 'chat')
+}
+
+export async function getProviderEmbeddingModels(providerId: string): Promise<string[]> {
+  const { data } = await api.get<ProviderModelListPayload>(providerModelPath(providerId, 'embedding'))
+  return normalizeProviderModelList(data, 'embedding')
+}
+
+export async function addProviderEmbeddingModel(providerId: string, model: string): Promise<string[]> {
+  const { data } = await api.post<ProviderModelListPayload>(providerModelPath(providerId, 'embedding'), { model })
+  return normalizeProviderModelList(data, 'embedding')
+}
+
+export async function removeProviderEmbeddingModel(providerId: string, model: string): Promise<string[]> {
+  const { data } = await api.delete<ProviderModelListPayload>(providerModelPath(providerId, 'embedding'), {
+    params: { model },
+  })
+  return normalizeProviderModelList(data, 'embedding')
+}
+
+export async function getPricing(): Promise<PricingRule[]> {
+  const { data } = await api.get<PricingRule[]>('/api/admin/pricing')
   return data
 }
 
-// --- Plans ---
-
-export async function getPlans(): Promise<any[]> {
-  const { data } = await api.get('/api/admin/plans')
-  return data
-}
-
-export async function createPlan(plan: {
-  name: string
-  display_name: string
-  description?: string
-  target_group_id?: string
-  price: number
-  original_price?: number
-  duration: number
-  features?: any
-  quotas?: Record<string, any>
-  allowed_models?: string[]
+export async function createPricing(payload: {
+  model: string
+  billing_mode: 'TOKEN' | 'REQUEST'
+  input_price?: number
+  output_price?: number
+  token_unit?: number
+  request_price?: number
   is_active?: boolean
-  sort_order?: number
-}): Promise<any> {
-  const { data } = await api.post('/api/admin/plans', plan)
+}): Promise<PricingRule> {
+  const { data } = await api.post<PricingRule>('/api/admin/pricing', payload)
   return data
 }
 
-export async function updatePlan(planId: string, plan: Record<string, any>): Promise<any> {
-  const { data } = await api.put(`/api/admin/plans/${planId}`, plan)
+export async function updatePricing(ruleId: string, payload: Partial<PricingRule>): Promise<PricingRule> {
+  const { data } = await api.put<PricingRule>(`/api/admin/pricing/${ruleId}`, payload)
   return data
 }
 
-export async function deletePlan(planId: string): Promise<void> {
-  await api.delete(`/api/admin/plans/${planId}`)
-}
-
-// --- Pricing Rules ---
-
-export async function getPricingRules(): Promise<any[]> {
-  const { data } = await api.get('/api/admin/pricing')
-  return data
-}
-
-export async function deletePricingRule(ruleId: string): Promise<void> {
+export async function deletePricing(ruleId: string): Promise<void> {
   await api.delete(`/api/admin/pricing/${ruleId}`)
 }
 
-// --- Model Permissions ---
-
-export async function getModelPermissions(): Promise<any[]> {
-  const { data } = await api.get('/api/admin/model-permissions')
+export async function getPaymentConfig(): Promise<PaymentConfig> {
+  const { data } = await api.get<PaymentConfig>('/api/admin/payment-config')
   return data
 }
 
-export async function createModelPermission(perm: {
-  model: string
-  group_id: string
-  daily_limit?: number
-  monthly_limit?: number
-  is_active?: boolean
-}): Promise<any> {
-  const { data } = await api.post('/api/admin/model-permissions', perm)
+export async function updatePaymentConfig(payload: {
+  enabled: boolean
+  url: string
+  pid: string
+  key?: string
+  payment_type?: string
+  notify_url?: string
+  return_url?: string
+}): Promise<PaymentConfig> {
+  const { data } = await api.put<PaymentConfig>('/api/admin/payment-config', payload)
   return data
 }
 
-export async function updateModelPermission(permId: string, perm: Record<string, any>): Promise<any> {
-  const { data } = await api.put(`/api/admin/model-permissions/${permId}`, perm)
-  return data
+const DEFAULT_OASIS_CONFIG: OasisConfig = {
+  analysis_prompt_prefix: '',
+  simulation_prompt_prefix: '',
+  report_prompt_prefix: '',
+  max_agent_profiles: 16,
+  max_events: 16,
+  max_agent_activity: 48,
+  min_total_hours: 6,
+  max_total_hours: 336,
+  min_minutes_per_round: 10,
+  max_minutes_per_round: 240,
+  max_posts_per_hour: 20,
+  max_response_delay_minutes: 720,
+  allowed_platforms: ['twitter', 'reddit'],
+  llm_request_timeout_seconds: 120,
+  llm_retry_count: 2,
+  llm_retry_interval_seconds: 1.5,
 }
 
-export async function deleteModelPermission(permId: string): Promise<void> {
-  await api.delete(`/api/admin/model-permissions/${permId}`)
+function normalizeOasisConfig(payload: Partial<OasisConfig> | null | undefined): OasisConfig {
+  return {
+    analysis_prompt_prefix: String(payload?.analysis_prompt_prefix || ''),
+    simulation_prompt_prefix: String(payload?.simulation_prompt_prefix || ''),
+    report_prompt_prefix: String(payload?.report_prompt_prefix || ''),
+    max_agent_profiles: Number(payload?.max_agent_profiles ?? DEFAULT_OASIS_CONFIG.max_agent_profiles),
+    max_events: Number(payload?.max_events ?? DEFAULT_OASIS_CONFIG.max_events),
+    max_agent_activity: Number(payload?.max_agent_activity ?? DEFAULT_OASIS_CONFIG.max_agent_activity),
+    min_total_hours: Number(payload?.min_total_hours ?? DEFAULT_OASIS_CONFIG.min_total_hours),
+    max_total_hours: Number(payload?.max_total_hours ?? DEFAULT_OASIS_CONFIG.max_total_hours),
+    min_minutes_per_round: Number(payload?.min_minutes_per_round ?? DEFAULT_OASIS_CONFIG.min_minutes_per_round),
+    max_minutes_per_round: Number(payload?.max_minutes_per_round ?? DEFAULT_OASIS_CONFIG.max_minutes_per_round),
+    max_posts_per_hour: Number(payload?.max_posts_per_hour ?? DEFAULT_OASIS_CONFIG.max_posts_per_hour),
+    max_response_delay_minutes: Number(payload?.max_response_delay_minutes ?? DEFAULT_OASIS_CONFIG.max_response_delay_minutes),
+    llm_request_timeout_seconds: Number(
+      payload?.llm_request_timeout_seconds ?? DEFAULT_OASIS_CONFIG.llm_request_timeout_seconds
+    ),
+    llm_retry_count: Number(payload?.llm_retry_count ?? DEFAULT_OASIS_CONFIG.llm_retry_count),
+    llm_retry_interval_seconds: Number(
+      payload?.llm_retry_interval_seconds ?? DEFAULT_OASIS_CONFIG.llm_retry_interval_seconds
+    ),
+    allowed_platforms: Array.isArray(payload?.allowed_platforms)
+      ? payload!.allowed_platforms.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : [...DEFAULT_OASIS_CONFIG.allowed_platforms],
+  }
+}
+
+export async function getOasisConfig(): Promise<OasisConfig> {
+  const { data } = await api.get<Partial<OasisConfig>>('/api/admin/oasis-config')
+  return normalizeOasisConfig(data)
+}
+
+export async function updateOasisConfig(payload: Partial<OasisConfig>): Promise<OasisConfig> {
+  const { data } = await api.put<Partial<OasisConfig>>('/api/admin/oasis-config', payload)
+  return normalizeOasisConfig(data)
+}
+
+export async function getUserOrders(
+  userId: string,
+  page = 1,
+  pageSize = 20,
+): Promise<PaymentOrderListResponse> {
+  const { data } = await api.get<PaymentOrderListResponse>(`/api/admin/users/${userId}/orders`, {
+    params: { page, page_size: pageSize },
+  })
+  return data
 }

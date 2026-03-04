@@ -38,7 +38,7 @@ ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
 
 ```bash
 cd docker
-docker-compose up -d
+docker compose up -d --build
 ```
 
 服务启动后：
@@ -46,9 +46,11 @@ docker-compose up -d
 | 服务 | 地址 |
 |------|------|
 | 前端 | http://localhost:3000 |
-| 后端 API | http://localhost:4000 |
-| Neo4j Browser | http://localhost:7474 |
+| 后端 API | http://localhost:4080 |
+| Neo4j Browser | http://localhost:17474 |
 | MinIO Console | http://localhost:9001 |
+
+说明：任务系统状态会持久化到 Docker 卷 `task_state_data`（`/app/.musegraph/task_state.sqlite3`），用户离线后返回仍可查询任务进度与结果。
 
 ### 4. 初始化数据库
 
@@ -63,7 +65,7 @@ python seed.py
 ```
 
 如需创建管理员账号，请在环境变量中设置：
-`SEED_ADMIN_EMAIL`、`SEED_ADMIN_USERNAME`、`SEED_ADMIN_PASSWORD`（可选 `SEED_ADMIN_NICKNAME`）。
+`SEED_ADMIN_EMAIL`、`SEED_ADMIN_PASSWORD`（可选 `SEED_ADMIN_NICKNAME`）。
 
 ## 本地开发
 

@@ -1,149 +1,156 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
-import { getPlans } from '@/api/billing'
+import { getBalance, getPricing } from '@/api/billing'
 import { useAuthStore } from '@/stores/auth'
-import { useRouter } from 'vue-router'
-import { Check, Zap } from 'lucide-vue-next'
-import type { Plan } from '@/types'
+import type { PricingRule } from '@/types'
+import { Wallet, ArrowUpRight, Receipt, Coins } from 'lucide-vue-next'
 
 const router = useRouter()
 const authStore = useAuthStore()
 
-const plans = ref<Plan[]>([])
+const rules = ref<PricingRule[]>([])
 const loading = ref(true)
-const loadError = ref(false)
+const loadError = ref<string | null>(null)
+const balance = ref(0)
+const dailyUsage = ref(0)
+const monthlyUsage = ref(0)
 
-const featureLabels: Record<string, string> = {
-  max_projects: 'Projects',
-  export: 'Export support',
-  graph: 'Knowledge graph',
-  priority_support: 'Priority support',
+function formatUsd(value: number): string {
+  return `$${Number(value || 0).toFixed(6)}`
 }
 
-function formatFeatures(plan: Plan): string[] {
-  const features = plan.features
-  if (!features) return []
-  if (Array.isArray(features)) return features
-  const lines: string[] = []
-  // Quotas first
-  if (plan.quotas) {
-    const daily = plan.quotas.daily_requests
-    const monthly = plan.quotas.monthly_requests
-    if (daily === -1) lines.push('Unlimited daily requests')
-    else if (daily) lines.push(`${daily} requests/day`)
-    if (monthly === -1) lines.push('Unlimited monthly requests')
-    else if (monthly) lines.push(`${monthly} requests/month`)
-  }
-  // Models
-  if (plan.allowed_models?.length) {
-    lines.push(`${plan.allowed_models.length} AI models`)
-  }
-  // Features object
-  for (const [key, val] of Object.entries(features)) {
-    const label = featureLabels[key] || key.replace(/_/g, ' ')
-    if (typeof val === 'boolean') {
-      if (val) lines.push(label)
-    } else if (typeof val === 'number') {
-      lines.push(val === -1 ? `Unlimited ${label.toLowerCase()}` : `${val} ${label.toLowerCase()}`)
-    } else {
-      lines.push(`${label}: ${val}`)
-    }
-  }
-  return lines
+function formatUsd2(value: number): string {
+  return `$${Number(value || 0).toFixed(2)}`
 }
 
-function handleSubscribe(plan: Plan) {
-  if (!authStore.isAuthenticated) {
-    router.push('/login')
-    return
+function formatRule(rule: PricingRule): string {
+  if (rule.billing_mode === 'REQUEST') {
+    return `${formatUsd(rule.request_price)} / request`
   }
-  if (plan.price > 0) {
-    router.push('/recharge')
-  }
+  return `${formatUsd(rule.input_price)} input + ${formatUsd(rule.output_price)} output / ${rule.token_unit.toLocaleString()} tokens`
 }
 
-onMounted(async () => {
+async function loadPricingPage() {
+  loading.value = true
+  loadError.value = null
   try {
-    plans.value = await getPlans()
-    loadError.value = false
-  } catch {
-    loadError.value = true
+    const tasks: Promise<any>[] = [getPricing()]
+    if (authStore.isAuthenticated) {
+      tasks.push(getBalance())
+    }
+    const [pricing, balanceData] = await Promise.all(tasks)
+    rules.value = pricing || []
+
+    if (balanceData) {
+      balance.value = balanceData.balance || 0
+      dailyUsage.value = balanceData.daily_usage || 0
+      monthlyUsage.value = balanceData.monthly_usage || 0
+      authStore.setBalance(balance.value)
+    }
+  } catch (e: any) {
+    loadError.value = e?.response?.data?.detail || e?.message || '加载定价失败'
   } finally {
     loading.value = false
   }
+}
+
+onMounted(() => {
+  void loadPricingPage()
 })
 </script>
 
 <template>
   <AppLayout>
-    <div class="p-6 max-w-6xl mx-auto">
-      <div class="text-center mb-10">
-        <h1 class="text-3xl font-bold text-white">Pricing Plans</h1>
-        <p class="text-slate-400 mt-2 max-w-lg mx-auto">
-          Choose the plan that fits your creative workflow. Upgrade or downgrade anytime.
-        </p>
+    <div class="mx-auto w-full max-w-6xl space-y-5">
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Pricing</h1>
+          <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">按 Token 或按次计费，先充值后调用模型。</p>
+        </div>
+        <Button v-if="authStore.isAuthenticated" variant="secondary" @click="loadPricingPage">刷新</Button>
+      </div>
+
+      <div v-if="authStore.isAuthenticated" class="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <Card class="border-amber-400/50">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="text-sm text-stone-600 dark:text-zinc-400">当前余额</p>
+              <p class="mt-1 text-2xl font-bold text-stone-900 dark:text-stone-100">{{ formatUsd2(balance) }}</p>
+              <p class="mt-2 text-xs text-stone-600 dark:text-zinc-400">
+                今日已用：{{ formatUsd2(dailyUsage) }} · 本月已用：{{ formatUsd2(monthlyUsage) }}
+              </p>
+            </div>
+            <div class="rounded-lg bg-amber-500/15 p-2 text-amber-700 dark:text-amber-300">
+              <Wallet class="h-5 w-5" />
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <div class="flex h-full items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium text-stone-900 dark:text-stone-100">余额充值入口</p>
+              <p class="mt-1 text-xs text-stone-600 dark:text-zinc-400">余额不足可直接跳转充值页</p>
+            </div>
+            <Button variant="primary" @click="router.push('/recharge')">
+              <ArrowUpRight class="h-4 w-4" />
+              去充值
+            </Button>
+          </div>
+        </Card>
       </div>
 
       <div v-if="loading" class="flex items-center justify-center py-20">
-        <div class="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
+        <div class="h-8 w-8 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />
       </div>
 
-      <div v-else-if="loadError" class="text-center py-20">
-        <p class="text-slate-400">Failed to load pricing plans. Please try again later.</p>
+      <div v-else-if="loadError" class="rounded-xl border border-red-400/40 bg-red-100/50 p-4 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
+        {{ loadError }}
       </div>
 
-      <div v-else-if="plans.length === 0" class="text-center py-20">
-        <p class="text-slate-400">No plans available at the moment.</p>
+      <div v-else-if="rules.length === 0" class="rounded-xl border border-stone-300/90 bg-stone-100/70 p-8 sm:p-10 text-center text-sm text-stone-600 dark:border-zinc-700 dark:bg-zinc-800/50 dark:text-zinc-400">
+        暂无可用定价规则。
       </div>
 
-      <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+      <div v-else class="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Card
-          v-for="plan in plans"
-          :key="plan.id"
-          class="flex flex-col relative"
-          :class="plan.name === 'pro' ? 'border-blue-500/50 ring-1 ring-blue-500/20' : ''"
+          v-for="rule in rules"
+          :key="rule.id"
+          class="space-y-3"
+          :class="rule.is_active === false ? 'opacity-70' : ''"
         >
-          <div
-            v-if="plan.name === 'pro'"
-            class="absolute -top-3 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-full bg-blue-600 px-3 py-0.5 text-xs font-medium text-white"
-          >
-            <Zap class="w-3 h-3" />
-            Popular
-          </div>
-
-          <div class="mb-4">
-            <h3 class="text-lg font-semibold text-white">{{ plan.display_name }}</h3>
-            <p class="text-sm text-slate-400 mt-1">{{ plan.description }}</p>
-          </div>
-
-          <div class="mb-5">
-            <span class="text-3xl font-bold text-white">
-              {{ plan.price === 0 ? 'Free' : `$${plan.price}` }}
-            </span>
-            <span v-if="plan.price > 0" class="text-sm text-slate-500">/month</span>
-          </div>
-
-          <ul class="space-y-2.5 mb-6 flex-1">
-            <li
-              v-for="feature in formatFeatures(plan)"
-              :key="feature"
-              class="flex items-start gap-2 text-sm"
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="text-base font-semibold text-stone-900 break-all dark:text-stone-100">{{ rule.model }}</h3>
+            <span
+              class="rounded-full px-2 py-0.5 text-[11px] font-medium"
+              :class="
+                rule.billing_mode === 'TOKEN'
+                  ? 'bg-stone-900/10 text-stone-700 dark:bg-zinc-700/40 dark:text-zinc-200'
+                  : 'bg-amber-500/20 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300'
+              "
             >
-              <Check class="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-              <span class="text-slate-300">{{ feature }}</span>
-            </li>
-          </ul>
+              {{ rule.billing_mode }}
+            </span>
+          </div>
 
-          <Button
-            :variant="plan.name === 'pro' ? 'primary' : 'secondary'"
-            class="w-full"
-            @click="handleSubscribe(plan)"
-          >
-            {{ plan.price === 0 ? 'Get Started' : 'Subscribe' }}
-          </Button>
+          <p class="text-sm text-stone-700 dark:text-zinc-300">
+            {{ formatRule(rule) }}
+          </p>
+
+          <div class="flex items-center justify-between text-xs text-stone-600 dark:text-zinc-400">
+            <span class="inline-flex items-center gap-1">
+              <Receipt class="h-3.5 w-3.5" />
+              {{ rule.billing_mode === 'TOKEN' ? '按输入/输出 Token 计费' : '每次请求固定计费' }}
+            </span>
+            <span class="inline-flex items-center gap-1">
+              <Coins class="h-3.5 w-3.5" />
+              {{ rule.is_active === false ? 'Disabled' : 'Active' }}
+            </span>
+          </div>
         </Card>
       </div>
     </div>

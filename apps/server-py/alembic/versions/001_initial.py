@@ -24,17 +24,7 @@ def upgrade() -> None:
         "user_groups",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
         sa.Column("name", sa.String(50), unique=True, nullable=False),
-        sa.Column("display_name", sa.String(100), nullable=False),
         sa.Column("description", sa.Text, nullable=True),
-        sa.Column("color", sa.String(20), nullable=True),
-        sa.Column("icon", sa.String(50), nullable=True),
-        sa.Column("allowed_models", postgresql.JSON, nullable=True),
-        sa.Column("quotas", postgresql.JSON, nullable=True),
-        sa.Column("features", postgresql.JSON, nullable=True),
-        sa.Column("price", sa.Numeric(10, 2), nullable=True),
-        sa.Column("sort_order", sa.Integer, default=0),
-        sa.Column("is_active", sa.Boolean, default=True),
-        sa.Column("is_default", sa.Boolean, default=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
@@ -44,12 +34,11 @@ def upgrade() -> None:
         "users",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
         sa.Column("email", sa.String(255), unique=True, nullable=False),
-        sa.Column("username", sa.String(50), unique=True, nullable=False),
         sa.Column("password_hash", sa.String(255), nullable=False),
         sa.Column("nickname", sa.String(100), nullable=True),
         sa.Column("avatar", sa.String(500), nullable=True),
-        sa.Column("balance", sa.Numeric(10, 4), server_default="0"),
-        sa.Column("role", sa.String(20), server_default="USER"),
+        sa.Column("balance", sa.Numeric(12, 6), server_default="0"),
+        sa.Column("is_admin", sa.Boolean(), server_default=sa.text("false")),
         sa.Column(
             "group_id",
             postgresql.UUID(as_uuid=False),
@@ -76,28 +65,6 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
     op.create_index("ix_sessions_user_id", "sessions", ["user_id"])
-
-    # ── user_quotas ──────────────────────────────────────────────
-    op.create_table(
-        "user_quotas",
-        sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
-        sa.Column(
-            "user_id",
-            postgresql.UUID(as_uuid=False),
-            sa.ForeignKey("users.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column("model", sa.String(100), nullable=False),
-        sa.Column("daily_limit", sa.Integer, server_default="0"),
-        sa.Column("monthly_limit", sa.Integer, server_default="0"),
-        sa.Column("daily_used", sa.Integer, server_default="0"),
-        sa.Column("monthly_used", sa.Integer, server_default="0"),
-        sa.Column("last_daily_reset", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("last_monthly_reset", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.UniqueConstraint("user_id", "model", name="uq_user_quotas_user_model"),
-    )
 
     # ── text_projects ────────────────────────────────────────────
     op.create_table(
@@ -186,18 +153,12 @@ def upgrade() -> None:
     op.create_table(
         "plans",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
-        sa.Column("name", sa.String(50), unique=True, nullable=False),
-        sa.Column("display_name", sa.String(100), nullable=False),
-        sa.Column("description", sa.Text, nullable=True),
-        sa.Column("target_group_id", postgresql.UUID(as_uuid=False), nullable=True),
+        sa.Column("description", sa.Text, nullable=False),
+        sa.Column("target_group_id", postgresql.UUID(as_uuid=False), nullable=False),
         sa.Column("price", sa.Numeric(10, 2), nullable=False),
-        sa.Column("original_price", sa.Numeric(10, 2), nullable=True),
         sa.Column("duration", sa.Integer, nullable=False),
-        sa.Column("features", postgresql.JSON, nullable=True),
-        sa.Column("quotas", postgresql.JSON, nullable=True),
-        sa.Column("allowed_models", postgresql.JSON, nullable=True),
+        sa.Column("rate_limit", sa.Integer, server_default="0"),
         sa.Column("is_active", sa.Boolean, server_default=sa.text("true")),
-        sa.Column("sort_order", sa.Integer, server_default="0"),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
@@ -275,18 +236,15 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
 
-    # ── model_permissions ────────────────────────────────────────
+    # ── model_group_bindings ────────────────────────────────────
     op.create_table(
-        "model_permissions",
+        "model_group_bindings",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
         sa.Column("model", sa.String(100), nullable=False),
-        sa.Column("group_id", postgresql.UUID(as_uuid=False), nullable=False),
-        sa.Column("daily_limit", sa.Integer, server_default="0"),
-        sa.Column("monthly_limit", sa.Integer, server_default="0"),
-        sa.Column("is_active", sa.Boolean, server_default=sa.text("true")),
+        sa.Column("group_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("user_groups.id", ondelete="CASCADE"), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.UniqueConstraint("model", "group_id", name="uq_model_permissions_model_group"),
+        sa.UniqueConstraint("model", "group_id", name="uq_model_group_bindings_model_group"),
     )
 
     # ── payment_configs ──────────────────────────────────────────
@@ -319,7 +277,7 @@ def downgrade() -> None:
     # Drop in reverse dependency order
     op.drop_table("prompt_templates")
     op.drop_table("payment_configs")
-    op.drop_table("model_permissions")
+    op.drop_table("model_group_bindings")
     op.drop_table("pricing_rules")
     op.drop_table("ai_provider_configs")
     op.drop_table("subscriptions")
@@ -332,7 +290,6 @@ def downgrade() -> None:
     op.drop_table("text_operations")
     op.drop_index("ix_text_projects_user_id", table_name="text_projects")
     op.drop_table("text_projects")
-    op.drop_table("user_quotas")
     op.drop_index("ix_sessions_user_id", table_name="sessions")
     op.drop_table("sessions")
     op.drop_table("users")

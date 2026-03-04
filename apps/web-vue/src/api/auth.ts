@@ -8,13 +8,11 @@ export async function login(email: string, password: string): Promise<AuthRespon
 
 export async function register(
   email: string,
-  username: string,
   password: string,
-  nickname?: string
+  nickname: string
 ): Promise<AuthResponse> {
   const { data } = await api.post<AuthResponse>('/api/auth/register', {
     email,
-    username,
     password,
     nickname,
   })

@@ -1,4 +1,4 @@
-from app.services import ai, auth, billing, cognee, export, llm_json, oasis, ontology, payment, quota, task_state
+from app.services import ai, auth, billing, cognee, export, llm_json, oasis, ontology, payment, provider_models, task_state
 
 __all__ = [
     "ai",
@@ -10,6 +10,6 @@ __all__ = [
     "ontology",
     "export",
     "payment",
-    "quota",
+    "provider_models",
     "task_state",
 ]
