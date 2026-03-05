@@ -379,7 +379,6 @@ def _attach_meta(
     provider: str | None = None,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
-    fallback_reason: str | None = None,
 ) -> dict[str, Any]:
     payload = dict(ontology or {})
     payload["_meta"] = {
@@ -388,42 +387,8 @@ def _attach_meta(
         "api_called": bool(api_called),
         "input_tokens": int(input_tokens or 0),
         "output_tokens": int(output_tokens or 0),
-        "fallback_reason": (fallback_reason or "").strip() or None,
     }
     return payload
-
-
-def _fallback_ontology(text: str, requirement: str | None = None) -> dict[str, Any]:
-    source = (text or "").strip()
-    summary_parts = ["Fallback ontology generated from deterministic schema."]
-    if requirement and requirement.strip():
-        summary_parts.append(f"Requirement: {requirement.strip()}")
-    if source:
-        summary_parts.append(f"Source length: {len(source)} chars")
-
-    entity_types = [
-        {"name": "CHARACTER", "description": "人物、角色或具备行为能力的主体。", "examples": []},
-        {"name": "ORGANIZATION", "description": "组织、家族、势力、机构。", "examples": []},
-        {"name": "LOCATION", "description": "地点、场景、空间位置。", "examples": []},
-        {"name": "EVENT", "description": "关键事件、冲突、行动节点。", "examples": []},
-        {"name": "OBJECT", "description": "重要物件、资源、证据、媒介。", "examples": []},
-        {"name": "TIME", "description": "时间点、时段、时序标记。", "examples": []},
-    ]
-    edge_types = [
-        {"name": "INTERACTS_WITH", "source_type": "CHARACTER", "target_type": "CHARACTER", "description": "角色之间互动"},
-        {"name": "BELONGS_TO", "source_type": "CHARACTER", "target_type": "ORGANIZATION", "description": "角色隶属组织"},
-        {"name": "LOCATED_IN", "source_type": "EVENT", "target_type": "LOCATION", "description": "事件发生地点"},
-        {"name": "PARTICIPATES_IN", "source_type": "CHARACTER", "target_type": "EVENT", "description": "角色参与事件"},
-        {"name": "INVOLVES_OBJECT", "source_type": "EVENT", "target_type": "OBJECT", "description": "事件涉及关键物件"},
-        {"name": "HAPPENS_AT", "source_type": "EVENT", "target_type": "TIME", "description": "事件发生时间"},
-        {"name": "CAUSES", "source_type": "EVENT", "target_type": "EVENT", "description": "事件因果关联"},
-        {"name": "INFLUENCES", "source_type": "ORGANIZATION", "target_type": "EVENT", "description": "组织对事件影响"},
-    ]
-    return {
-        "entity_types": entity_types,
-        "edge_types": edge_types,
-        "analysis_summary": "；".join(summary_parts),
-    }
 
 
 async def generate_ontology(
@@ -469,8 +434,8 @@ async def generate_ontology(
         input_tokens = int(llm_result.get("input_tokens") or 0)
         output_tokens = int(llm_result.get("output_tokens") or 0)
         raw_content = str(llm_result.get("content") or "")
-        fallback_reason: str | None = None
         parsed: dict[str, Any] | None = None
+        parse_error: Exception | None = None
         try:
             parsed = await _parse_ontology_from_content(
                 raw_content=raw_content,
@@ -478,65 +443,61 @@ async def generate_ontology(
                 db=db,
             )
         except Exception as repair_exc:
-            fallback_reason = (
-                f"json_repair_failed:{type(repair_exc).__name__}:{str(repair_exc)[:80]}"
-            )
+            parse_error = repair_exc
 
-        if parsed:
-            sanitized = _sanitize_ontology(_normalize_ontology_payload(parsed))
-            needs_retry = (
-                _is_minimal_ontology(sanitized)
-                or not sanitized.get("entity_types")
-                or not sanitized.get("edge_types")
+        if not parsed:
+            error_code = "llm_response_not_json_or_invalid_schema_after_repair"
+            if parse_error:
+                error_code = f"{error_code}:{type(parse_error).__name__}:{str(parse_error)[:120]}"
+            raise ValueError(error_code)
+
+        sanitized = _sanitize_ontology(_normalize_ontology_payload(parsed))
+        needs_retry = (
+            _is_minimal_ontology(sanitized)
+            or not sanitized.get("entity_types")
+            or not sanitized.get("edge_types")
+        )
+        if needs_retry:
+            retry_result = await call_llm(
+                selected_model,
+                _build_retry_prompt(payload_text, requirement),
+                db,
+                max_tokens=2200,
             )
-            if needs_retry:
-                retry_result = await call_llm(
-                    selected_model,
-                    _build_retry_prompt(payload_text, requirement),
-                    db,
-                    max_tokens=2200,
+            input_tokens += int(retry_result.get("input_tokens") or 0)
+            output_tokens += int(retry_result.get("output_tokens") or 0)
+            retry_provider = str(retry_result.get("provider") or "").strip()
+            if retry_provider:
+                provider_name = retry_provider
+            retry_content = str(retry_result.get("content") or "")
+            retry_parsed: dict[str, Any] | None = None
+            retry_parse_error: Exception | None = None
+            try:
+                retry_parsed = await _parse_ontology_from_content(
+                    raw_content=retry_content,
+                    model=selected_model,
+                    db=db,
                 )
-                input_tokens += int(retry_result.get("input_tokens") or 0)
-                output_tokens += int(retry_result.get("output_tokens") or 0)
-                retry_provider = str(retry_result.get("provider") or "").strip()
-                if retry_provider:
-                    provider_name = retry_provider
-                retry_content = str(retry_result.get("content") or "")
-                try:
-                    retry_parsed = await _parse_ontology_from_content(
-                        raw_content=retry_content,
-                        model=selected_model,
-                        db=db,
-                    )
-                except Exception as retry_exc:
-                    retry_parsed = None
-                    if not fallback_reason:
-                        fallback_reason = f"retry_json_repair_failed:{type(retry_exc).__name__}:{str(retry_exc)[:80]}"
-                if retry_parsed:
-                    retry_sanitized = _sanitize_ontology(_normalize_ontology_payload(retry_parsed))
-                    if (
-                        retry_sanitized.get("entity_types")
-                        and retry_sanitized.get("edge_types")
-                        and not _is_minimal_ontology(retry_sanitized)
-                    ):
-                        sanitized = retry_sanitized
-                    elif not fallback_reason:
-                        fallback_reason = "retry_output_invalid_or_too_generic"
-                elif not fallback_reason:
-                    fallback_reason = "retry_response_not_json_after_repair"
-        else:
-            sanitized = _fallback_ontology(payload_text, requirement)
-            if not fallback_reason:
-                fallback_reason = "llm_response_not_json_after_repair"
+            except Exception as retry_exc:
+                retry_parse_error = retry_exc
+
+            if not retry_parsed:
+                error_code = "retry_llm_response_not_json_or_invalid_schema_after_repair"
+                if retry_parse_error:
+                    error_code = f"{error_code}:{type(retry_parse_error).__name__}:{str(retry_parse_error)[:120]}"
+                raise ValueError(error_code)
+
+            retry_sanitized = _sanitize_ontology(_normalize_ontology_payload(retry_parsed))
+            if not retry_sanitized.get("entity_types") or not retry_sanitized.get("edge_types"):
+                raise ValueError("retry_output_missing_valid_entity_or_edge_types")
+            if _is_minimal_ontology(retry_sanitized):
+                raise ValueError("retry_output_too_generic_concept_related_to")
+            sanitized = retry_sanitized
 
         if not sanitized["entity_types"] or not sanitized["edge_types"]:
-            sanitized = _fallback_ontology(payload_text, requirement)
-            if not fallback_reason:
-                fallback_reason = "llm_output_missing_valid_entity_or_edge_types"
-        elif _is_minimal_ontology(sanitized):
-            sanitized = _fallback_ontology(payload_text, requirement)
-            if not fallback_reason:
-                fallback_reason = "llm_output_too_generic"
+            raise ValueError("llm_output_missing_valid_entity_or_edge_types")
+        if _is_minimal_ontology(sanitized):
+            raise ValueError("llm_output_too_generic_concept_related_to")
 
         summary = (sanitized.get("analysis_summary") or "").strip()
         if not summary:
@@ -548,22 +509,11 @@ async def generate_ontology(
             api_called=api_called,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            fallback_reason=fallback_reason,
         )
     except ValueError:
         raise
     except Exception as exc:
-        fallback = _fallback_ontology(payload_text, requirement)
-        failure_reason = f"ontology_pipeline_failed:{type(exc).__name__}:{str(exc)[:120]}"
-        return _attach_meta(
-            fallback,
-            model=selected_model,
-            provider=provider_name,
-            api_called=api_called,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            fallback_reason=failure_reason,
-        )
+        raise RuntimeError(f"ontology_pipeline_failed:{type(exc).__name__}:{str(exc)[:120]}") from exc
 
 
 def build_graph_input_with_ontology(text: str, ontology: dict[str, Any] | None) -> str:

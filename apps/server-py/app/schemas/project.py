@@ -41,6 +41,111 @@ class ProjectChapterResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ProjectCharacterCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    role: Optional[str] = Field(default=None, max_length=255)
+    profile: Optional[str] = None
+    notes: Optional[str] = None
+    order_index: Optional[int] = Field(default=None, ge=0)
+
+    model_config = {"extra": "forbid"}
+
+
+class ProjectCharacterUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    role: Optional[str] = Field(default=None, max_length=255)
+    profile: Optional[str] = None
+    notes: Optional[str] = None
+    order_index: Optional[int] = Field(default=None, ge=0)
+
+    model_config = {"extra": "forbid"}
+
+
+class ProjectCharacterResponse(BaseModel):
+    id: str
+    project_id: str
+    name: str
+    role: Optional[str] = None
+    profile: Optional[str] = None
+    notes: Optional[str] = None
+    order_index: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ProjectGlossaryTermCreate(BaseModel):
+    term: str = Field(min_length=1, max_length=255)
+    definition: str = ""
+    aliases: Optional[list[str]] = None
+    notes: Optional[str] = None
+    order_index: Optional[int] = Field(default=None, ge=0)
+
+    model_config = {"extra": "forbid"}
+
+
+class ProjectGlossaryTermUpdate(BaseModel):
+    term: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    definition: Optional[str] = None
+    aliases: Optional[list[str]] = None
+    notes: Optional[str] = None
+    order_index: Optional[int] = Field(default=None, ge=0)
+
+    model_config = {"extra": "forbid"}
+
+
+class ProjectGlossaryTermResponse(BaseModel):
+    id: str
+    project_id: str
+    term: str
+    definition: str
+    aliases: Optional[list[str]] = None
+    notes: Optional[str] = None
+    order_index: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ProjectWorldbookEntryCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    category: Optional[str] = Field(default=None, max_length=120)
+    content: str = ""
+    tags: Optional[list[str]] = None
+    notes: Optional[str] = None
+    order_index: Optional[int] = Field(default=None, ge=0)
+
+    model_config = {"extra": "forbid"}
+
+
+class ProjectWorldbookEntryUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    category: Optional[str] = Field(default=None, max_length=120)
+    content: Optional[str] = None
+    tags: Optional[list[str]] = None
+    notes: Optional[str] = None
+    order_index: Optional[int] = Field(default=None, ge=0)
+
+    model_config = {"extra": "forbid"}
+
+
+class ProjectWorldbookEntryResponse(BaseModel):
+    id: str
+    project_id: str
+    title: str
+    category: Optional[str] = None
+    content: str
+    tags: Optional[list[str]] = None
+    notes: Optional[str] = None
+    order_index: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class ProjectCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     description: Optional[str] = None
@@ -82,6 +187,9 @@ class OperationRequest(BaseModel):
     input: Optional[str] = None
     model: Optional[str] = None
     chapter_ids: Optional[list[str]] = None
+    character_ids: Optional[list[str]] = None
+    glossary_term_ids: Optional[list[str]] = None
+    worldbook_entry_ids: Optional[list[str]] = None
     use_rag: Optional[bool] = None
 
     model_config = {"extra": "forbid"}

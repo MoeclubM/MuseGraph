@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import AsyncClient
@@ -23,6 +23,17 @@ def _scalars_all(items: list):
     scalars.all.return_value = items
     result.scalars.return_value = scalars
     return result
+
+
+def _get_endpoint_globals(app, endpoint_name: str) -> dict:
+    for route in app.routes:
+        if hasattr(route, "endpoint") and getattr(route, "name", "") == endpoint_name:
+            return route.endpoint.__globals__
+        if hasattr(route, "routes"):
+            for sub in route.routes:
+                if hasattr(sub, "endpoint") and getattr(sub, "name", "") == endpoint_name:
+                    return sub.endpoint.__globals__
+    raise RuntimeError(f"Endpoint {endpoint_name!r} not found")
 
 
 class TestSimulationCreate:
@@ -188,6 +199,8 @@ class TestSimulationStart:
     @pytest.mark.asyncio
     async def test_start_simulation_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test starting simulation successfully."""
+        from tests.conftest import app
+
         sim = SimpleNamespace(
             simulation_id="sim-1",
             project_id="proj-1",
@@ -225,18 +238,32 @@ class TestSimulationStart:
             _scalar_one_or_none(sim),
             _scalar_one_or_none(project),
         ]
-
-        with patch("app.routers.simulation._build_run_artifacts_with_llm") as mock_build:
-            mock_build.return_value = (
+        g = _get_endpoint_globals(app, "start_simulation")
+        expected_provenance = g["_build_provenance"](source_chapter_ids=[], text="Some content")
+        package = g["_inject_provenance"]({}, expected_provenance)
+        mock_refresh = AsyncMock(
+            return_value={"latest_package": package}
+        )
+        mock_build = AsyncMock(
+            return_value=(
                 {"metrics": {"total_rounds": 10}},
                 [{"id": "post1"}],
                 [],
                 [{"action_id": "a1"}],
             )
+        )
+        orig_refresh = g["_refresh_project_analysis_with_provenance"]
+        orig_build = g["_build_run_artifacts_with_llm"]
+        g["_refresh_project_analysis_with_provenance"] = mock_refresh
+        g["_build_run_artifacts_with_llm"] = mock_build
+        try:
             resp = await client.post(
                 "/api/simulation/start",
                 json={"simulation_id": "sim-1"},
             )
+        finally:
+            g["_refresh_project_analysis_with_provenance"] = orig_refresh
+            g["_build_run_artifacts_with_llm"] = orig_build
 
         assert resp.status_code == 200
         assert resp.json()["data"]["status"] == "completed"
@@ -244,6 +271,8 @@ class TestSimulationStart:
     @pytest.mark.asyncio
     async def test_start_simulation_llm_failure_returns_422(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test start fails fast when LLM generation returns invalid artifacts."""
+        from tests.conftest import app
+
         sim = SimpleNamespace(
             simulation_id="sim-1",
             project_id="proj-1",
@@ -281,13 +310,27 @@ class TestSimulationStart:
             _scalar_one_or_none(sim),
             _scalar_one_or_none(project),
         ]
-
-        with patch("app.routers.simulation._build_run_artifacts_with_llm") as mock_build:
-            mock_build.side_effect = ValueError("simulation_run_llm_response_not_json_or_invalid_schema")
+        g = _get_endpoint_globals(app, "start_simulation")
+        expected_provenance = g["_build_provenance"](source_chapter_ids=[], text="Some content")
+        package = g["_inject_provenance"]({}, expected_provenance)
+        mock_refresh = AsyncMock(
+            return_value={"latest_package": package}
+        )
+        mock_build = AsyncMock(
+            side_effect=ValueError("simulation_run_llm_response_not_json_or_invalid_schema")
+        )
+        orig_refresh = g["_refresh_project_analysis_with_provenance"]
+        orig_build = g["_build_run_artifacts_with_llm"]
+        g["_refresh_project_analysis_with_provenance"] = mock_refresh
+        g["_build_run_artifacts_with_llm"] = mock_build
+        try:
             resp = await client.post(
                 "/api/simulation/start",
                 json={"simulation_id": "sim-1"},
             )
+        finally:
+            g["_refresh_project_analysis_with_provenance"] = orig_refresh
+            g["_build_run_artifacts_with_llm"] = orig_build
 
         assert resp.status_code == 422
 
@@ -625,6 +668,8 @@ class TestInterview:
     @pytest.mark.asyncio
     async def test_interview_single(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test single agent interview."""
+        from tests.conftest import app
+
         sim = SimpleNamespace(
             simulation_id="sim-1",
             project_id="proj-1",
@@ -638,17 +683,27 @@ class TestInterview:
             component_models=None,
         )
 
-        mock_db.execute.side_effect = [
-            _scalar_one_or_none(sim),
-            _scalar_one_or_none(project),
-        ]
-
-        with patch("app.routers.simulation.call_llm") as mock_llm:
-            mock_llm.return_value = {"content": "Agent response"}
+        mock_db.execute.return_value = _scalar_one_or_none(sim)
+        g = _get_endpoint_globals(app, "interview_one")
+        mock_interview = AsyncMock(
+            return_value={
+                "simulation_id": "sim-1",
+                "agent": "Agent1",
+                "agent_role": "User",
+                "prompt": "What do you think?",
+                "response": "Agent response",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        orig_interview = g["_interview_single"]
+        g["_interview_single"] = mock_interview
+        try:
             resp = await client.post(
                 "/api/simulation/interview",
                 json={"simulation_id": "sim-1", "prompt": "What do you think?"},
             )
+        finally:
+            g["_interview_single"] = orig_interview
 
         assert resp.status_code == 200
         assert "response" in resp.json()["data"]
@@ -656,6 +711,8 @@ class TestInterview:
     @pytest.mark.asyncio
     async def test_interview_batch(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test batch interview."""
+        from tests.conftest import app
+
         sim = SimpleNamespace(
             simulation_id="sim-1",
             project_id="proj-1",
@@ -669,15 +726,31 @@ class TestInterview:
             component_models=None,
         )
 
-        mock_db.execute.side_effect = [
-            _scalar_one_or_none(sim),
-            _scalar_one_or_none(project),
-            _scalar_one_or_none(project),  # For each interview call
-            _scalar_one_or_none(project),
-        ]
-
-        with patch("app.routers.simulation.call_llm") as mock_llm:
-            mock_llm.return_value = {"content": "Response"}
+        mock_db.execute.return_value = _scalar_one_or_none(sim)
+        g = _get_endpoint_globals(app, "interview_batch")
+        mock_interview = AsyncMock(
+            side_effect=[
+                {
+                    "simulation_id": "sim-1",
+                    "agent": "Agent1",
+                    "agent_role": "User",
+                    "prompt": "Question 1",
+                    "response": "Response",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+                {
+                    "simulation_id": "sim-1",
+                    "agent": "Agent2",
+                    "agent_role": "User",
+                    "prompt": "Question 2",
+                    "response": "Response",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            ]
+        )
+        orig_interview = g["_interview_single"]
+        g["_interview_single"] = mock_interview
+        try:
             resp = await client.post(
                 "/api/simulation/interview/batch",
                 json={
@@ -688,6 +761,8 @@ class TestInterview:
                     ],
                 },
             )
+        finally:
+            g["_interview_single"] = orig_interview
 
         assert resp.status_code == 200
         assert resp.json()["count"] == 2

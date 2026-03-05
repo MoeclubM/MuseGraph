@@ -10,9 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.oasis import (
+    _build_report_markdown,
     _as_text_list,
-    _fallback_profiles_from_ontology,
-    _fallback_report_markdown,
     _safe_agent_activity,
     _safe_agent_profiles,
     _safe_list,
@@ -20,7 +19,6 @@ from app.services.oasis import (
     _to_int,
     build_oasis_package,
     build_oasis_run_result,
-    fallback_oasis_analysis,
     normalize_oasis_config,
     sanitize_oasis_analysis,
     sanitize_oasis_simulation_config,
@@ -136,9 +134,14 @@ class TestHelperFunctions:
 
     def test_normalize_oasis_config_defaults_include_llm_retry(self):
         cfg = normalize_oasis_config(None)
-        assert cfg["llm_request_timeout_seconds"] == 120
-        assert cfg["llm_retry_count"] == 2
-        assert cfg["llm_retry_interval_seconds"] == 1.5
+        assert cfg["llm_request_timeout_seconds"] == 180
+        assert cfg["llm_retry_count"] == 4
+        assert cfg["llm_retry_interval_seconds"] == 2.0
+        assert cfg["llm_prefer_stream"] is True
+        assert cfg["llm_stream_fallback_nonstream"] is True
+        assert cfg["llm_task_concurrency"] == 1
+        assert cfg["llm_model_default_concurrency"] == 8
+        assert cfg["llm_model_concurrency_overrides"] == {}
 
     def test_normalize_oasis_config_clamps_llm_retry(self):
         cfg = normalize_oasis_config(
@@ -146,11 +149,17 @@ class TestHelperFunctions:
                 "llm_request_timeout_seconds": 9999,
                 "llm_retry_count": -5,
                 "llm_retry_interval_seconds": 999,
+                "llm_task_concurrency": 999,
+                "llm_model_default_concurrency": 0,
+                "llm_model_concurrency_overrides": {"gpt-4o-mini": 999, "": 2, "bad": "x"},
             }
         )
         assert cfg["llm_request_timeout_seconds"] == 1800
         assert cfg["llm_retry_count"] == 0
         assert cfg["llm_retry_interval_seconds"] == 60.0
+        assert cfg["llm_task_concurrency"] == 64
+        assert cfg["llm_model_default_concurrency"] == 1
+        assert cfg["llm_model_concurrency_overrides"] == {"gpt-4o-mini": 64}
 
 
 class TestSanitizeOasisSimulationConfig:
@@ -248,25 +257,6 @@ class TestSanitizeOasisAnalysis:
         assert result["key_drivers"] == []
 
 
-class TestFallbackOasisAnalysis:
-    """Test fallback_oasis_analysis function."""
-
-    def test_fallback_with_requirement(self):
-        """Test fallback analysis includes requirement."""
-        ontology = {"entity_types": [{"name": "Entity1"}]}
-        graph_context = {"risk_signals": ["risk1"], "insights": ["insight1"]}
-        result = fallback_oasis_analysis("Test requirement", ontology, graph_context)
-
-        assert "Test requirement" in result["continuation_guidance"]["must_follow"][0]
-        assert "Entity1" in result["key_drivers"]
-
-    def test_fallback_without_requirement(self):
-        """Test fallback analysis without requirement."""
-        result = fallback_oasis_analysis(None, None, {})
-        assert result["scenario_summary"] != ""
-        assert result["simulation_config"]["active_platforms"] == ["twitter", "reddit"]
-
-
 class TestBuildOasisPackage:
     """Test build_oasis_package function."""
 
@@ -274,9 +264,35 @@ class TestBuildOasisPackage:
         """Test build package with existing analysis."""
         analysis = {
             "scenario_summary": "Test summary",
-            "continuation_guidance": {"must_follow": ["rule1"]},
-            "agent_profiles": [{"name": "Agent1"}],
-            "simulation_config": {"active_platforms": ["twitter"]},
+            "continuation_guidance": {"must_follow": ["rule1"], "next_steps": ["step1"], "avoid": []},
+            "agent_profiles": [
+                {
+                    "name": "Agent1",
+                    "role": "Analyst",
+                    "persona": "Tracks narrative trends",
+                    "stance": "neutral",
+                    "likely_actions": ["Summarize events"],
+                }
+            ],
+            "simulation_config": {
+                "active_platforms": ["twitter"],
+                "time_config": {
+                    "total_hours": 48,
+                    "minutes_per_round": 60,
+                    "peak_hours": [19, 20],
+                    "off_peak_hours": [1, 2],
+                },
+                "events": [{"title": "Kickoff", "trigger_hour": 1, "description": "Start"}],
+                "agent_activity": [
+                    {
+                        "name": "Agent1",
+                        "activity_level": 0.6,
+                        "posts_per_hour": 1.0,
+                        "response_delay_minutes": 30,
+                        "stance": "neutral",
+                    }
+                ],
+            },
         }
         result = build_oasis_package(
             project_id="proj-1",
@@ -293,24 +309,22 @@ class TestBuildOasisPackage:
         assert len(result["profiles"]) == 1
         assert result["component_models"]["oasis_report"] == "gpt-4o"
 
-    def test_build_package_without_profiles_uses_ontology(self):
-        """Test build package uses ontology when no profiles."""
+    def test_build_package_without_profiles_raises(self):
+        """Test build package requires analysis-generated profiles."""
         ontology = {
             "entity_types": [
                 {"name": "Person", "description": "A person"},
                 {"name": "Organization", "description": "An org"},
             ]
         }
-        result = build_oasis_package(
-            project_id="proj-1",
-            project_title="Test",
-            requirement=None,
-            ontology=ontology,
-            analysis=None,
-        )
-
-        assert len(result["profiles"]) == 2
-        assert "Person_AGENT" in result["profiles"][0]["name"]
+        with pytest.raises(ValueError, match="oasis_package_analysis_summary_missing"):
+            build_oasis_package(
+                project_id="proj-1",
+                project_title="Test",
+                requirement=None,
+                ontology=ontology,
+                analysis=None,
+            )
 
 
 class TestBuildOasisRunResult:
@@ -355,14 +369,14 @@ class TestBuildOasisRunResult:
         assert "opp1" in result["opportunity_signals"]
 
 
-class TestFallbackReportMarkdown:
-    """Test _fallback_report_markdown function."""
+class TestBuildReportMarkdown:
+    """Test _build_report_markdown function."""
 
     def test_fallback_markdown_basic(self):
         """Test basic markdown generation."""
         analysis = {"scenario_summary": "Test summary"}
         run_result = {"metrics": {"total_hours": 48, "total_rounds": 24}}
-        markdown = _fallback_report_markdown(
+        markdown = _build_report_markdown(
             requirement="Test requirement",
             analysis=analysis,
             run_result=run_result,
@@ -381,7 +395,7 @@ class TestFallbackReportMarkdown:
             "opportunity_signals": ["Opp 1"],
             "continuation_guidance": {"next_steps": ["Step 1", "Step 2"]},
         }
-        markdown = _fallback_report_markdown(
+        markdown = _build_report_markdown(
             requirement=None,
             analysis=analysis,
             run_result=None,
@@ -425,6 +439,20 @@ class TestAsyncOasisFunctions:
             mock_extract.return_value = {
                 "scenario_summary": "LLM summary",
                 "key_drivers": ["driver1"],
+                "continuation_guidance": {
+                    "must_follow": ["rule1"],
+                    "next_steps": ["step1"],
+                    "avoid": [],
+                },
+                "agent_profiles": [
+                    {
+                        "name": "Agent1",
+                        "role": "Analyst",
+                        "persona": "Tracks narrative trends",
+                        "stance": "neutral",
+                        "likely_actions": ["Summarize events"],
+                    }
+                ],
             }
 
             result, context = await generate_oasis_analysis(
@@ -440,8 +468,8 @@ class TestAsyncOasisFunctions:
             assert result["scenario_summary"] == "LLM summary"
 
     @pytest.mark.asyncio
-    async def test_generate_oasis_analysis_fallback(self, mock_db: AsyncMock):
-        """Test generate_oasis_analysis falls back on LLM failure."""
+    async def test_generate_oasis_analysis_failure_raises(self, mock_db: AsyncMock):
+        """Test generate_oasis_analysis raises on LLM failure."""
         from app.services.oasis import generate_oasis_analysis
 
         with patch("app.services.oasis.collect_graph_context") as mock_context, \
@@ -449,17 +477,16 @@ class TestAsyncOasisFunctions:
             mock_context.return_value = {"insights": [], "risk_signals": ["r1"]}
             mock_llm.side_effect = Exception("LLM error")
 
-            result, context = await generate_oasis_analysis(
-                project_id="proj-1",
-                text="Test text",
-                ontology=None,
-                requirement="Test requirement",
-                prompt=None,
-                model=None,
-                db=mock_db,
-            )
-
-            assert "fallback" in result["scenario_summary"].lower()
+            with pytest.raises(Exception, match="LLM error"):
+                await generate_oasis_analysis(
+                    project_id="proj-1",
+                    text="Test text",
+                    ontology=None,
+                    requirement="Test requirement",
+                    prompt=None,
+                    model=None,
+                    db=mock_db,
+                )
 
     @pytest.mark.asyncio
     async def test_enrich_simulation_config(self, mock_db: AsyncMock):
@@ -476,7 +503,22 @@ class TestAsyncOasisFunctions:
             mock_llm.return_value = {"content": "response"}
             mock_extract.return_value = {
                 "active_platforms": ["twitter"],
-                "time_config": {"total_hours": 48},
+                "time_config": {
+                    "total_hours": 48,
+                    "minutes_per_round": 60,
+                    "peak_hours": [19, 20],
+                    "off_peak_hours": [1, 2],
+                },
+                "events": [{"title": "Kickoff", "trigger_hour": 1, "description": "Start"}],
+                "agent_activity": [
+                    {
+                        "name": "Agent1",
+                        "activity_level": 0.6,
+                        "posts_per_hour": 1.0,
+                        "response_delay_minutes": 30,
+                        "stance": "neutral",
+                    }
+                ],
             }
 
             result = await enrich_simulation_config(
@@ -504,6 +546,8 @@ class TestAsyncOasisFunctions:
             mock_extract.return_value = {
                 "title": "Test Report",
                 "executive_summary": "Summary text",
+                "key_findings": ["finding1"],
+                "next_actions": ["action1"],
                 "markdown": "# Report\nContent",
             }
 

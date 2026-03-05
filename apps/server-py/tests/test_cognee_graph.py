@@ -72,16 +72,46 @@ def _endpoint(path: str, method: str):
 
 @pytest.fixture(autouse=True)
 def _reset_task_manager():
-    task_manager._tasks.clear()
+    try:
+        task_manager._memory._tasks.clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        sqlite_store = getattr(task_manager, "_sqlite", None)
+        if sqlite_store is not None:
+            with sqlite_store._lock:  # type: ignore[attr-defined]
+                sqlite_store._conn.execute("DELETE FROM task_records")  # type: ignore[attr-defined]
+                sqlite_store._conn.commit()  # type: ignore[attr-defined]
+    except Exception:
+        pass
     yield
-    task_manager._tasks.clear()
+    try:
+        task_manager._memory._tasks.clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 class TestCogneeGraphFlow:
     @pytest.mark.asyncio
-    async def test_generate_ontology_success(self, client: AsyncClient, mock_db: AsyncMock):
+    async def test_generate_ontology_success(
+        self,
+        client: AsyncClient,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
         project = _make_project(chapter_content="Project content")
         mock_db.execute.return_value = _scalar_one_or_none(project)
+        generate_endpoint = _endpoint("/api/projects/{project_id}/graphs/ontology/generate", "POST")
+        monkeypatch.setitem(
+            generate_endpoint.__globals__,
+            "resolve_component_model",
+            lambda *_args, **_kwargs: "gpt-4o-mini",
+        )
+        monkeypatch.setitem(
+            generate_endpoint.__globals__,
+            "generate_ontology",
+            AsyncMock(return_value={"entity_types": [{"name": "Character"}], "edge_types": [{"name": "REL"}]}),
+        )
         resp = await client.post(
             f"/api/projects/{project.id}/graphs/ontology/generate",
             json={"text": "source text", "requirement": "simulate risk", "model": "model-ontology"},
@@ -101,9 +131,28 @@ class TestCogneeGraphFlow:
         self,
         client: AsyncClient,
         mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         project = _make_project(chapter_content="")
-        mock_db.execute.return_value = _scalar_one_or_none(project)
+        chapter_query_result = MagicMock()
+        chapter_query_scalars = MagicMock()
+        chapter_query_scalars.all.return_value = project.chapters
+        chapter_query_result.scalars.return_value = chapter_query_scalars
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(project),
+            chapter_query_result,
+        ]
+        generate_endpoint = _endpoint("/api/projects/{project_id}/graphs/ontology/generate", "POST")
+        monkeypatch.setitem(
+            generate_endpoint.__globals__,
+            "resolve_component_model",
+            lambda *_args, **_kwargs: "gpt-4o-mini",
+        )
+        monkeypatch.setitem(
+            generate_endpoint.__globals__,
+            "generate_ontology",
+            AsyncMock(return_value={"entity_types": [{"name": "Character"}], "edge_types": [{"name": "REL"}]}),
+        )
 
         resp = await client.post(
             f"/api/projects/{project.id}/graphs/ontology/generate",

@@ -1,11 +1,10 @@
 import api from './index'
-import type { GraphData, OasisTask, ProjectOntology } from '@/types'
+import type { GraphData, GraphStatus, OasisTask, ProjectOntology } from '@/types'
 
 export interface GraphSearchOptions {
   searchType?: string
   topK?: number
   useReranker?: boolean
-  rerankerModel?: string
   rerankerTopN?: number
 }
 
@@ -142,7 +141,6 @@ export async function searchGraph(
   if (options.searchType) payload.search_type = options.searchType
   if (options.topK) payload.top_k = options.topK
   if (typeof options.useReranker === 'boolean') payload.use_reranker = options.useReranker
-  if (options.rerankerModel) payload.reranker_model = options.rerankerModel
   if (options.rerankerTopN) payload.reranker_top_n = options.rerankerTopN
   const { data } = await api.post<{ results: any[] }>(
     `/api/projects/${projectId}/graphs/search`,
@@ -155,5 +153,10 @@ export async function getVisualization(projectId: string): Promise<GraphData> {
   const { data } = await api.get<GraphData>(
     `/api/projects/${projectId}/graphs/visualization`
   )
+  return data
+}
+
+export async function getGraphStatus(projectId: string): Promise<GraphStatus> {
+  const { data } = await api.get<GraphStatus>(`/api/projects/${projectId}/graphs`)
   return data
 }

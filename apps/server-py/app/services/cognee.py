@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.config import AIProviderConfig
-from app.services.ai import DEFAULT_MODEL, call_llm, detect_provider
+from app.services.ai import DEFAULT_MODEL, _load_llm_runtime_config, call_llm, detect_provider
 from app.services.llm_json import extract_json_object
 from app.services.provider_models import get_provider_chat_models, get_provider_embedding_models
 
@@ -30,6 +30,7 @@ _MAX_ALIAS_LLM_CANDIDATE_PAIRS = 36
 _MAX_ALIAS_DECISION_CACHE = 128
 _TIKTOKEN_PATCHED = False
 _LITELLM_AEMBEDDING_PATCHED = False
+_LITELLM_ACOMPLETION_PATCHED = False
 
 _NODE_TYPE_ALIASES: dict[str, str] = {
     "textsummary": "TextSummary",
@@ -64,6 +65,62 @@ _STRUCTURAL_NODE_NAMES: set[str] = {
     "coding_agent_rules",
 }
 _ALIAS_DECISION_CACHE: dict[str, dict[tuple[str, str], bool]] = {}
+
+
+def _runtime_litellm_timeout_seconds() -> int:
+    try:
+        return max(5, min(1800, int(os.getenv("MUSEGRAPH_LLM_REQUEST_TIMEOUT_SECONDS", "180"))))
+    except Exception:
+        return 180
+
+
+def _runtime_litellm_retry_count() -> int:
+    try:
+        return max(0, min(10, int(os.getenv("MUSEGRAPH_LLM_RETRY_COUNT", "4"))))
+    except Exception:
+        return 4
+
+
+def _runtime_litellm_retry_interval_seconds() -> float:
+    try:
+        return max(0.0, min(60.0, float(os.getenv("MUSEGRAPH_LLM_RETRY_INTERVAL_SECONDS", "2"))))
+    except Exception:
+        return 2.0
+
+
+def _is_retryable_litellm_error(exc: Exception) -> bool:
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError)):
+        return True
+
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        if status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
+            return True
+        if 500 <= status_code <= 599:
+            return True
+
+    text = str(exc or "").lower()
+    retryable_markers = ("timeout", "timed out", "gateway", "temporary", "rate limit", "connection")
+    return any(marker in text for marker in retryable_markers)
+
+
+async def _run_litellm_with_retry(request_factory: Callable[[], Any]) -> Any:
+    attempts = max(1, _runtime_litellm_retry_count() + 1)
+    retry_interval_seconds = _runtime_litellm_retry_interval_seconds()
+    timeout_seconds = _runtime_litellm_timeout_seconds()
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return await asyncio.wait_for(request_factory(), timeout=timeout_seconds)
+        except Exception as exc:
+            last_exc = exc
+            should_retry = attempt < (attempts - 1) and _is_retryable_litellm_error(exc)
+            if not should_retry:
+                raise
+            await asyncio.sleep(retry_interval_seconds)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("litellm request failed without exception")
 
 
 def _normalize_entity_alias_key(value: Any) -> str:
@@ -751,7 +808,7 @@ def _get_search_type_map() -> dict[str, Any]:
 
 
 def _patch_cognee_runtime_compatibility() -> None:
-    global _TIKTOKEN_PATCHED, _LITELLM_AEMBEDDING_PATCHED
+    global _TIKTOKEN_PATCHED, _LITELLM_AEMBEDDING_PATCHED, _LITELLM_ACOMPLETION_PATCHED
     if not _TIKTOKEN_PATCHED:
         try:
             import tiktoken
@@ -777,11 +834,31 @@ def _patch_cognee_runtime_compatibility() -> None:
             else:
                 async def _patched_aembedding(*args, **kwargs):
                     kwargs.pop("dimensions", None)
-                    return await original(*args, **kwargs)
+                    kwargs.setdefault("timeout", _runtime_litellm_timeout_seconds())
+                    kwargs.setdefault("num_retries", 0)
+                    return await _run_litellm_with_retry(lambda: original(*args, **kwargs))
 
                 setattr(_patched_aembedding, "__musegraph_patched__", True)
                 litellm.aembedding = _patched_aembedding
                 _LITELLM_AEMBEDDING_PATCHED = True
+        except Exception:
+            pass
+
+    if not _LITELLM_ACOMPLETION_PATCHED:
+        try:
+            import litellm
+            original = litellm.acompletion
+            if getattr(original, "__musegraph_patched__", False):
+                _LITELLM_ACOMPLETION_PATCHED = True
+            else:
+                async def _patched_acompletion(*args, **kwargs):
+                    kwargs.setdefault("timeout", _runtime_litellm_timeout_seconds())
+                    kwargs.setdefault("num_retries", 0)
+                    return await _run_litellm_with_retry(lambda: original(*args, **kwargs))
+
+                setattr(_patched_acompletion, "__musegraph_patched__", True)
+                litellm.acompletion = _patched_acompletion
+                _LITELLM_ACOMPLETION_PATCHED = True
         except Exception:
             pass
 
@@ -939,6 +1016,18 @@ async def _configure_cognee_llm(
     os.environ.setdefault("COGNEE_SKIP_CONNECTION_TEST", "true")
     _patch_cognee_runtime_compatibility()
     import cognee
+    runtime_cfg = await _load_llm_runtime_config(db)
+    os.environ["MUSEGRAPH_LLM_REQUEST_TIMEOUT_SECONDS"] = str(
+        int(runtime_cfg.get("llm_request_timeout_seconds", 180))
+    )
+    os.environ["MUSEGRAPH_LLM_RETRY_COUNT"] = str(int(runtime_cfg.get("llm_retry_count", 4)))
+    os.environ["MUSEGRAPH_LLM_RETRY_INTERVAL_SECONDS"] = str(
+        float(runtime_cfg.get("llm_retry_interval_seconds", 2.0))
+    )
+    os.environ["MUSEGRAPH_LLM_PREFER_STREAM"] = "true" if bool(runtime_cfg.get("llm_prefer_stream", True)) else "false"
+    os.environ["MUSEGRAPH_LLM_STREAM_FALLBACK_NONSTREAM"] = (
+        "true" if bool(runtime_cfg.get("llm_stream_fallback_nonstream", True)) else "false"
+    )
 
     selected_model = (model or "").strip()
     selected_embedding_model = (embedding_model or "").strip()
@@ -1444,30 +1533,42 @@ async def get_graph_visualization(
     alias_model: str | None = None,
 ) -> dict[str, Any]:
     """Get graph data for visualization via Cognee's graph engine."""
-    try:
-        from cognee.modules.data.methods import get_authorized_existing_datasets, get_dataset_data
-        from cognee.modules.users.methods import get_default_user
-        from cognee.infrastructure.databases.graph import get_graph_engine
+    from cognee.modules.data.methods import get_authorized_existing_datasets, get_dataset_data
+    from cognee.modules.users.methods import get_default_user
+    from cognee.infrastructure.databases.graph import get_graph_engine
 
-        dataset_name = _dataset_name(project_id)
+    dataset_name = _dataset_name(project_id)
+    try:
         user = await get_default_user()
         datasets = await get_authorized_existing_datasets([dataset_name], "read", user)
-        if not datasets:
-            return {"nodes": [], "edges": []}
-        dataset = datasets[0]
+    except Exception as exc:
+        raise RuntimeError(f"Failed to read graph dataset authorization for {dataset_name}: {exc}") from exc
+
+    if not datasets:
+        return {"nodes": [], "edges": []}
+
+    dataset = datasets[0]
+    try:
         dataset_data = await get_dataset_data(dataset.id)
-        seed_ids = [str(item.id) for item in dataset_data if getattr(item, "id", None)]
-        if not seed_ids:
-            return {"nodes": [], "edges": []}
+    except Exception as exc:
+        raise RuntimeError(f"Failed to load graph dataset {dataset_name}: {exc}") from exc
 
+    seed_ids = [str(item.id) for item in dataset_data if getattr(item, "id", None)]
+    if not seed_ids:
+        return {"nodes": [], "edges": []}
+
+    try:
         graph_engine = await get_graph_engine()
-        limited_seed_ids = _pick_seed_ids(seed_ids, limit=_MAX_SEED_IDS)
-        frontier = set(limited_seed_ids)
-        visited = set(limited_seed_ids)
-        raw_nodes_acc: dict[str, dict[str, Any]] = {}
-        raw_edges_acc: dict[tuple[str, str, str], dict[str, Any]] = {}
+    except Exception as exc:
+        raise RuntimeError(f"Failed to initialize graph engine for {dataset_name}: {exc}") from exc
+    limited_seed_ids = _pick_seed_ids(seed_ids, limit=_MAX_SEED_IDS)
+    frontier = set(limited_seed_ids)
+    visited = set(limited_seed_ids)
+    raw_nodes_acc: dict[str, dict[str, Any]] = {}
+    raw_edges_acc: dict[tuple[str, str, str], dict[str, Any]] = {}
 
-        # 3-hop neighborhood around dataset document nodes (document -> chunks -> entities).
+    # 3-hop neighborhood around dataset document nodes (document -> chunks -> entities).
+    try:
         for _ in range(3):
             if not frontier:
                 break
@@ -1499,77 +1600,77 @@ async def get_graph_visualization(
 
             visited.update(next_frontier)
             frontier = next_frontier
+    except Exception as exc:
+        raise RuntimeError(f"Failed to read graph neighborhood for {dataset_name}: {exc}") from exc
 
-        raw_nodes = [(node_id, props) for node_id, props in raw_nodes_acc.items()]
-        raw_edges = [
-            (src, tgt, label, props)
-            for (src, tgt, label), props in raw_edges_acc.items()
-        ]
+    raw_nodes = [(node_id, props) for node_id, props in raw_nodes_acc.items()]
+    raw_edges = [
+        (src, tgt, label, props)
+        for (src, tgt, label), props in raw_edges_acc.items()
+    ]
 
-        nodes: list[dict] = []
-        edges: list[dict] = []
+    nodes: list[dict] = []
+    edges: list[dict] = []
 
-        if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
-            return {"nodes": nodes, "edges": edges}
+    if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
+        return {"nodes": nodes, "edges": edges}
 
-        for n in raw_nodes:
-            if isinstance(n, tuple) and len(n) >= 2:
-                node_id = n[0]
-                props = n[1] if isinstance(n[1], dict) else {}
-            elif isinstance(n, dict):
-                node_id = n.get("id", "")
-                props = n
-            else:
-                continue
-            normalized_type = _normalize_node_type(props.get("type"))
-            nodes.append({
-                "id": str(node_id),
-                "label": _build_node_label(node_id=str(node_id), node_type=normalized_type, props=props),
-                "type": normalized_type,
-                "raw_type": str(props.get("type") or ""),
-                "category": _node_category(normalized_type),
-                "name": _short_text(props.get("name"), limit=96),
-                "text_preview": _short_text(props.get("text") or props.get("content"), limit=220),
-                "summary_preview": _short_text(props.get("summary"), limit=220),
+    for n in raw_nodes:
+        if isinstance(n, tuple) and len(n) >= 2:
+            node_id = n[0]
+            props = n[1] if isinstance(n[1], dict) else {}
+        elif isinstance(n, dict):
+            node_id = n.get("id", "")
+            props = n
+        else:
+            continue
+        normalized_type = _normalize_node_type(props.get("type"))
+        nodes.append({
+            "id": str(node_id),
+            "label": _build_node_label(node_id=str(node_id), node_type=normalized_type, props=props),
+            "type": normalized_type,
+            "raw_type": str(props.get("type") or ""),
+            "category": _node_category(normalized_type),
+            "name": _short_text(props.get("name"), limit=96),
+            "text_preview": _short_text(props.get("text") or props.get("content"), limit=220),
+            "summary_preview": _short_text(props.get("summary"), limit=220),
+        })
+
+    for e in raw_edges:
+        if isinstance(e, tuple) and len(e) >= 3:
+            props = e[3] if len(e) > 3 and isinstance(e[3], dict) else {}
+            edge_label = props.get("relationship_name", e[2])
+            edges.append({
+                "source": str(e[0]),
+                "target": str(e[1]),
+                "label": _short_text(edge_label, limit=64) or "RELATED_TO",
+            })
+        elif isinstance(e, dict):
+            edge_label = e.get("relationship_name") or e.get("label") or "RELATED_TO"
+            edges.append({
+                "source": e.get("source", ""),
+                "target": e.get("target", ""),
+                "label": _short_text(edge_label, limit=64) or "RELATED_TO",
             })
 
-        for e in raw_edges:
-            if isinstance(e, tuple) and len(e) >= 3:
-                props = e[3] if len(e) > 3 and isinstance(e[3], dict) else {}
-                edge_label = props.get("relationship_name", e[2])
-                edges.append({
-                    "source": str(e[0]),
-                    "target": str(e[1]),
-                    "label": _short_text(edge_label, limit=64) or "RELATED_TO",
-                })
-            elif isinstance(e, dict):
-                edge_label = e.get("relationship_name") or e.get("label") or "RELATED_TO"
-                edges.append({
-                    "source": e.get("source", ""),
-                    "target": e.get("target", ""),
-                    "label": _short_text(edge_label, limit=64) or "RELATED_TO",
-                })
+    alias_decisions: dict[tuple[str, str], bool] | None = None
+    if db is not None:
+        try:
+            alias_decisions = await _resolve_alias_merge_decisions_with_llm(
+                nodes,
+                db=db,
+                model=alias_model,
+            )
+        except Exception:
+            alias_decisions = None
 
-        alias_decisions: dict[tuple[str, str], bool] | None = None
-        if db is not None:
-            try:
-                alias_decisions = await _resolve_alias_merge_decisions_with_llm(
-                    nodes,
-                    db=db,
-                    model=alias_model,
-                )
-            except Exception:
-                alias_decisions = None
-
-        merged_nodes, merged_edges = _merge_alias_entities(
-            nodes,
-            edges,
-            alias_decisions=alias_decisions,
-        )
-        pruned_nodes, pruned_edges = _prune_graph_for_preview(merged_nodes, merged_edges)
-        return {"nodes": pruned_nodes, "edges": pruned_edges}
-    except Exception:
-        return {"nodes": [], "edges": []}
+    merged_nodes, merged_edges = _merge_alias_entities(
+        nodes,
+        edges,
+        alias_decisions=alias_decisions,
+    )
+    pruned_nodes, pruned_edges = _prune_graph_for_preview(merged_nodes, merged_edges)
+    return {"nodes": pruned_nodes, "edges": pruned_edges}
 
 
 async def delete_dataset(

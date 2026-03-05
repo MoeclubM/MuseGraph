@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
+  testMatch: ['docker-full.spec.ts'],
   timeout: 20 * 60 * 1000,
   expect: {
     timeout: 120 * 1000,

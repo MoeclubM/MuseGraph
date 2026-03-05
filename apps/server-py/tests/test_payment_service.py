@@ -9,6 +9,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _mock_db() -> AsyncMock:
+    db = AsyncMock()
+    db.add = MagicMock()
+    db.flush = AsyncMock()
+    db.execute = AsyncMock()
+    return db
+
+
 class TestPaymentServiceFunctions:
     """Test payment service helper functions."""
 
@@ -81,7 +89,7 @@ class TestPaymentServiceFunctions:
         """Test getting active EPay config when exists."""
         from app.services.payment import get_active_epay_config
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         config_item = SimpleNamespace(
             id="config-1",
@@ -111,7 +119,7 @@ class TestPaymentServiceFunctions:
         """Test getting active EPay config when not exists."""
         from app.services.payment import get_active_epay_config
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
@@ -126,7 +134,7 @@ class TestPaymentServiceFunctions:
         """Test getting EPay config with missing required fields."""
         from app.services.payment import get_active_epay_config
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         config_item = SimpleNamespace(
             id="config-1",
@@ -150,7 +158,7 @@ class TestPaymentServiceFunctions:
         """Test creating payment order."""
         from app.services.payment import create_payment_order
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         with patch("app.services.payment.get_active_epay_config") as mock_config:
             mock_config.return_value = {
@@ -166,7 +174,6 @@ class TestPaymentServiceFunctions:
                 user_id="user-1",
                 order_type="RECHARGE",
                 amount=100.0,
-                plan_id=None,
                 payment_method="alipay",
                 notify_url="https://example.com/notify",
                 return_url="https://example.com/return",
@@ -182,7 +189,7 @@ class TestPaymentServiceFunctions:
         """Test creating payment order without EPay config."""
         from app.services.payment import create_payment_order
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         with patch("app.services.payment.get_active_epay_config") as mock_config:
             mock_config.return_value = None
@@ -191,7 +198,6 @@ class TestPaymentServiceFunctions:
                 user_id="user-1",
                 order_type="RECHARGE",
                 amount=100.0,
-                plan_id=None,
                 payment_method=None,
                 notify_url="https://example.com/notify",
                 return_url="https://example.com/return",
@@ -206,7 +212,7 @@ class TestPaymentServiceFunctions:
         """Test marking order as paid for recharge."""
         from app.services.payment import _mark_order_paid
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         order = SimpleNamespace(
             id="order-1",
@@ -243,7 +249,7 @@ class TestPaymentServiceFunctions:
         """Test marking already paid order returns unchanged."""
         from app.services.payment import _mark_order_paid
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         order = SimpleNamespace(
             id="order-1",
@@ -266,7 +272,7 @@ class TestPaymentServiceFunctions:
         """Test marking order with invalid status raises error."""
         from app.services.payment import _mark_order_paid
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         order = SimpleNamespace(
             id="order-1",
@@ -287,7 +293,7 @@ class TestPaymentServiceFunctions:
         """Test processing payment callback."""
         from app.services.payment import process_payment_callback
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         order = SimpleNamespace(
             id="order-1",
@@ -324,7 +330,7 @@ class TestPaymentServiceFunctions:
         """Test processing callback for non-existent order."""
         from app.services.payment import process_payment_callback
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
@@ -338,7 +344,7 @@ class TestPaymentServiceFunctions:
         """Test processing valid EPay callback."""
         from app.services.payment import _sign_epay_params, process_epay_callback
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         # Build valid callback params
         params = {
@@ -396,7 +402,7 @@ class TestPaymentServiceFunctions:
         """Test processing EPay callback with invalid signature."""
         from app.services.payment import process_epay_callback
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         params = {
             "pid": "1001",
@@ -423,7 +429,7 @@ class TestPaymentServiceFunctions:
         """Test processing EPay callback when config missing."""
         from app.services.payment import process_epay_callback
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         with patch("app.services.payment.get_active_epay_config") as mock_config:
             mock_config.return_value = None
@@ -436,7 +442,7 @@ class TestPaymentServiceFunctions:
         """Test processing EPay callback with missing signature."""
         from app.services.payment import process_epay_callback
 
-        mock_db = AsyncMock()
+        mock_db = _mock_db()
 
         with patch("app.services.payment.get_active_epay_config") as mock_config:
             mock_config.return_value = {

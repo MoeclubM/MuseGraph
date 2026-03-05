@@ -12,11 +12,11 @@ import AppHeader from './AppHeader.vue'
 </script>
 
 <template>
-  <div class="flex h-screen flex-col bg-[#f7f3e8] text-stone-900 dark:bg-zinc-900 dark:text-zinc-100">
+  <div class="muse-shell flex h-screen flex-col text-stone-900 dark:text-zinc-100">
     <AppHeader />
     <div class="flex flex-1 overflow-hidden">
       <slot name="sidebar" />
-      <main class="flex-1 overflow-y-auto bg-[#f7f3e8]/70 dark:bg-zinc-900">
+      <main class="flex-1 overflow-y-auto bg-transparent">
         <div
           :class="
             padded

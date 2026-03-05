@@ -5,7 +5,14 @@ from app.models.config import (
     PricingRule,
     PromptTemplate,
 )
-from app.models.project import ProjectChapter, TextOperation, TextProject
+from app.models.project import (
+    ProjectChapter,
+    ProjectCharacter,
+    ProjectGlossaryTerm,
+    ProjectWorldbookEntry,
+    TextOperation,
+    TextProject,
+)
 from app.models.runtime import ReportRuntime, SimulationRuntime
 from app.models.user import Session, User
 
@@ -14,6 +21,9 @@ __all__ = [
     "Session",
     "TextProject",
     "ProjectChapter",
+    "ProjectCharacter",
+    "ProjectGlossaryTerm",
+    "ProjectWorldbookEntry",
     "TextOperation",
     "SimulationRuntime",
     "ReportRuntime",

@@ -15,6 +15,8 @@ import redis
 
 from app.config import settings
 
+_UNSET = object()
+
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
@@ -35,6 +37,7 @@ class TaskRecord:
     message: str = ""
     result: dict[str, Any] | None = None
     error: str | None = None
+    progress_detail: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +51,7 @@ class TaskRecord:
             "message": self.message,
             "result": self.result,
             "error": self.error,
+            "progress_detail": self.progress_detail,
             "metadata": self.metadata,
         }
 
@@ -69,6 +73,9 @@ class TaskRecord:
             message=str(payload.get("message") or ""),
             result=payload.get("result") if isinstance(payload.get("result"), dict) else None,
             error=str(payload.get("error")) if payload.get("error") is not None else None,
+            progress_detail=payload.get("progress_detail")
+            if isinstance(payload.get("progress_detail"), dict)
+            else None,
             metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
         )
 
@@ -138,6 +145,7 @@ class _SqliteTaskStore:
                     progress INTEGER NOT NULL,
                     message TEXT NOT NULL,
                     result_json TEXT,
+                    progress_detail_json TEXT,
                     error TEXT,
                     metadata_json TEXT NOT NULL,
                     project_id TEXT,
@@ -151,7 +159,18 @@ class _SqliteTaskStore:
                     ON task_records(task_type, created_at DESC);
                 """
             )
+            self._ensure_column("progress_detail_json", "TEXT")
             self._conn.commit()
+
+    def _ensure_column(self, column_name: str, column_def: str) -> None:
+        existing = {
+            str(row[1] or "").strip().lower()
+            for row in self._conn.execute("PRAGMA table_info(task_records)").fetchall()
+        }
+        normalized = str(column_name or "").strip().lower()
+        if not normalized or normalized in existing:
+            return
+        self._conn.execute(f"ALTER TABLE task_records ADD COLUMN {column_name} {column_def}")
 
     def _row_to_task(self, row: sqlite3.Row) -> TaskRecord | None:
         try:
@@ -166,6 +185,12 @@ class _SqliteTaskStore:
                 result = None
         except Exception:
             result = None
+        try:
+            progress_detail = json.loads(str(row["progress_detail_json"])) if row["progress_detail_json"] else None
+            if progress_detail is not None and not isinstance(progress_detail, dict):
+                progress_detail = None
+        except Exception:
+            progress_detail = None
         try:
             created_at = datetime.fromisoformat(str(row["created_at"]))
         except Exception:
@@ -186,11 +211,17 @@ class _SqliteTaskStore:
             message=str(row["message"] or ""),
             result=result,
             error=str(row["error"]) if row["error"] is not None else None,
+            progress_detail=progress_detail,
             metadata=metadata,
         )
 
     def upsert_task(self, task: TaskRecord) -> None:
         payload_result = json.dumps(task.result, ensure_ascii=False) if isinstance(task.result, dict) else None
+        payload_progress_detail = (
+            json.dumps(task.progress_detail, ensure_ascii=False)
+            if isinstance(task.progress_detail, dict)
+            else None
+        )
         payload_metadata = json.dumps(task.metadata or {}, ensure_ascii=False)
         project_id = str((task.metadata or {}).get("project_id") or "").strip() or None
         user_id = str((task.metadata or {}).get("user_id") or "").strip() or None
@@ -199,8 +230,8 @@ class _SqliteTaskStore:
                 """
                 INSERT INTO task_records (
                     task_id, task_type, status, created_at, updated_at, progress, message,
-                    result_json, error, metadata_json, project_id, user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    result_json, progress_detail_json, error, metadata_json, project_id, user_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     task_type = excluded.task_type,
                     status = excluded.status,
@@ -209,6 +240,7 @@ class _SqliteTaskStore:
                     progress = excluded.progress,
                     message = excluded.message,
                     result_json = excluded.result_json,
+                    progress_detail_json = excluded.progress_detail_json,
                     error = excluded.error,
                     metadata_json = excluded.metadata_json,
                     project_id = excluded.project_id,
@@ -223,6 +255,7 @@ class _SqliteTaskStore:
                     int(task.progress),
                     str(task.message or ""),
                     payload_result,
+                    payload_progress_detail,
                     task.error,
                     payload_metadata,
                     project_id,
@@ -435,6 +468,7 @@ class TaskManager:
         message: str | None = None,
         result: dict[str, Any] | None = None,
         error: str | None = None,
+        progress_detail: dict[str, Any] | None | object = _UNSET,
     ) -> None:
         task = self.get_task(task_id)
         if not task:
@@ -450,6 +484,8 @@ class TaskManager:
             task.result = result
         if error is not None:
             task.error = error
+        if progress_detail is not _UNSET:
+            task.progress_detail = progress_detail if isinstance(progress_detail, dict) else None
         self._memory.update_task(task)
         try:
             self._save_to_redis(task)
@@ -557,6 +593,38 @@ class TaskManager:
 
         tasks = sorted(task_map.values(), key=lambda item: item.created_at, reverse=True)
         return tasks[:max_limit]
+
+    def find_inflight_task_by_idempotency(
+        self,
+        *,
+        task_type: str,
+        project_id: str,
+        idempotency_key: str,
+        search_limit: int = 200,
+        max_age_minutes: int = 10,
+    ) -> TaskRecord | None:
+        key = str(idempotency_key or "").strip()
+        if not key:
+            return None
+        now = datetime.now(timezone.utc)
+        max_age = timedelta(minutes=max(1, int(max_age_minutes or 10)))
+        tasks = self.list_tasks(
+            task_type=str(task_type or "").strip() or None,
+            project_id=str(project_id or "").strip() or None,
+            limit=max(1, int(search_limit or 200)),
+        )
+        for task in tasks:
+            metadata_key = str((task.metadata or {}).get("idempotency_key") or "").strip()
+            if metadata_key != key:
+                continue
+            if task.status in (TaskStatus.PENDING, TaskStatus.PROCESSING):
+                updated_at = task.updated_at
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=timezone.utc)
+                if now - updated_at > max_age:
+                    continue
+                return task
+        return None
 
     def cleanup_old_tasks(self, *, max_age_hours: int = 24) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)

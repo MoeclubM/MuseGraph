@@ -8,6 +8,7 @@ without any real infrastructure.
 from __future__ import annotations
 
 import uuid
+from types import ModuleType
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -19,7 +20,7 @@ from httpx import ASGITransport, AsyncClient
 
 # ---------------------------------------------------------------------------
 # Patch heavy / side-effect-laden modules BEFORE importing the application.
-# This prevents real connections to PostgreSQL, Redis, MinIO, Cognee, etc.
+# This prevents real connections to PostgreSQL, Redis, storage backend, Cognee, etc.
 # ---------------------------------------------------------------------------
 
 # 0. Patch bcrypt to avoid PyO3 initialization issues
@@ -28,12 +29,11 @@ _bcrypt_mock.gensalt = MagicMock(return_value=b'$2b$12$mockedsalt')
 _bcrypt_mock.hashpw = MagicMock(return_value=b'$2b$12$mockedhash')
 _bcrypt_mock.checkpw = MagicMock(return_value=True)
 
-# 1. Patch storage (MinIO) so ensure_bucket() is a no-op
+# 1. Patch storage so ensure_bucket() is a no-op
 _storage_mock = MagicMock()
 _storage_mock.ensure_bucket = MagicMock()
 _storage_module = SimpleNamespace(
     ensure_bucket=_storage_mock.ensure_bucket,
-    minio_client=MagicMock(),
     upload_file=MagicMock(return_value="mock-file"),
 )
 
@@ -42,13 +42,22 @@ _redis_mock = AsyncMock()
 _redis_mock.get = AsyncMock(return_value=None)
 _redis_mock.set = AsyncMock()
 _redis_mock.delete = AsyncMock()
+_redis_asyncio_module = ModuleType("redis.asyncio")
+_redis_asyncio_module.from_url = MagicMock(return_value=_redis_mock)
+_redis_module = ModuleType("redis")
+_redis_module.asyncio = _redis_asyncio_module
 
 with (
-    patch.dict("sys.modules", {"bcrypt": _bcrypt_mock}),
+    patch.dict(
+        "sys.modules",
+        {
+            "bcrypt": _bcrypt_mock,
+            "redis": _redis_module,
+            "redis.asyncio": _redis_asyncio_module,
+        },
+    ),
     patch.dict("sys.modules", {"app.services.cognee": MagicMock()}),
     patch.dict("sys.modules", {"app.storage": _storage_module}),
-    patch("app.redis.redis_client", _redis_mock),
-    patch("app.redis.get_redis", AsyncMock(return_value=_redis_mock)),
 ):
     from app.database import get_db
     from app.dependencies import get_current_user

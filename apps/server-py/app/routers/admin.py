@@ -15,6 +15,7 @@ from app.models.project import TextOperation, TextProject
 from app.models.user import User
 from app.schemas.admin import StatsResponse, UserListResponse
 from app.services.auth import register_user
+from app.services.task_state import TaskRecord, TaskStatus, task_manager
 from app.services.provider_models import (
     dump_provider_models,
     get_chat_models,
@@ -33,6 +34,7 @@ router = APIRouter()
 SUPPORTED_PROVIDER_TYPES = parse_supported_provider_types(settings.SUPPORTED_PROVIDER_TYPES)
 SUPPORTED_BILLING_MODES = {"TOKEN", "REQUEST"}
 MONEY_SCALE = Decimal("0.000001")
+_RUNNING_TASK_STATUSES = {TaskStatus.PENDING.value, TaskStatus.PROCESSING.value}
 
 
 def _money(value: Any) -> Decimal:
@@ -86,6 +88,36 @@ def _serialize_pricing_rule(rule: PricingRule) -> dict[str, Any]:
         "request_price": float(rule.request_price or 0),
         "is_active": bool(rule.is_active),
     }
+
+
+def _serialize_task(task: TaskRecord) -> dict[str, Any]:
+    return {
+        "task_id": task.task_id,
+        "task_type": task.task_type,
+        "status": task.status.value if isinstance(task.status, TaskStatus) else str(task.status or ""),
+        "created_at": task.created_at.isoformat(),
+        "updated_at": task.updated_at.isoformat(),
+        "progress": int(task.progress or 0),
+        "message": str(task.message or ""),
+        "result": task.result if isinstance(task.result, dict) else None,
+        "error": str(task.error) if task.error is not None else None,
+        "progress_detail": task.progress_detail if isinstance(task.progress_detail, dict) else None,
+        "metadata": task.metadata if isinstance(task.metadata, dict) else {},
+    }
+
+
+def _normalize_task_status_filter(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized not in {status.value for status in TaskStatus}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid task status filter",
+        )
+    return normalized
 
 
 def _normalize_provider_type(value: str) -> str:
@@ -674,6 +706,70 @@ async def delete_user(
     return None
 
 
+@router.get("/tasks")
+async def list_tasks(
+    task_type: str | None = Query(default=None),
+    project_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=200, ge=1, le=1000),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    normalized_status = _normalize_task_status_filter(status_filter)
+    tasks = task_manager.list_tasks(
+        task_type=str(task_type or "").strip() or None,
+        project_id=str(project_id or "").strip() or None,
+        limit=limit,
+    )
+    if user_id:
+        target_user_id = str(user_id).strip()
+        tasks = [t for t in tasks if str((t.metadata or {}).get("user_id") or "") == target_user_id]
+    if normalized_status:
+        tasks = [
+            t
+            for t in tasks
+            if (t.status.value if isinstance(t.status, TaskStatus) else str(t.status or "").lower()) == normalized_status
+        ]
+
+    return {
+        "tasks": [_serialize_task(task) for task in tasks],
+        "total": len(tasks),
+        "limit": limit,
+    }
+
+
+@router.get("/tasks/{task_id}")
+async def get_task_detail(
+    task_id: str,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    return {
+        "task": _serialize_task(task),
+    }
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    current_status = task.status.value if isinstance(task.status, TaskStatus) else str(task.status or "").lower()
+    if current_status in _RUNNING_TASK_STATUSES:
+        task = task_manager.cancel_task(task_id, message="Task cancelled by admin") or task
+    return {
+        "task": _serialize_task(task),
+    }
+
+
 def _serialize_provider(provider: AIProviderConfig) -> dict[str, Any]:
     return {
         "id": provider.id,
@@ -983,10 +1079,44 @@ def _oasis_default_payload() -> dict[str, Any]:
         "max_posts_per_hour": 20.0,
         "max_response_delay_minutes": 720,
         "allowed_platforms": ["twitter", "reddit"],
-        "llm_request_timeout_seconds": 120,
-        "llm_retry_count": 2,
-        "llm_retry_interval_seconds": 1.5,
+        "llm_request_timeout_seconds": 180,
+        "llm_retry_count": 4,
+        "llm_retry_interval_seconds": 2.0,
+        "llm_prefer_stream": True,
+        "llm_stream_fallback_nonstream": True,
+        "llm_task_concurrency": 1,
+        "llm_model_default_concurrency": 8,
+        "llm_model_concurrency_overrides": {},
     }
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _normalize_model_concurrency_overrides(raw: Any) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for key, value in raw.items():
+        model_name = str(key or "").strip().lower()
+        if not model_name:
+            continue
+        try:
+            normalized[model_name] = max(1, min(64, int(value)))
+        except (TypeError, ValueError):
+            continue
+    return normalized
 
 
 def _normalize_oasis_config(raw: Any) -> dict[str, Any]:
@@ -1060,6 +1190,31 @@ def _normalize_oasis_config(raw: Any) -> dict[str, Any]:
         )
     except (TypeError, ValueError):
         pass
+    payload["llm_prefer_stream"] = _as_bool(
+        current.get("llm_prefer_stream", payload["llm_prefer_stream"]),
+        bool(payload["llm_prefer_stream"]),
+    )
+    payload["llm_stream_fallback_nonstream"] = _as_bool(
+        current.get("llm_stream_fallback_nonstream", payload["llm_stream_fallback_nonstream"]),
+        bool(payload["llm_stream_fallback_nonstream"]),
+    )
+    try:
+        payload["llm_task_concurrency"] = max(
+            1,
+            min(64, int(current.get("llm_task_concurrency", payload["llm_task_concurrency"]))),
+        )
+    except (TypeError, ValueError):
+        pass
+    try:
+        payload["llm_model_default_concurrency"] = max(
+            1,
+            min(64, int(current.get("llm_model_default_concurrency", payload["llm_model_default_concurrency"]))),
+        )
+    except (TypeError, ValueError):
+        pass
+    payload["llm_model_concurrency_overrides"] = _normalize_model_concurrency_overrides(
+        current.get("llm_model_concurrency_overrides")
+    )
 
     allowed_raw = current.get("allowed_platforms")
     if isinstance(allowed_raw, list):

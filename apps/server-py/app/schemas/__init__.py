@@ -17,9 +17,18 @@ from app.schemas.cognee import (
 from app.schemas.project import (
     OperationRequest,
     OperationResponse,
+    ProjectCharacterCreate,
+    ProjectCharacterResponse,
+    ProjectCharacterUpdate,
     ProjectCreate,
+    ProjectGlossaryTermCreate,
+    ProjectGlossaryTermResponse,
+    ProjectGlossaryTermUpdate,
     ProjectResponse,
     ProjectUpdate,
+    ProjectWorldbookEntryCreate,
+    ProjectWorldbookEntryResponse,
+    ProjectWorldbookEntryUpdate,
 )
 from app.schemas.user import UserResponse, UserUsageResponse
 
@@ -45,9 +54,18 @@ __all__ = [
     "CogneeVisualizationResponse",
     "OperationRequest",
     "OperationResponse",
+    "ProjectCharacterCreate",
+    "ProjectCharacterResponse",
+    "ProjectCharacterUpdate",
+    "ProjectGlossaryTermCreate",
+    "ProjectGlossaryTermResponse",
+    "ProjectGlossaryTermUpdate",
     "ProjectCreate",
     "ProjectResponse",
     "ProjectUpdate",
+    "ProjectWorldbookEntryCreate",
+    "ProjectWorldbookEntryResponse",
+    "ProjectWorldbookEntryUpdate",
     "UserResponse",
     "UserUsageResponse",
 ]

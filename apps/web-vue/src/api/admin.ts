@@ -1,5 +1,7 @@
 import api from './index'
 import type {
+  AdminTask,
+  AdminTaskListResponse,
   StatsResponse,
   UserListResponse,
   Provider,
@@ -51,6 +53,31 @@ function normalizeProviderModelList(payload: ProviderModelListPayload, kind: Pro
 export async function getStats(): Promise<StatsResponse> {
   const { data } = await api.get<StatsResponse>('/api/admin/stats')
   return data
+}
+
+export async function getAdminTasks(params?: {
+  task_type?: string
+  project_id?: string
+  user_id?: string
+  status?: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
+  limit?: number
+}): Promise<AdminTaskListResponse> {
+  const { data } = await api.get<AdminTaskListResponse>('/api/admin/tasks', { params: params || {} })
+  return {
+    tasks: Array.isArray(data.tasks) ? data.tasks : [],
+    total: Number(data.total || 0),
+    limit: Number(data.limit || 0),
+  }
+}
+
+export async function getAdminTask(taskId: string): Promise<AdminTask> {
+  const { data } = await api.get<{ task: AdminTask }>(`/api/admin/tasks/${taskId}`)
+  return data.task
+}
+
+export async function cancelAdminTask(taskId: string): Promise<AdminTask> {
+  const { data } = await api.post<{ task: AdminTask }>(`/api/admin/tasks/${taskId}/cancel`)
+  return data.task
 }
 
 export async function getUsers(
@@ -232,9 +259,26 @@ const DEFAULT_OASIS_CONFIG: OasisConfig = {
   max_posts_per_hour: 20,
   max_response_delay_minutes: 720,
   allowed_platforms: ['twitter', 'reddit'],
-  llm_request_timeout_seconds: 120,
-  llm_retry_count: 2,
-  llm_retry_interval_seconds: 1.5,
+  llm_request_timeout_seconds: 180,
+  llm_retry_count: 4,
+  llm_retry_interval_seconds: 2,
+  llm_prefer_stream: true,
+  llm_stream_fallback_nonstream: true,
+  llm_task_concurrency: 1,
+  llm_model_default_concurrency: 8,
+  llm_model_concurrency_overrides: {},
+}
+
+function normalizeModelConcurrencyOverrides(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const normalized: Record<string, number> = {}
+  for (const [rawKey, rawValue] of Object.entries(raw as Record<string, unknown>)) {
+    const key = String(rawKey || '').trim().toLowerCase()
+    const value = Number(rawValue)
+    if (!key || !Number.isFinite(value) || value < 1) continue
+    normalized[key] = value
+  }
+  return normalized
 }
 
 function normalizeOasisConfig(payload: Partial<OasisConfig> | null | undefined): OasisConfig {
@@ -257,6 +301,23 @@ function normalizeOasisConfig(payload: Partial<OasisConfig> | null | undefined):
     llm_retry_count: Number(payload?.llm_retry_count ?? DEFAULT_OASIS_CONFIG.llm_retry_count),
     llm_retry_interval_seconds: Number(
       payload?.llm_retry_interval_seconds ?? DEFAULT_OASIS_CONFIG.llm_retry_interval_seconds
+    ),
+    llm_prefer_stream:
+      typeof payload?.llm_prefer_stream === 'boolean'
+        ? payload.llm_prefer_stream
+        : DEFAULT_OASIS_CONFIG.llm_prefer_stream,
+    llm_stream_fallback_nonstream:
+      typeof payload?.llm_stream_fallback_nonstream === 'boolean'
+        ? payload.llm_stream_fallback_nonstream
+        : DEFAULT_OASIS_CONFIG.llm_stream_fallback_nonstream,
+    llm_task_concurrency: Number(
+      payload?.llm_task_concurrency ?? DEFAULT_OASIS_CONFIG.llm_task_concurrency
+    ),
+    llm_model_default_concurrency: Number(
+      payload?.llm_model_default_concurrency ?? DEFAULT_OASIS_CONFIG.llm_model_default_concurrency
+    ),
+    llm_model_concurrency_overrides: normalizeModelConcurrencyOverrides(
+      payload?.llm_model_concurrency_overrides
     ),
     allowed_platforms: Array.isArray(payload?.allowed_platforms)
       ? payload!.allowed_platforms.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)

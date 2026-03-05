@@ -1,25 +1,29 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { useToast } from '@/composables/useToast'
 import AppLayout from '@/components/layout/AppLayout.vue'
-import TextEditor from '@/components/editor/TextEditor.vue'
-import GraphPanel from '@/components/graph/GraphPanel.vue'
-import GraphSearch from '@/components/graph/GraphSearch.vue'
-import Button from '@/components/ui/Button.vue'
-import Card from '@/components/ui/Card.vue'
-import Alert from '@/components/ui/Alert.vue'
-import Checkbox from '@/components/ui/Checkbox.vue'
-import Select from '@/components/ui/Select.vue'
-import Input from '@/components/ui/Input.vue'
-import Textarea from '@/components/ui/Textarea.vue'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { runOperation, getEmbeddingModels, getModels, createProjectChapter } from '@/api/projects'
+import ProjectAIOperationsShell from '@/components/project/ProjectAIOperationsShell.vue'
+import ProjectChapterExplorer from '@/components/project/ProjectChapterExplorer.vue'
+import ProjectChapterContextMenu from '@/components/project/ProjectChapterContextMenu.vue'
+import ProjectEditorPanel from '@/components/project/ProjectEditorPanel.vue'
+import ProjectRightAIContent from '@/components/project/ProjectRightAIContent.vue'
+import ProjectRightGraphContent from '@/components/project/ProjectRightGraphContent.vue'
+import ProjectTaskCenter from '@/components/project/ProjectTaskCenter.vue'
+import ProjectWorkspaceHeader from '@/components/project/ProjectWorkspaceHeader.vue'
+import { useProjectKnowledgeBase } from '@/composables/useProjectKnowledgeBase'
+import {
+  runOperation,
+  getEmbeddingModels,
+  getModels,
+  createProjectChapter,
+} from '@/api/projects'
 import type { ModelInfo } from '@/api/projects'
 import { createSimulation, listSimulations } from '@/api/simulation'
 import {
   cancelGraphTask,
+  getGraphStatus,
   getOasisTaskStatus,
   getVisualization,
   listGraphTasks,
@@ -34,6 +38,7 @@ import type {
   ComponentModelConfig,
   Operation,
   GraphData,
+  GraphStatus,
   OasisTask,
   ProjectOntology,
   ProjectOasisAnalysis,
@@ -42,7 +47,6 @@ import type {
 } from '@/types'
 import { extractTextFromDocument, GRAPH_DOCUMENT_ACCEPT } from '@/utils/document'
 import {
-  Save,
   Sparkles,
   ArrowRight,
   Search,
@@ -64,13 +68,13 @@ const chapterTitleDraft = ref('')
 const chapterSearchQuery = ref('')
 const inlineRenameChapterId = ref('')
 const inlineRenameChapterTitle = ref('')
-const inlineRenameInputRef = ref<HTMLInputElement | null>(null)
 const inlineRenameSubmitting = ref(false)
 const projectTitleEditing = ref(false)
 const projectTitleDraft = ref('')
 const projectTitleSaving = ref(false)
 const saving = ref(false)
-const operationType = ref('CREATE')
+type OperationType = 'CREATE' | 'CONTINUE' | 'ANALYZE' | 'REWRITE' | 'SUMMARIZE'
+const operationType = ref<OperationType>('CREATE')
 const componentModels = ref<ComponentModelConfig>({})
 const operationLoading = ref(false)
 const operationResult = ref<string | null>(null)
@@ -86,7 +90,75 @@ const continueOutlineLoading = ref(false)
 const continueOutlineError = ref<string | null>(null)
 const confirmedSimulationId = ref('')
 
+const {
+  projectCharacters,
+  selectedCharacterIds,
+  charactersLoading,
+  charactersError,
+  characterFormOpen,
+  characterFormSubmitting,
+  editingCharacterId,
+  characterForm,
+  selectedCharacters,
+  allCharactersSelected,
+  characterSelectionCountLabel,
+  loadCharacters,
+  beginCreateCharacter,
+  beginEditCharacter,
+  cancelCharacterForm,
+  handleSubmitCharacter,
+  handleDeleteCharacter,
+  toggleCharacterScope,
+  setAllCharactersSelected,
+  projectGlossaryTerms,
+  selectedGlossaryTermIds,
+  glossaryLoading,
+  glossaryError,
+  glossaryFormOpen,
+  glossaryFormSubmitting,
+  editingGlossaryTermId,
+  glossaryForm,
+  selectedGlossaryTerms,
+  allGlossaryTermsSelected,
+  glossarySelectionCountLabel,
+  loadGlossaryTerms,
+  beginCreateGlossaryTerm,
+  beginEditGlossaryTerm,
+  cancelGlossaryForm,
+  handleSubmitGlossaryTerm,
+  handleDeleteGlossaryTerm,
+  toggleGlossaryScope,
+  setAllGlossaryTermsSelected,
+  projectWorldbookEntries,
+  selectedWorldbookEntryIds,
+  worldbookLoading,
+  worldbookError,
+  worldbookFormOpen,
+  worldbookFormSubmitting,
+  editingWorldbookEntryId,
+  worldbookForm,
+  selectedWorldbookEntries,
+  allWorldbookEntriesSelected,
+  worldbookSelectionCountLabel,
+  loadWorldbookEntries,
+  beginCreateWorldbookEntry,
+  beginEditWorldbookEntry,
+  cancelWorldbookForm,
+  handleSubmitWorldbookEntry,
+  handleDeleteWorldbookEntry,
+  toggleWorldbookScope,
+  setAllWorldbookEntriesSelected,
+  resetKnowledgeBaseState,
+} = useProjectKnowledgeBase({
+  projectId,
+  parseError,
+  notifySuccess: (message) => toast.success(message),
+  notifyError: (message) => toast.error(message),
+})
+
 const graphData = ref<GraphData>({ nodes: [], edges: [] })
+type GraphFreshnessState = 'no_ontology' | 'empty' | 'syncing' | 'stale' | 'fresh'
+const graphStatus = ref<GraphStatus | null>(null)
 const graphLoading = ref(false)
 const graphError = ref<string | null>(null)
 const graphBuildProgress = ref(0)
@@ -94,6 +166,18 @@ const graphBuildMessage = ref('')
 const graphParsingFile = ref<string | null>(null)
 const graphInputCacheText = ref('')
 const graphBuildMode = ref<'rebuild' | 'incremental'>('rebuild')
+type GraphBuildSummary = {
+  status: string
+  requestedMode: string
+  mode: string
+  modeReason: string
+  reason: string
+  changedCount: number
+  addedCount: number
+  modifiedCount: number
+  removedCount: number
+}
+const graphBuildSummary = ref<GraphBuildSummary | null>(null)
 
 const ONTOLOGY_PRESET_PROMPT = `请基于当前章节文本构建可用于 RAG 与剧情推理的本体（Ontology），要求：
 1. 实体类型覆盖：人物、组织、地点、事件、时间、物品、关系角色；
@@ -141,7 +225,6 @@ const TASK_DETAIL_POLL_MS = 3000
 const models = ref<ModelInfo[]>([])
 const embeddingModels = ref<ModelInfo[]>([])
 const modelsLoading = ref(false)
-const chapterFileInput = ref<HTMLInputElement | null>(null)
 const chapterImporting = ref(false)
 const chapterImportMessage = ref<string | null>(null)
 const chapterContextMenu = ref({
@@ -224,7 +307,99 @@ const hasOntology = computed(() => {
   return true
 })
 const hasOasisAnalysis = computed(() => !!oasisAnalysisData.value?.scenario_summary)
-const graphReady = computed(() => !!projectStore.currentProject?.cognee_dataset_id)
+const graphReady = computed(() => {
+  if (graphStatus.value?.dataset_id) return true
+  return !!projectStore.currentProject?.cognee_dataset_id
+})
+const draftDirty = computed(() => {
+  const chapter = findChapterById(activeChapterId.value)
+  if (!chapter) return false
+  return (content.value || '') !== (chapter.content || '')
+})
+const latestGraphBuildCompletedAtMs = computed(() => {
+  const completed = taskList.value
+    .filter((task) => task.task_type === 'graph_build' && task.status === 'completed')
+    .map((task) => Date.parse(task.updated_at || '') || 0)
+    .filter((value) => value > 0)
+  if (!completed.length) return 0
+  return Math.max(...completed)
+})
+const latestChapterMutationAtMs = computed(() => {
+  const chapters = projectStore.orderedChapters || []
+  const values = chapters
+    .map((chapter) => Date.parse(chapter.updated_at || '') || 0)
+    .filter((value) => value > 0)
+  if (!values.length) return 0
+  return Math.max(...values)
+})
+
+function normalizeGraphFreshness(value: unknown): GraphFreshnessState | null {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized === 'no_ontology') return 'no_ontology'
+  if (normalized === 'empty') return 'empty'
+  if (normalized === 'syncing') return 'syncing'
+  if (normalized === 'stale') return 'stale'
+  if (normalized === 'fresh') return 'fresh'
+  return null
+}
+
+const graphFreshnessState = computed<GraphFreshnessState>(() => {
+  const apiState = normalizeGraphFreshness(graphStatus.value?.graph_freshness)
+  if (apiState) return apiState
+  if (!hasOntology.value) return 'no_ontology'
+  if (graphLoading.value || pipelineTaskPolling.value && pipelineTask.value?.task_type === 'graph_build') return 'syncing'
+  if (!graphReady.value) return 'empty'
+  if (draftDirty.value) return 'stale'
+  const latestBuild = latestGraphBuildCompletedAtMs.value
+  const latestChapter = latestChapterMutationAtMs.value
+  if (!latestBuild) return 'stale'
+  if (latestChapter > latestBuild + 1000) return 'stale'
+  return 'fresh'
+})
+const graphFreshnessLabel = computed(() => {
+  const state = graphFreshnessState.value
+  if (state === 'no_ontology') return 'Ontology required'
+  if (state === 'empty') return 'Graph not built'
+  if (state === 'syncing') return 'Graph syncing...'
+  if (state === 'stale') return 'Graph stale'
+  return 'Graph up to date'
+})
+const graphFreshnessHint = computed(() => {
+  const state = graphFreshnessState.value
+  const statusPayload = graphStatus.value
+  const reason = String(statusPayload?.graph_reason || '').trim()
+  if (state === 'no_ontology') {
+    return 'Please complete ontology generation before graph build.'
+  }
+  if (state === 'empty') {
+    return reason === 'dataset_missing'
+      ? 'No graph dataset found. Build the graph before RAG-dependent operations.'
+      : 'Build graph once to enable RAG and graph-based analysis.'
+  }
+  if (state === 'syncing') {
+    const taskId = String(statusPayload?.graph_syncing_task_id || '').trim()
+    return taskId
+      ? `Graph build task is running (${taskId.slice(0, 8)}...).`
+      : 'Graph build task is running.'
+  }
+  if (state === 'stale') {
+    const added = Number(statusPayload?.graph_added_count || 0)
+    const modified = Number(statusPayload?.graph_modified_count || 0)
+    const removed = Number(statusPayload?.graph_removed_count || 0)
+    if (added > 0 || modified > 0 || removed > 0) {
+      return `Changes detected: +${added} / ~${modified} / -${removed}. Run incremental update before RAG operations.`
+    }
+    if (reason === 'graph_baseline_missing_or_scope_changed' || reason === 'graph_hash_state_missing_or_scope_changed') {
+      return 'Graph baseline is missing or scope changed. Run a rebuild once, then use incremental updates.'
+    }
+    return 'Chapters changed after last build. Run incremental update before RAG-dependent operations.'
+  }
+  const lastBuildAt = String(statusPayload?.graph_last_build_at || '').trim()
+  if (lastBuildAt) {
+    return `Last synced at ${formatDate(lastBuildAt)}`
+  }
+  return ''
+})
 const confirmedSimulation = computed(() =>
   projectSimulations.value.find((sim) => sim.simulation_id === confirmedSimulationId.value) || null
 )
@@ -263,13 +438,21 @@ const oasisPipeline = computed(() => {
   ]
 })
 
-const operationTypes = [
+const operationTypes: Array<{ value: OperationType; label: string; icon: Component; description: string }> = [
   { value: 'CREATE', label: 'Create', icon: Sparkles, description: 'Start from zero with base info' },
   { value: 'CONTINUE', label: 'Continue', icon: ArrowRight, description: 'Continue based on uploaded document' },
   { value: 'ANALYZE', label: 'Analyze', icon: Search, description: 'Analyze uploaded document' },
   { value: 'REWRITE', label: 'Rewrite', icon: RefreshCw, description: 'Rewrite uploaded document' },
   { value: 'SUMMARIZE', label: 'Summarize', icon: FileText, description: 'Summarize uploaded document' },
 ]
+
+function setOperationType(value: string) {
+  const normalized = String(value || '').toUpperCase()
+  const allowed: OperationType[] = ['CREATE', 'CONTINUE', 'ANALYZE', 'REWRITE', 'SUMMARIZE']
+  if (allowed.includes(normalized as OperationType)) {
+    operationType.value = normalized as OperationType
+  }
+}
 
 const operationModelKey = computed(() => `operation_${operationType.value.toLowerCase()}`)
 
@@ -433,6 +616,64 @@ function sortTasksByCreated(tasks: OasisTask[]): OasisTask[] {
   })
 }
 
+function normalizeIdListCount(value: unknown): number {
+  return Array.isArray(value) ? value.filter((item) => !!String(item || '').trim()).length : 0
+}
+
+function extractGraphBuildSummary(task: OasisTask | null): GraphBuildSummary | null {
+  if (!task || task.task_type !== 'graph_build') return null
+  const result = task.result
+  if (!result || typeof result !== 'object') return null
+  const status = String(result.status || task.status || '').trim()
+  const requestedMode = String(result.requested_mode || '').trim()
+  const mode = String(result.mode || '').trim()
+  const modeReason = String(result.mode_reason || '').trim()
+  const reason = String(result.reason || '').trim()
+  const changedCount = normalizeIdListCount((result as Record<string, unknown>).changed_chapter_ids)
+  const addedCount = normalizeIdListCount((result as Record<string, unknown>).added_chapter_ids)
+  const modifiedCount = normalizeIdListCount((result as Record<string, unknown>).modified_chapter_ids)
+  const removedCount = normalizeIdListCount((result as Record<string, unknown>).removed_chapter_ids)
+  if (!status && !mode && !requestedMode && !reason && !modeReason && changedCount <= 0 && addedCount <= 0 && modifiedCount <= 0 && removedCount <= 0) {
+    return null
+  }
+  return {
+    status,
+    requestedMode,
+    mode,
+    modeReason,
+    reason,
+    changedCount,
+    addedCount,
+    modifiedCount,
+    removedCount,
+  }
+}
+
+function formatGraphBuildSummary(summary: GraphBuildSummary | null): string {
+  if (!summary) return ''
+  const modeLabel = summary.mode || summary.requestedMode || 'unknown'
+  const changeBits = [
+    `changed ${summary.changedCount}`,
+    `added ${summary.addedCount}`,
+    `modified ${summary.modifiedCount}`,
+    `removed ${summary.removedCount}`,
+  ]
+  return `${modeLabel} · ${changeBits.join(' / ')}`
+}
+
+function syncGraphBuildSummaryFromTask(task: OasisTask | null) {
+  const summary = extractGraphBuildSummary(task)
+  if (summary) {
+    graphBuildSummary.value = summary
+  }
+}
+
+function syncGraphBuildSummaryFromTasks(tasks: OasisTask[]) {
+  const latestGraphTask = sortTasksByCreated(tasks).find((item) => item.task_type === 'graph_build')
+  if (!latestGraphTask) return
+  syncGraphBuildSummaryFromTask(latestGraphTask)
+}
+
 function upsertTaskListItem(task: OasisTask) {
   const normalizedTaskId = String(task.task_id || '')
   if (!normalizedTaskId) return
@@ -444,10 +685,12 @@ function upsertTaskListItem(task: OasisTask) {
     next.push(task)
   }
   taskList.value = sortTasksByCreated(next)
+  syncGraphBuildSummaryFromTask(task)
 }
 
 function replaceTaskList(tasks: OasisTask[]) {
   taskList.value = sortTasksByCreated(tasks)
+  syncGraphBuildSummaryFromTasks(taskList.value)
 }
 
 async function loadTaskList(silent = false) {
@@ -459,6 +702,7 @@ async function loadTaskList(silent = false) {
     const response = await listGraphTasks(projectId.value, { limit: 100 })
     const tasks = Array.isArray(response.tasks) ? response.tasks : []
     replaceTaskList(tasks)
+    await loadGraphStatus(true)
   } catch (e: any) {
     if (!silent) {
       taskListError.value = parseError(e, 'Failed to load task list')
@@ -489,6 +733,16 @@ async function handleRefreshTaskList() {
   await loadTaskList()
 }
 
+async function loadGraphStatus(silent = true) {
+  try {
+    graphStatus.value = await getGraphStatus(projectId.value)
+  } catch (e: any) {
+    if (!silent && !graphError.value) {
+      graphError.value = parseError(e, 'Failed to load graph status')
+    }
+  }
+}
+
 function taskTypeLabel(taskType: string): string {
   const labels: Record<string, string> = {
     ontology_generate: 'Ontology',
@@ -501,26 +755,9 @@ function taskTypeLabel(taskType: string): string {
   return labels[taskType] || taskType
 }
 
-function taskStatusClass(status: string): string {
-  const normalized = String(status || '').toLowerCase()
-  if (normalized === 'completed') return 'text-emerald-700 dark:text-emerald-300'
-  if (normalized === 'failed') return 'text-red-700 dark:text-red-300'
-  if (normalized === 'cancelled') return 'text-stone-600 dark:text-zinc-400'
-  if (normalized === 'processing') return 'text-amber-700 dark:text-amber-300'
-  return 'text-stone-700 dark:text-zinc-300'
-}
-
 function isRunningTaskStatus(status: string): boolean {
   const normalized = String(status || '').toLowerCase()
   return normalized === 'pending' || normalized === 'processing'
-}
-
-function isTaskCancellable(task: OasisTask): boolean {
-  return isRunningTaskStatus(task.status)
-}
-
-function isTaskCancelling(taskId: string): boolean {
-  return cancellingTaskIds.value.includes(taskId)
 }
 
 function syncCancelledTask(task: OasisTask) {
@@ -544,7 +781,8 @@ function syncCancelledTask(task: OasisTask) {
 }
 
 async function handleCancelTask(task: OasisTask) {
-  if (!task?.task_id || !isTaskCancellable(task) || isTaskCancelling(task.task_id)) return
+  if (!task?.task_id || !isRunningTaskStatus(task.status)) return
+  if (cancellingTaskIds.value.includes(task.task_id)) return
   cancellingTaskIds.value = [...cancellingTaskIds.value, task.task_id]
   try {
     const response = await cancelGraphTask(projectId.value, task.task_id)
@@ -593,8 +831,13 @@ async function applyPipelineTaskResult(task: OasisTask) {
     ontologyError.value = null
     await loadProject()
   } else if (task.task_type === 'graph_build') {
+    syncGraphBuildSummaryFromTask(task)
+    const summaryText = formatGraphBuildSummary(graphBuildSummary.value)
     graphBuildProgress.value = 100
     graphBuildMessage.value = task.message || 'Knowledge graph built'
+    if (summaryText) {
+      graphBuildMessage.value = `${graphBuildMessage.value} · ${summaryText}`
+    }
     graphError.value = null
     await loadGraphData()
     await loadProject()
@@ -607,6 +850,9 @@ async function pollPipelineTask(taskId: string) {
     pipelineTask.value = data.task
     upsertTaskListItem(data.task)
     syncPipelineProgress(data.task)
+    if (data.task.task_type === 'graph_build') {
+      await loadGraphStatus(true)
+    }
     if (data.task.task_type === 'graph_build' && isRunningTaskStatus(data.task.status)) {
       await loadGraphData({ preserveOnError: true })
     }
@@ -804,9 +1050,7 @@ function syncActiveChapterContentFromState() {
 }
 
 function hasUnsavedDraftChanges(): boolean {
-  const chapter = findChapterById(activeChapterId.value)
-  if (!chapter) return false
-  return (content.value || '') !== (chapter.content || '')
+  return draftDirty.value
 }
 
 function buildContinuationChapterTitle(nextOrder: number): string {
@@ -979,18 +1223,11 @@ function toggleChapterForWorkflow(chapterId: string) {
   selectedChapterIds.value = [...selectedChapterIds.value, chapterId]
 }
 
-function isInlineRenamingChapter(chapterId: string): boolean {
-  return inlineRenameChapterId.value === chapterId
-}
-
 async function beginInlineRenameChapter(chapterId: string) {
   const chapter = findChapterById(chapterId)
   if (!chapter) return
   inlineRenameChapterId.value = chapterId
   inlineRenameChapterTitle.value = chapter.title || `Chapter ${chapter.order_index + 1}`
-  await nextTick()
-  inlineRenameInputRef.value?.focus()
-  inlineRenameInputRef.value?.select()
 }
 
 function cancelInlineRenameChapter() {
@@ -1108,10 +1345,6 @@ function normalizeChapterTitleFromFile(fileName: string): string {
   const dot = trimmed.lastIndexOf('.')
   const base = dot > 0 ? trimmed.slice(0, dot) : trimmed
   return base.trim() || 'Untitled chapter'
-}
-
-function openChapterFilePicker() {
-  chapterFileInput.value?.click()
 }
 
 async function handleChapterFileSelect(event: Event) {
@@ -1247,6 +1480,7 @@ async function handleCreateWorkflowSimulation() {
 
 async function loadProject() {
   await projectStore.fetchProject(projectId.value)
+  await loadGraphStatus(true)
   if (projectStore.currentProject) {
     ontologyData.value = projectStore.currentProject.ontology_schema || null
     const savedOasis = projectStore.currentProject.oasis_analysis || null
@@ -1270,6 +1504,7 @@ async function loadProject() {
   }
   await ensureChapterStateInitialized()
   await projectStore.fetchOperations(projectId.value)
+  await Promise.all([loadCharacters(), loadGlossaryTerms(), loadWorldbookEntries()])
   await loadProjectSimulations()
   if (projectStore.currentProject?.cognee_dataset_id) {
     await loadGraphData()
@@ -1328,7 +1563,7 @@ async function resumeProjectTasks() {
 async function handleSave() {
   saving.value = true
   try {
-    await persistActiveChapterDraftIfNeeded()
+    await persistActiveChapterDraftIfNeeded({ triggerGraphRefresh: true })
     await ensureChapterStateInitialized()
     toast.success('Project saved')
   } catch {
@@ -1338,21 +1573,28 @@ async function handleSave() {
   }
 }
 
-async function persistActiveChapterDraftIfNeeded() {
+async function persistActiveChapterDraftIfNeeded(
+  options: { triggerGraphRefresh?: boolean } = {}
+): Promise<string[]> {
   const activeChapter = findChapterById(activeChapterId.value)
-  if (!activeChapter) return
+  if (!activeChapter) return []
   const nextTitle = chapterTitleDraft.value.trim() || activeChapter.title || 'Untitled chapter'
   const nextContent = content.value
   const currentTitle = activeChapter.title || ''
   const currentContent = activeChapter.content || ''
   if (nextTitle === currentTitle && nextContent === currentContent) {
-    return
+    return []
   }
   await projectStore.updateChapter(projectId.value, activeChapter.id, {
     title: nextTitle,
     content: nextContent,
   })
   chapterTitleDraft.value = nextTitle
+  const changedChapterIds = [activeChapter.id]
+  if (options.triggerGraphRefresh) {
+    void triggerIncrementalGraphRefresh(changedChapterIds)
+  }
+  return changedChapterIds
 }
 
 function normalizeChapterIds(chapterIds: string[]): string[] {
@@ -1371,6 +1613,7 @@ async function triggerIncrementalGraphRefresh(chapterIds: string[] = []) {
   if (!hasOntology.value) return
   if (graphLoading.value) return
   const normalized = normalizeChapterIds(chapterIds)
+  graphBuildSummary.value = null
   try {
     const response = await startBuildGraphTask(projectId.value, {
       chapter_ids: normalized.length ? normalized : undefined,
@@ -1451,6 +1694,9 @@ async function handleOperation() {
       input,
       model: operationModel.value || undefined,
       chapter_ids: selectedChapterIds.value.length ? selectedChapterIds.value : undefined,
+      character_ids: selectedCharacterIds.value.length ? selectedCharacterIds.value : undefined,
+      glossary_term_ids: selectedGlossaryTermIds.value.length ? selectedGlossaryTermIds.value : undefined,
+      worldbook_entry_ids: selectedWorldbookEntryIds.value.length ? selectedWorldbookEntryIds.value : undefined,
     })
     operationResult.value = result.output
     let changedChapterIds: string[] = []
@@ -1499,6 +1745,9 @@ async function handleGenerateCreateOutline() {
       input,
       model: operationModel.value || undefined,
       chapter_ids: selectedChapterIds.value.length ? selectedChapterIds.value : undefined,
+      character_ids: selectedCharacterIds.value.length ? selectedCharacterIds.value : undefined,
+      glossary_term_ids: selectedGlossaryTermIds.value.length ? selectedGlossaryTermIds.value : undefined,
+      worldbook_entry_ids: selectedWorldbookEntryIds.value.length ? selectedWorldbookEntryIds.value : undefined,
       use_rag: false,
     })
     createOutline.value = result.output?.trim() || ''
@@ -1545,6 +1794,9 @@ async function handleGenerateContinueOutline() {
       ].join('\n'),
       model: operationModel.value || undefined,
       chapter_ids: selectedChapterIds.value.length ? selectedChapterIds.value : undefined,
+      character_ids: selectedCharacterIds.value.length ? selectedCharacterIds.value : undefined,
+      glossary_term_ids: selectedGlossaryTermIds.value.length ? selectedGlossaryTermIds.value : undefined,
+      worldbook_entry_ids: selectedWorldbookEntryIds.value.length ? selectedWorldbookEntryIds.value : undefined,
     })
     continueOutline.value = result.output?.trim() || ''
     if (!continueOutline.value) {
@@ -1615,6 +1867,7 @@ async function handleBuildGraph() {
     graphError.value = 'Please generate ontology before building the graph'
     return
   }
+  graphBuildSummary.value = null
   graphLoading.value = true
   graphError.value = null
   pipelineTaskError.value = null
@@ -1755,9 +2008,11 @@ async function handleGenerateOasisReport() {
 async function loadGraphData(options: { preserveOnError?: boolean } = {}) {
   try {
     graphData.value = await getVisualization(projectId.value)
-  } catch {
+    graphError.value = null
+  } catch (e: any) {
     if (!options.preserveOnError) {
       graphData.value = { nodes: [], edges: [] }
+      graphError.value = parseError(e, 'Failed to load graph visualization')
     }
   }
 }
@@ -1779,6 +2034,19 @@ function statusColor(status: string) {
     PENDING: 'text-stone-500 dark:text-zinc-400',
   }
   return colors[status] || 'text-stone-500 dark:text-zinc-400'
+}
+
+function graphFreshnessClass(state: string): string {
+  if (state === 'fresh') {
+    return 'border-emerald-300/80 bg-emerald-100/70 text-emerald-800 dark:border-emerald-700/50 dark:bg-emerald-900/20 dark:text-emerald-300'
+  }
+  if (state === 'syncing') {
+    return 'border-amber-300/80 bg-amber-100/70 text-amber-900 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-300'
+  }
+  if (state === 'stale') {
+    return 'border-rose-300/80 bg-rose-100/70 text-rose-900 dark:border-rose-700/50 dark:bg-rose-900/20 dark:text-rose-300'
+  }
+  return 'border-stone-300/80 bg-stone-100/70 text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/45 dark:text-zinc-300'
 }
 
 function oasisTaskStatusColor(status: string) {
@@ -1885,6 +2153,7 @@ watch(
       pipelineTaskError.value = null
       oasisTaskLastId.value = ''
       graphData.value = { nodes: [], edges: [] }
+      graphStatus.value = null
       graphLoading.value = false
       graphError.value = null
       graphBuildMessage.value = ''
@@ -1910,6 +2179,7 @@ watch(
       continueUserInstruction.value = ''
       continueOutline.value = ''
       continueOutlineError.value = null
+      resetKnowledgeBaseState()
       confirmedSimulationId.value = ''
       loadProject()
     }
@@ -1948,1047 +2218,285 @@ watch(selectedChapterIds, () => {
     </div>
 
     <div v-else class="h-full flex flex-col bg-[#f7f3e8] text-stone-800 dark:bg-zinc-900 dark:text-zinc-100">
-      <div class="flex items-center justify-between gap-3 border-b border-stone-300/80 px-4 py-2.5 dark:border-zinc-700/60">
-        <div class="min-w-0">
-          <div v-if="projectTitleEditing" class="flex flex-wrap items-center gap-2">
-            <Input
-              v-model="projectTitleDraft"
-              class="h-8 min-w-[220px] max-w-[420px]"
-              placeholder="Project name"
-              @keydown.enter.prevent="submitProjectTitleEdit"
-              @keydown.esc.prevent="cancelProjectTitleEdit"
-            />
-            <Button
-              variant="secondary"
-              size="sm"
-              :loading="projectTitleSaving"
-              @click="submitProjectTitleEdit"
-            >
-              Save
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              :disabled="projectTitleSaving"
-              @click="cancelProjectTitleEdit"
-            >
-              Cancel
-            </Button>
-          </div>
-          <Button
-            v-else
-            variant="ghost"
-            size="sm"
-            class="h-auto min-h-0 px-0 py-0 text-left hover:bg-transparent dark:hover:bg-transparent"
-            @click="beginProjectTitleEdit"
-          >
-            <h1 class="truncate text-sm font-semibold sm:text-base">
-              {{ projectStore.currentProject.title }}
-            </h1>
-          </Button>
-        </div>
-        <div class="flex flex-wrap items-center justify-end gap-2 sm:flex-nowrap">
-          <Button variant="secondary" size="sm" @click="toggleLeftPanel">
-            {{ leftPanelCollapsed ? 'Show Files' : 'Hide Files' }}
-          </Button>
-          <Button variant="secondary" size="sm" @click="toggleRightPanel">
-            {{ rightPanelCollapsed ? 'Show AI' : 'Hide AI' }}
-          </Button>
-          <Button variant="secondary" size="sm" :loading="saving" @click="handleSave">
-            <Save class="w-4 h-4" />
-            Save
-          </Button>
-        </div>
-      </div>
+      <ProjectWorkspaceHeader
+        :project-title-editing="projectTitleEditing"
+        :project-title-draft="projectTitleDraft"
+        :project-title-saving="projectTitleSaving"
+        :project-title="projectStore.currentProject.title"
+        :left-panel-collapsed="leftPanelCollapsed"
+        :right-panel-collapsed="rightPanelCollapsed"
+        :saving="saving"
+        @update:project-title-draft="projectTitleDraft = $event"
+        @begin-edit-title="beginProjectTitleEdit"
+        @submit-title="submitProjectTitleEdit"
+        @cancel-title="cancelProjectTitleEdit"
+        @toggle-left-panel="toggleLeftPanel"
+        @toggle-right-panel="toggleRightPanel"
+        @save="handleSave"
+      />
 
       <div class="flex flex-1 overflow-hidden">
         <!-- Left: File Explorer -->
-        <aside
-          class="shrink-0 border-r border-stone-300/80 bg-[#f2ecdf] transition-all duration-200 dark:border-zinc-700/60 dark:bg-zinc-900/50"
-          :class="leftPanelCollapsed ? 'w-0 overflow-hidden border-r-0 p-0' : 'w-72 p-3'"
-        >
-          <template v-if="!leftPanelCollapsed">
-          <input
-            ref="chapterFileInput"
-            type="file"
-            multiple
-            :accept="GRAPH_DOCUMENT_ACCEPT"
-            class="hidden"
-            @change="handleChapterFileSelect"
-          />
-
-          <div class="mb-3 flex items-center justify-between">
-            <p class="text-[11px] uppercase tracking-wider text-stone-500 dark:text-zinc-500">
-              Files (Chapters)
-            </p>
-            <span class="text-[10px] text-stone-500 dark:text-zinc-500">
-              Scope {{ selectedChapterIds.length }}
-            </span>
-          </div>
-
-          <div class="mb-3 flex flex-wrap gap-2">
-            <Button variant="ghost" size="sm" :disabled="projectStore.chapterSaving" @click="handleCreateChapter">+ Chapter</Button>
-            <Button variant="ghost" size="sm" :loading="chapterImporting" :disabled="chapterImporting" @click="openChapterFilePicker">
-              Import
-            </Button>
-            <Button variant="ghost" size="sm" :disabled="projectStore.chapterSaving || projectStore.orderedChapters.length <= 1" @click="handleDeleteActiveChapter">Delete</Button>
-          </div>
-
-          <Input
-            v-model="chapterSearchQuery"
-            class="mb-2"
-            placeholder="搜索章节 / Search chapters"
-          />
-
-          <p v-if="chapterImportMessage" class="mb-2 text-xs text-amber-700 dark:text-amber-300">
-            {{ chapterImportMessage }}
-          </p>
-
-          <div class="max-h-[calc(100%-150px)] space-y-1 overflow-y-auto pr-1">
-            <div
-              v-for="chapter in filteredChapters"
-              :key="`scope-${chapter.id}`"
-              class="flex items-center gap-2 rounded border px-2 py-1.5 transition-colors"
-              :class="
-                activeChapterId === chapter.id
-                  ? 'border-amber-500/70 bg-amber-100/70 dark:bg-amber-900/20'
-                  : 'border-stone-300 bg-stone-50/80 hover:bg-stone-100 dark:border-zinc-700 dark:bg-zinc-800/60 dark:hover:bg-zinc-800'
-              "
-              @contextmenu.prevent="openChapterContextMenu($event, chapter.id)"
-            >
-              <Checkbox
-                :model-value="selectedChapterIds.includes(chapter.id)"
-                @click.stop
-                @update:modelValue="() => toggleChapterForWorkflow(chapter.id)"
-              />
-              <div class="min-w-0 flex-1 cursor-pointer" @click="handleSelectChapter(chapter.id)">
-                <input
-                  v-if="isInlineRenamingChapter(chapter.id)"
-                  ref="inlineRenameInputRef"
-                  v-model="inlineRenameChapterTitle"
-                  class="h-7 w-full rounded-md border border-amber-400 bg-stone-50 px-2 text-xs font-medium text-stone-800 outline-none ring-2 ring-amber-300/40 dark:border-amber-500/70 dark:bg-zinc-900 dark:text-zinc-100 dark:ring-amber-500/30"
-                  :disabled="inlineRenameSubmitting"
-                  @click.stop
-                  @keydown.enter.prevent="submitInlineRenameChapter"
-                  @keydown.esc.prevent="cancelInlineRenameChapter"
-                  @blur="submitInlineRenameChapter"
-                />
-                <p
-                  v-else
-                  class="truncate text-xs font-medium"
-                  :class="activeChapterId === chapter.id ? 'text-amber-700 dark:text-amber-300' : 'text-stone-700 dark:text-zinc-200'"
-                  @dblclick.stop="beginInlineRenameChapter(chapter.id)"
-                >
-                  {{ chapter.title || `Chapter ${chapter.order_index + 1}` }}
-                </p>
-                <p class="text-[10px] text-stone-500 dark:text-zinc-500">
-                  #{{ chapter.order_index + 1 }} · {{ (chapter.content || '').length.toLocaleString() }} chars
-                </p>
-              </div>
-            </div>
-            <p v-if="!filteredChapters.length" class="px-1 py-2 text-xs text-stone-500 dark:text-zinc-500">
-              没有匹配章节
-            </p>
-          </div>
-          </template>
-        </aside>
+        <ProjectChapterExplorer
+          :left-panel-collapsed="leftPanelCollapsed"
+          :chapter-accept="GRAPH_DOCUMENT_ACCEPT"
+          :chapter-saving="projectStore.chapterSaving"
+          :chapter-importing="chapterImporting"
+          :chapter-import-message="chapterImportMessage"
+          :selected-chapter-ids="selectedChapterIds"
+          :active-chapter-id="activeChapterId"
+          :filtered-chapters="filteredChapters"
+          :chapter-search-query="chapterSearchQuery"
+          :inline-rename-chapter-id="inlineRenameChapterId"
+          :inline-rename-chapter-title="inlineRenameChapterTitle"
+          :inline-rename-submitting="inlineRenameSubmitting"
+          :can-delete-chapter="projectStore.chapterSaving === false && projectStore.orderedChapters.length > 1"
+          @update:chapter-search-query="chapterSearchQuery = $event"
+          @update:inline-rename-chapter-title="inlineRenameChapterTitle = $event"
+          @import-files="handleChapterFileSelect"
+          @create-chapter="handleCreateChapter"
+          @delete-active-chapter="handleDeleteActiveChapter"
+          @open-context-menu="openChapterContextMenu"
+          @toggle-chapter-scope="toggleChapterForWorkflow"
+          @select-chapter="handleSelectChapter"
+          @begin-inline-rename="beginInlineRenameChapter"
+          @submit-inline-rename="submitInlineRenameChapter"
+          @cancel-inline-rename="cancelInlineRenameChapter"
+        />
 
         <!-- Center: Editor -->
-        <section
-          v-show="!(isMobileLayout && !rightPanelCollapsed)"
-          class="min-w-0 flex-1 bg-[#fbf8f1] dark:bg-zinc-900/30"
-          :class="rightPanelCollapsed ? '' : 'border-r border-stone-300/80 dark:border-zinc-700/60'"
-        >
-          <div class="flex items-center justify-between border-b border-stone-300/70 px-4 py-2 dark:border-zinc-700/60">
-            <p class="truncate text-sm font-medium text-stone-700 dark:text-zinc-200">
-              {{ findChapterById(activeChapterId)?.title || 'Untitled Chapter' }}
-            </p>
-            <span class="text-xs text-stone-500 dark:text-zinc-500">
-              {{ content.length.toLocaleString() }} chars
-            </span>
-          </div>
-          <div class="h-[calc(100%-43px)] p-4">
-            <TextEditor v-model="content" placeholder="Write chapter content here..." />
-          </div>
-        </section>
+        <ProjectEditorPanel
+          :visible="!(isMobileLayout && !rightPanelCollapsed)"
+          :right-panel-collapsed="rightPanelCollapsed"
+          :chapter-title="findChapterById(activeChapterId)?.title || ''"
+          :content="content"
+          @update:content="content = $event"
+        />
 
         <!-- Right: AI Operations Panel -->
-        <div
-          class="shrink-0 flex flex-col overflow-hidden transition-all duration-200 bg-[#f7f3ea] dark:bg-zinc-900/70"
-          :class="
-            rightPanelCollapsed
-              ? 'w-0 min-w-0 max-w-0'
-              : (isMobileLayout ? 'w-full min-w-0 max-w-none' : 'w-[44%] min-w-[420px] max-w-[760px]')
-          "
+        <ProjectAIOperationsShell
+          :right-panel-collapsed="rightPanelCollapsed"
+          :is-mobile-layout="isMobileLayout"
+          :right-panel-tab="rightPanelTab"
+          :right-panel-tabs="rightPanelTabs"
+          :graph-ready="graphReady"
+          :operation-type="operationType"
+          @update:right-panel-tab="rightPanelTab = $event"
         >
-        <div class="px-5 py-4 border-b border-stone-300/70 dark:border-zinc-700/50 space-y-3">
-          <div>
-            <p class="text-[11px] uppercase tracking-[0.16em] text-stone-500 dark:text-zinc-400">
-              AI Operations
-            </p>
-            <p class="text-base font-semibold text-stone-800 dark:text-zinc-100">
-              Graph, Create, OASIS
-            </p>
-          </div>
-          <Tabs v-model="rightPanelTab" class="w-full">
-            <TabsList class="grid h-auto w-full grid-cols-3 gap-1 rounded-xl border border-stone-200/90 bg-stone-100/90 p-1 dark:border-zinc-700/70 dark:bg-zinc-800/80">
-              <TabsTrigger
-                v-for="tab in rightPanelTabs"
-                :key="tab.key"
-                :value="tab.key"
-                class="py-2.5"
-              >
-                <component :is="tab.icon" class="h-3.5 w-3.5" />
-                {{ tab.label }}
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-        </div>
-
-        <!-- AI Tab -->
-        <div v-show="rightPanelTab !== 'graph'" class="flex-1 overflow-y-auto p-5 lg:p-6 space-y-5">
-          <Alert
-            v-if="!graphReady && (rightPanelTab === 'oasis' || (rightPanelTab === 'ai' && operationType !== 'CREATE'))"
-            variant="warning"
-          >
-            RAG requires a built graph first. Complete Graph Build before this operation or OASIS simulation.
-            <Button
-              variant="ghost"
-              size="sm"
-              class="ml-1 h-auto px-0 py-0 underline decoration-dotted hover:bg-transparent hover:text-amber-700 dark:hover:bg-transparent dark:hover:text-amber-100"
-              @click="rightPanelTab = 'graph'"
-            >
-              Go build graph
-            </Button>
-          </Alert>
-
-          <div v-show="rightPanelTab === 'ai'" class="space-y-5">
-          <!-- Operation Type -->
-          <div class="grid grid-cols-2 gap-2.5">
-            <Button
-              v-for="op in operationTypes"
-              :key="op.value"
-              variant="secondary"
-              size="sm"
-              class="h-auto justify-start rounded-xl px-3.5 py-2.5 text-sm"
-              :class="
-                operationType === op.value
-                  ? 'border-amber-500 bg-amber-600/20 text-amber-700 dark:text-amber-300'
-                  : 'text-stone-500 dark:text-zinc-400 hover:border-stone-400 dark:hover:border-zinc-600 hover:text-stone-700 dark:hover:text-zinc-200'
-              "
-              :disabled="op.value === 'CREATE' && !isWorkspaceEmpty"
-              @click="operationType = op.value"
-            >
-              <component :is="op.icon" class="w-4 h-4" />
-              {{ op.label }}
-            </Button>
-          </div>
-          <p v-if="!isWorkspaceEmpty" class="text-xs text-amber-700 dark:text-amber-300">
-            CREATE mode is only available when workspace text length is 0.
-          </p>
-
-          <!-- Model Selector -->
-          <div class="space-y-2">
-            <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">Operation Model</label>
-            <Select
-              v-model="operationModel"
-              :disabled="modelsLoading"
-            >
-              <option value="">Use backend default</option>
-              <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
-            </Select>
-          </div>
-
-          <div v-if="operationType === 'CONTINUE'" class="space-y-2">
-            <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">Continuation Apply Mode</label>
-            <Select
-              v-model="continuationApplyMode"
-            >
-              <option value="new_chapter">Create new chapter</option>
-              <option value="append">Append to editor</option>
-              <option value="replace">Replace editor content</option>
-            </Select>
-          </div>
-
-          <div v-if="operationType === 'CREATE'" class="space-y-2.5 rounded-xl border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
-            <p class="text-xs font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">Step 0. User Prompt</p>
-            <Textarea
-              v-model="createUserPrompt"
-              :rows="4"
-              placeholder="Describe theme, style, setting, and any must-have elements."
-              class="min-h-24"
+          <template #ai-content>
+            <ProjectRightAIContent
+              :right-panel-tab="rightPanelTab"
+              :selected-characters-count="selectedCharacters.length"
+              :character-selection-count-label="characterSelectionCountLabel"
+              :characters-loading="charactersLoading"
+              :project-characters="projectCharacters"
+              :all-characters-selected="allCharactersSelected"
+              :characters-error="charactersError"
+              :selected-character-ids="selectedCharacterIds"
+              :character-form-open="characterFormOpen"
+              :editing-character-id="editingCharacterId"
+              :character-form="characterForm"
+              :character-form-submitting="characterFormSubmitting"
+              :load-characters="loadCharacters"
+              :begin-create-character="beginCreateCharacter"
+              :set-all-characters-selected="setAllCharactersSelected"
+              :toggle-character-scope="toggleCharacterScope"
+              :begin-edit-character="beginEditCharacter"
+              :handle-delete-character="handleDeleteCharacter"
+              :cancel-character-form="cancelCharacterForm"
+              :handle-submit-character="handleSubmitCharacter"
+              :selected-glossary-terms-count="selectedGlossaryTerms.length"
+              :glossary-selection-count-label="glossarySelectionCountLabel"
+              :glossary-loading="glossaryLoading"
+              :project-glossary-terms="projectGlossaryTerms"
+              :all-glossary-terms-selected="allGlossaryTermsSelected"
+              :glossary-error="glossaryError"
+              :selected-glossary-term-ids="selectedGlossaryTermIds"
+              :glossary-form-open="glossaryFormOpen"
+              :editing-glossary-term-id="editingGlossaryTermId"
+              :glossary-form="glossaryForm"
+              :glossary-form-submitting="glossaryFormSubmitting"
+              :load-glossary-terms="loadGlossaryTerms"
+              :begin-create-glossary-term="beginCreateGlossaryTerm"
+              :set-all-glossary-terms-selected="setAllGlossaryTermsSelected"
+              :toggle-glossary-scope="toggleGlossaryScope"
+              :begin-edit-glossary-term="beginEditGlossaryTerm"
+              :handle-delete-glossary-term="handleDeleteGlossaryTerm"
+              :cancel-glossary-form="cancelGlossaryForm"
+              :handle-submit-glossary-term="handleSubmitGlossaryTerm"
+              :selected-worldbook-entries-count="selectedWorldbookEntries.length"
+              :worldbook-selection-count-label="worldbookSelectionCountLabel"
+              :worldbook-loading="worldbookLoading"
+              :project-worldbook-entries="projectWorldbookEntries"
+              :all-worldbook-entries-selected="allWorldbookEntriesSelected"
+              :worldbook-error="worldbookError"
+              :selected-worldbook-entry-ids="selectedWorldbookEntryIds"
+              :worldbook-form-open="worldbookFormOpen"
+              :editing-worldbook-entry-id="editingWorldbookEntryId"
+              :worldbook-form="worldbookForm"
+              :worldbook-form-submitting="worldbookFormSubmitting"
+              :load-worldbook-entries="loadWorldbookEntries"
+              :begin-create-worldbook-entry="beginCreateWorldbookEntry"
+              :set-all-worldbook-entries-selected="setAllWorldbookEntriesSelected"
+              :toggle-worldbook-scope="toggleWorldbookScope"
+              :begin-edit-worldbook-entry="beginEditWorldbookEntry"
+              :handle-delete-worldbook-entry="handleDeleteWorldbookEntry"
+              :cancel-worldbook-form="cancelWorldbookForm"
+              :handle-submit-worldbook-entry="handleSubmitWorldbookEntry"
+              :operation-types="operationTypes"
+              :operation-type="operationType"
+              :is-workspace-empty="isWorkspaceEmpty"
+              :models-loading="modelsLoading"
+              :models="models"
+              :operation-model="operationModel"
+              :continuation-apply-mode="continuationApplyMode"
+              :create-user-prompt="createUserPrompt"
+              :create-outline="createOutline"
+              :create-outline-loading="createOutlineLoading"
+              :create-outline-error="createOutlineError"
+              :continue-user-instruction="continueUserInstruction"
+              :continue-outline="continueOutline"
+              :continue-outline-loading="continueOutlineLoading"
+              :continue-outline-error="continueOutlineError"
+              :graph-ready="graphReady"
+              :create-prerequisites-ready="createPrerequisitesReady"
+              :continue-prerequisites-ready="continuePrerequisitesReady"
+              :operation-loading="operationLoading"
+              :operation-primary-label="operationPrimaryLabel"
+              :operation-error="operationError"
+              :operation-result="operationResult"
+              :operations="projectStore.operations"
+              :status-color="statusColor"
+              :format-date="formatDate"
+              :simulation-loading="simulationLoading"
+              :simulation-creating="simulationCreating"
+              :simulation-error="simulationError"
+              :project-simulations="projectSimulations"
+              :confirmed-simulation-id="confirmedSimulationId"
+              :can-confirm-simulation="canConfirmSimulation"
+              @update:operation-type="setOperationType"
+              @update:operation-model="operationModel = $event"
+              @update:continuation-apply-mode="continuationApplyMode = $event"
+              @update:create-user-prompt="createUserPrompt = $event"
+              @update:create-outline="createOutline = $event"
+              @update:continue-user-instruction="continueUserInstruction = $event"
+              @update:continue-outline="continueOutline = $event"
+              @generate-create-outline="handleGenerateCreateOutline"
+              @generate-continue-outline="handleGenerateContinueOutline"
+              @run-operation="handleOperation"
+              @refresh-simulations="loadProjectSimulations"
+              @create-simulation="handleCreateWorkflowSimulation"
+              @confirm-simulation="confirmSimulationForContinue"
+              @open-simulation="(simulationId) => router.push(`/simulation/${simulationId}`)"
             />
-            <div class="flex items-center justify-between">
-              <p class="text-xs font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">Step A. Outline First</p>
-              <Button
-                variant="secondary"
-                size="sm"
-                :loading="createOutlineLoading"
-                :disabled="!isWorkspaceEmpty || !createUserPrompt.trim() || modelsLoading"
-                @click="handleGenerateCreateOutline"
-              >
-                Generate Outline
-              </Button>
-            </div>
-            <Textarea
-              v-model="createOutline"
-              :rows="8"
-              placeholder="Generated outline will appear here. You can edit before drafting."
-              class="min-h-44"
+          </template>
+
+          <template #graph-content>
+            <ProjectRightGraphContent
+              :right-panel-tab="rightPanelTab"
+              :workflow-source-text-length="workflowSourceText.length"
+              :ontology-requirement="ontologyRequirement"
+              :models-loading="modelsLoading"
+              :models="models"
+              :ontology-model="ontologyModel"
+              :ontology-loading="ontologyLoading"
+              :graph-can-build="graphCanBuild"
+              :ontology-message="ontologyMessage"
+              :ontology-progress="ontologyProgress"
+              :graph-parsing-file="graphParsingFile"
+              :ontology-error="ontologyError"
+              :ontology-data="ontologyData"
+              :has-ontology="hasOntology"
+              :ontology-meta="ontologyMeta"
+              :graph-build-model="graphBuildModel"
+              :embedding-models="embeddingModels"
+              :graph-embedding-model="graphEmbeddingModel"
+              :graph-reranker-model="graphRerankerModel"
+              :graph-build-mode="graphBuildMode"
+              :graph-freshness-state="graphFreshnessState"
+              :graph-freshness-label="graphFreshnessLabel"
+              :graph-freshness-hint="graphFreshnessHint"
+              :graph-loading="graphLoading"
+              :graph-build-action-label="graphBuildActionLabel"
+              :graph-build-message="graphBuildMessage"
+              :graph-build-progress="graphBuildProgress"
+              :graph-build-summary="graphBuildSummary"
+              :graph-error="graphError"
+              :format-graph-build-summary="formatGraphBuildSummary"
+              :graph-freshness-class="graphFreshnessClass"
+              :pipeline="oasisPipeline"
+              :graph-ready="graphReady"
+              :has-oasis-analysis="hasOasisAnalysis"
+              :oasis-task-polling="oasisTaskPolling"
+              :oasis-prepare-loading="oasisPrepareLoading"
+              :oasis-task="oasisTask"
+              :oasis-task-last-id="oasisTaskLastId"
+              :graph-analysis-loading="graphAnalysisLoading"
+              :graph-analysis-error="graphAnalysisError"
+              :oasis-prepare-error="oasisPrepareError"
+              :oasis-task-error="oasisTaskError"
+              :graph-analysis-result="graphAnalysisResult"
+              :oasis-package="oasisPackage"
+              :oasis-run-result="oasisRunResult"
+              :oasis-report="oasisReport"
+              :graph-analysis-prompt="graphAnalysisPrompt"
+              :oasis-analysis-model="oasisAnalysisModel"
+              :oasis-simulation-model="oasisSimulationModel"
+              :oasis-report-model="oasisReportModel"
+              :oasis-stage-class="oasisStageClass"
+              :oasis-task-status-color="oasisTaskStatusColor"
+              :graph-data="graphData"
+              :project-id="projectId"
+              @update:ontology-requirement="ontologyRequirement = $event"
+              @update:ontology-model="ontologyModel = $event"
+              @update:graph-build-model="graphBuildModel = $event"
+              @update:graph-embedding-model="graphEmbeddingModel = $event"
+              @update:graph-reranker-model="graphRerankerModel = $event"
+              @update:graph-build-mode="graphBuildMode = $event"
+              @generate-ontology="handleGenerateOntology"
+              @build-graph="handleBuildGraph"
+              @update:graph-analysis-prompt="graphAnalysisPrompt = $event"
+              @update:oasis-analysis-model="oasisAnalysisModel = $event"
+              @update:oasis-simulation-model="oasisSimulationModel = $event"
+              @update:oasis-report-model="oasisReportModel = $event"
+              @analyze="handleGraphAnalysis"
+              @prepare="handlePrepareOasisPackage"
+              @run="handleRunOasisSimulation"
+              @report="handleGenerateOasisReport"
+              @refresh-status="handleRefreshOasisTaskStatus"
+              @open-full-graph="router.push(`/projects/${projectId}/graph`)"
             />
-            <p class="text-xs text-stone-600 dark:text-zinc-300/90">
-              CREATE is locked to empty workspace. Outline stage uses user prompt directly (without RAG).
-            </p>
-            <p v-if="createOutlineError" class="text-xs text-red-700 dark:text-red-300">{{ createOutlineError }}</p>
-          </div>
-
-          <div v-if="operationType === 'CONTINUE'" class="space-y-2.5 rounded-xl border border-stone-300/80 dark:border-zinc-700/60 bg-stone-100/75 dark:bg-zinc-800/40 p-4">
-            <p class="text-xs font-medium uppercase tracking-wider text-stone-700 dark:text-zinc-300">Continue Prerequisites</p>
-            <Textarea
-              v-model="continueUserInstruction"
-              :rows="4"
-              placeholder="Describe what should happen next and any writing constraints."
-              class="min-h-24"
-            />
-            <Button
-              variant="secondary"
-              size="sm"
-              :loading="continueOutlineLoading"
-              :disabled="!graphReady || !continueUserInstruction.trim() || modelsLoading"
-              @click="handleGenerateContinueOutline"
-            >
-              1. Generate Continuation Outline
-            </Button>
-            <Textarea
-              v-model="continueOutline"
-              :rows="7"
-              placeholder="Continuation outline and checks from graph analysis will appear here."
-              class="min-h-36"
-            />
-            <p v-if="continueOutlineError" class="text-xs text-red-700 dark:text-red-300">{{ continueOutlineError }}</p>
-            <div class="space-y-1 text-xs">
-              <p :class="graphReady ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">
-                {{ graphReady ? '✓' : '•' }} RAG graph context available
-              </p>
-              <p :class="continueUserInstruction.trim() ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">
-                {{ continueUserInstruction.trim() ? '✓' : '•' }} Continuation instruction provided
-              </p>
-              <p :class="continueOutline.trim() ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">
-                {{ continueOutline.trim() ? '✓' : '•' }} Continuation outline generated and reviewed
-              </p>
-            </div>
-            <p class="text-[11px] text-stone-500 dark:text-zinc-400">
-              Continue mode can auto-create a new chapter from LLM output.
-            </p>
-          </div>
-
-          <Alert variant="warning">
-            Upload is only available in the left File Manager. Continue/analysis runs with selected chapter scope and RAG.
-          </Alert>
-
-          <Button
-            variant="secondary"
-            class="w-full"
-            :loading="operationLoading"
-            :disabled="
-              (operationType !== 'CREATE' && !graphReady)
-              || modelsLoading
-              || (operationType === 'CREATE' && !createPrerequisitesReady)
-              || (operationType === 'CONTINUE' && !continuePrerequisitesReady)
-            "
-            @click="handleOperation"
-          >
-            <Sparkles class="w-4 h-4" />
-            {{ operationPrimaryLabel }}
-          </Button>
-          <p v-if="operationType !== 'CREATE' && !graphReady" class="text-xs text-amber-700 dark:text-amber-300">
-            Build graph first. This operation requires RAG context.
-          </p>
-
-          <!-- Result -->
-          <Alert v-if="operationError" variant="destructive" class="text-sm">
-            {{ operationError }}
-          </Alert>
-
-          <div v-if="operationResult" class="space-y-2">
-            <h3 class="text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">Result</h3>
-            <div class="rounded-lg border border-stone-300/70 dark:border-zinc-700/50 bg-stone-100/80 dark:bg-zinc-800/50 p-3 text-sm text-stone-700 dark:text-zinc-200 whitespace-pre-wrap max-h-60 overflow-y-auto">
-              {{ operationResult }}
-            </div>
-          </div>
-
-          <!-- Operation History -->
-          <div v-if="projectStore.operations.length > 0" class="space-y-2">
-            <h3 class="text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">History</h3>
-            <div class="space-y-1.5 max-h-60 overflow-y-auto">
-              <div
-                v-for="op in projectStore.operations"
-                :key="op.id"
-                class="rounded-lg border border-stone-300/70 dark:border-zinc-700/50 bg-stone-100/70 dark:bg-zinc-800/30 px-3 py-2"
-              >
-                <div class="flex items-center justify-between">
-                  <span class="text-xs font-medium text-stone-700 dark:text-zinc-300">{{ op.type }}</span>
-                  <span :class="statusColor(op.status)" class="text-xs">{{ op.status }}</span>
-                </div>
-                <div class="flex items-center gap-2 mt-1 text-xs text-stone-500 dark:text-zinc-500">
-                  <span>{{ op.model }}</span>
-                  <span>{{ formatDate(op.created_at) }}</span>
-                </div>
-                <p v-if="op.output" class="text-xs text-stone-500 dark:text-zinc-400 mt-1 line-clamp-2">{{ op.output }}</p>
-              </div>
-            </div>
-          </div>
-          </div>
-
-          <Card v-show="rightPanelTab === 'oasis'" class="space-y-2">
-            <div class="flex items-center justify-between">
-              <h3 class="text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">Workflow</h3>
-              <Button variant="ghost" size="sm" :loading="simulationLoading" @click="loadProjectSimulations">
-                Refresh
-              </Button>
-            </div>
-            <p class="text-xs text-stone-500 dark:text-zinc-500">
-              Continue workflow: graph analysis -> create simulation -> confirm simulation -> run continue.
-            </p>
-            <Button
-              variant="secondary"
-              class="w-full"
-              :loading="simulationCreating"
-              :disabled="!graphReady"
-              @click="handleCreateWorkflowSimulation"
-            >
-              <Sparkles class="w-4 h-4" />
-              Create Simulation
-            </Button>
-            <p v-if="!graphReady" class="text-xs text-amber-700 dark:text-amber-300">
-              Build graph first, then create workflow simulation.
-            </p>
-            <Alert v-if="simulationError" variant="destructive" class="text-sm">
-              {{ simulationError }}
-            </Alert>
-            <div v-if="projectSimulations.length > 0" class="space-y-1.5 max-h-52 overflow-y-auto">
-              <div
-                v-for="sim in projectSimulations.slice(0, 8)"
-                :key="sim.simulation_id"
-                class="rounded-lg border border-stone-300/70 dark:border-zinc-700/50 bg-stone-100/75 dark:bg-zinc-800/40 px-3 py-2"
-              >
-                <div class="flex items-center justify-between gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    class="h-auto min-w-0 justify-start px-0 py-0 text-left hover:bg-transparent dark:hover:bg-transparent"
-                    @click="router.push(`/simulation/${sim.simulation_id}`)"
-                  >
-                    <p class="text-xs font-medium text-stone-700 dark:text-zinc-300">{{ sim.simulation_id.slice(0, 12) }}...</p>
-                    <p class="text-[11px] text-stone-500 dark:text-zinc-500 mt-1">{{ sim.updated_at || sim.created_at || '-' }}</p>
-                  </Button>
-                  <div class="flex items-center gap-2">
-                    <span class="text-xs text-stone-500 dark:text-zinc-500 capitalize">{{ sim.status }}</span>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      class="h-auto px-2 py-1 text-[11px]"
-                      :class="
-                        confirmedSimulationId === sim.simulation_id
-                          ? 'border-emerald-600 bg-emerald-900/20 text-emerald-700 dark:text-emerald-300'
-                          : canConfirmSimulation(sim)
-                            ? 'border-amber-600/70 text-amber-700 dark:text-amber-300 hover:border-amber-500'
-                            : 'border-stone-300 dark:border-zinc-700 text-stone-500 dark:text-zinc-500 cursor-not-allowed'
-                      "
-                      :disabled="!canConfirmSimulation(sim)"
-                      @click="confirmSimulationForContinue(sim.simulation_id)"
-                    >
-                      {{ confirmedSimulationId === sim.simulation_id ? 'Confirmed' : 'Confirm' }}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </Card>
-        </div>
-
-        <!-- Graph Tab -->
-        <div v-show="rightPanelTab !== 'ai'" class="flex-1 overflow-y-auto p-5 lg:p-6 space-y-5 border-t border-stone-300/60 dark:border-zinc-700/40">
-          <Card
-            v-show="rightPanelTab === 'graph'"
-            class="space-y-4 !rounded-xl !border-stone-300/80 !bg-[#f3ede1] dark:!border-zinc-700/60 dark:!bg-zinc-800/55 !p-5"
-          >
-            <div class="space-y-2">
-              <h3 class="text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-                Step 1. Ontology Generation
-              </h3>
-              <div class="rounded-lg border border-amber-700/30 bg-amber-900/10 p-3 space-y-1.5">
-                <p class="text-sm font-medium text-amber-800 dark:text-amber-200">
-                  用途：先定义实体/关系本体，作为 RAG 检索与图谱入库的结构约束。
-                </p>
-                <p class="text-xs text-amber-700 dark:text-amber-300/90">
-                  未完成本体生成时，Step 2 图谱构建不可执行，AI 创作与 OASIS 模拟也会缺少可靠上下文。
-                </p>
-                <p class="text-xs text-amber-700 dark:text-amber-300/80">
-                  数据源始终来自左侧已选章节，当前文本长度：{{ workflowSourceText.length.toLocaleString() }} characters
-                </p>
-              </div>
-            </div>
-
-            <div class="space-y-2.5">
-              <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-                Requirement Preset
-              </label>
-              <Textarea
-                v-model="ontologyRequirement"
-                :rows="5"
-                placeholder="Edit ontology requirement preset"
-                class="min-h-28"
-              />
-              <p class="text-[11px] text-stone-500 dark:text-zinc-500">
-                Preset prompt is enabled by default. You can edit it before each generation.
-              </p>
-            </div>
-
-            <div class="space-y-2">
-              <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-                Ontology Model
-              </label>
-              <Select
-                v-model="ontologyModel"
-                :disabled="modelsLoading"
-              >
-                <option value="">Use backend default</option>
-                <option v-for="m in models" :key="`ontology-${m.id}`" :value="m.id">{{ m.name }}</option>
-              </Select>
-            </div>
-
-            <Button
-              variant="secondary"
-              class="w-full"
-              :loading="ontologyLoading"
-              :disabled="!graphCanBuild"
-              @click="handleGenerateOntology"
-            >
-              <Sparkles class="w-4 h-4" />
-              Generate Ontology
-            </Button>
-
-            <div v-if="ontologyLoading || ontologyMessage" class="space-y-1">
-              <div class="flex items-center justify-between text-xs text-stone-500 dark:text-zinc-400">
-                <span>{{ ontologyMessage || 'Processing...' }}</span>
-                <span>{{ ontologyProgress }}%</span>
-              </div>
-              <div class="h-1.5 rounded bg-stone-200/70 dark:bg-zinc-800/70 overflow-hidden">
-                <div
-                  class="h-full bg-amber-500 transition-all duration-300"
-                  :style="{ width: `${ontologyProgress}%` }"
-                />
-              </div>
-              <p v-if="graphParsingFile" class="text-xs text-stone-500 dark:text-zinc-500 truncate">
-                Parsing: {{ graphParsingFile }}
-              </p>
-            </div>
-
-            <Alert v-if="ontologyError" variant="destructive" class="text-sm">
-              {{ ontologyError }}
-            </Alert>
-
-            <Alert
-              v-if="ontologyData && !hasOntology && !ontologyLoading"
-              variant="destructive"
-              class="text-sm"
-            >
-              Current ontology is invalid for graph build. Regenerate ontology until valid structured output is returned.
-            </Alert>
-
-            <div v-if="hasOntology" class="rounded-lg border border-emerald-700/40 bg-emerald-900/10 p-3 space-y-2">
-              <div class="flex items-center justify-between text-xs text-emerald-700 dark:text-emerald-300">
-                <span>Ontology ready</span>
-                <span>{{ ontologyData?.entity_types?.length || 0 }} entities / {{ ontologyData?.edge_types?.length || 0 }} relations</span>
-              </div>
-              <div class="space-y-1 text-[11px] text-stone-600 dark:text-zinc-300">
-                <p v-if="ontologyMeta?.model">
-                  Model:
-                  <span class="font-medium">{{ ontologyMeta.model }}</span>
-                  <span v-if="ontologyMeta?.provider"> · {{ ontologyMeta.provider }}</span>
-                </p>
-                <p v-if="ontologyMeta?.api_called">
-                  Tokens: {{ ontologyMeta?.input_tokens || 0 }} in / {{ ontologyMeta?.output_tokens || 0 }} out
-                </p>
-              </div>
-              <div class="flex flex-wrap gap-1">
-                <span
-                  v-for="entity in (ontologyData?.entity_types || []).slice(0, 8)"
-                  :key="entity.name"
-                  class="rounded-full bg-stone-200/80 dark:bg-zinc-800/80 px-2 py-0.5 text-xs text-stone-700 dark:text-zinc-300"
-                >
-                  {{ entity.name }}
-                </span>
-              </div>
-            </div>
-          </Card>
-
-          <Card
-            v-show="rightPanelTab === 'graph'"
-            class="space-y-4 !rounded-xl !border-stone-300/80 !bg-[#f3ede1] dark:!border-zinc-700/60 dark:!bg-zinc-800/55 !p-5"
-          >
-            <div class="space-y-2.5">
-              <h3 class="text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-                Step 2. Graph Build
-              </h3>
-              <div class="space-y-2">
-                <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-                  Graph Build Model
-                </label>
-                <Select
-                  v-model="graphBuildModel"
-                  :disabled="modelsLoading"
-                >
-                  <option value="">Use backend default</option>
-                  <option v-for="m in models" :key="`graph-build-${m.id}`" :value="m.id">{{ m.name }}</option>
-                </Select>
-              </div>
-              <div class="space-y-2">
-                <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-                  Embedding Model
-                </label>
-                <Select
-                  v-model="graphEmbeddingModel"
-                  :disabled="modelsLoading"
-                >
-                  <option value="">Use backend auto select</option>
-                  <option
-                    v-for="m in embeddingModels"
-                    :key="`graph-embed-${m.id}`"
-                    :value="m.id"
-                  >
-                    {{ m.name }}
-                  </option>
-                </Select>
-              </div>
-              <div class="space-y-2">
-                <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-                  Reranker Model (Optional)
-                </label>
-                <Select
-                  v-model="graphRerankerModel"
-                  :disabled="modelsLoading"
-                >
-                  <option value="">Disabled</option>
-                  <option v-for="m in models" :key="`graph-reranker-${m.id}`" :value="m.id">{{ m.name }}</option>
-                </Select>
-                <p class="text-[11px] text-stone-500 dark:text-zinc-500">
-                  Used for RAG retrieval re-ranking in graph search and AI operations.
-                </p>
-              </div>
-              <div class="space-y-2">
-                <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-                  Build Mode
-                </label>
-                <Select v-model="graphBuildMode">
-                  <option value="rebuild">From Zero (Clear Old Graph)</option>
-                  <option value="incremental">Incremental Update (Changed Chapters Only)</option>
-                </Select>
-                <p class="text-[11px] text-stone-500 dark:text-zinc-500">
-                  Rebuild ensures a clean graph. Incremental mode appends only changed chapter content.
-                </p>
-              </div>
-              <Button
-                variant="primary"
-                class="w-full"
-                :loading="graphLoading"
-                :disabled="!graphCanBuild || !hasOntology"
-                @click="handleBuildGraph"
-              >
-                <Network class="w-4 h-4" />
-                {{ graphBuildActionLabel }}
-              </Button>
-            </div>
-
-            <div v-if="graphLoading || graphBuildMessage" class="space-y-1">
-              <div class="flex items-center justify-between text-xs text-stone-500 dark:text-zinc-400">
-                <span>{{ graphBuildMessage || 'Processing...' }}</span>
-                <span>{{ graphBuildProgress }}%</span>
-              </div>
-              <div class="h-1.5 rounded bg-stone-200/70 dark:bg-zinc-800/70 overflow-hidden">
-                <div
-                  class="h-full bg-amber-500 transition-all duration-300"
-                  :style="{ width: `${graphBuildProgress}%` }"
-                />
-              </div>
-              <p v-if="graphParsingFile" class="text-xs text-stone-500 dark:text-zinc-500 truncate">
-                Parsing: {{ graphParsingFile }}
-              </p>
-            </div>
-
-            <p v-if="!hasOntology" class="text-xs text-amber-700 dark:text-amber-300">
-              Please complete Step 1 first.
-            </p>
-
-            <Alert v-if="graphError" variant="destructive" class="text-sm">
-              {{ graphError }}
-            </Alert>
-          </Card>
-
-          <Card v-show="rightPanelTab === 'oasis'" class="space-y-4">
-            <h3 class="text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-              Step 3. OASIS Analysis
-            </h3>
-            <div class="grid grid-cols-4 gap-1.5">
-              <div
-                v-for="phase in oasisPipeline"
-                :key="phase.key"
-                class="rounded border px-2 py-1 text-center text-[10px] uppercase tracking-wide"
-                :class="oasisStageClass(phase.done)"
-              >
-                {{ phase.label }}
-              </div>
-            </div>
-            <Textarea
-              v-model="graphAnalysisPrompt"
-              :rows="2"
-              placeholder="Enter OASIS analysis focus"
-              class="min-h-24"
-            />
-            <div class="space-y-2">
-              <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-                OASIS Analysis Model
-              </label>
-              <Select
-                v-model="oasisAnalysisModel"
-                :disabled="modelsLoading"
-              >
-                <option value="">Use backend default</option>
-                <option v-for="m in models" :key="`oasis-analysis-${m.id}`" :value="m.id">{{ m.name }}</option>
-              </Select>
-            </div>
-            <div class="space-y-2">
-              <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-                OASIS Simulation Model
-              </label>
-              <Select
-                v-model="oasisSimulationModel"
-                :disabled="modelsLoading"
-              >
-                <option value="">Use backend default</option>
-                <option v-for="m in models" :key="`oasis-sim-${m.id}`" :value="m.id">{{ m.name }}</option>
-              </Select>
-            </div>
-            <div class="space-y-2">
-              <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-                OASIS Report Model
-              </label>
-              <Select
-                v-model="oasisReportModel"
-                :disabled="modelsLoading"
-              >
-                <option value="">Use backend default</option>
-                <option v-for="m in models" :key="`oasis-report-${m.id}`" :value="m.id">{{ m.name }}</option>
-              </Select>
-            </div>
-            <Button
-              variant="secondary"
-              class="w-full"
-              :loading="graphAnalysisLoading"
-              :disabled="!graphReady || oasisTaskPolling"
-              @click="handleGraphAnalysis"
-            >
-              <Search class="w-4 h-4" />
-              Run OASIS Analysis
-            </Button>
-            <Button
-              variant="ghost"
-              class="w-full"
-              :loading="oasisPrepareLoading || (oasisTaskPolling && oasisTask?.task_type === 'oasis_prepare')"
-              :disabled="!graphReady || !hasOasisAnalysis || oasisTaskPolling"
-              @click="handlePrepareOasisPackage"
-            >
-              <Sparkles class="w-4 h-4" />
-              Prepare OASIS Package (Task)
-            </Button>
-            <Button
-              variant="ghost"
-              class="w-full"
-              :loading="oasisTaskPolling && oasisTask?.task_type === 'oasis_run'"
-              :disabled="!oasisPackage || oasisTaskPolling"
-              @click="handleRunOasisSimulation"
-            >
-              <Network class="w-4 h-4" />
-              Run OASIS Simulation (Task)
-            </Button>
-            <Button
-              variant="ghost"
-              class="w-full"
-              :loading="oasisTaskPolling && oasisTask?.task_type === 'oasis_report'"
-              :disabled="!oasisRunResult || oasisTaskPolling"
-              @click="handleGenerateOasisReport"
-            >
-              <FileText class="w-4 h-4" />
-              Generate OASIS Report (Task)
-            </Button>
-            <p v-if="!graphReady" class="text-xs text-amber-700 dark:text-amber-300">Build graph before analysis.</p>
-            <Alert v-if="graphAnalysisError" variant="destructive" class="text-sm">
-              {{ graphAnalysisError }}
-            </Alert>
-            <Alert v-if="oasisPrepareError" variant="destructive" class="text-sm">
-              {{ oasisPrepareError }}
-            </Alert>
-            <Alert v-if="oasisTaskError" variant="destructive" class="text-sm">
-              {{ oasisTaskError }}
-            </Alert>
-            <div
-              v-if="oasisTask"
-              class="rounded-lg border border-stone-300/80 dark:border-zinc-700/60 bg-stone-100/75 dark:bg-zinc-800/40 p-3 text-xs text-stone-700 dark:text-zinc-200 space-y-2"
-            >
-              <div class="flex items-center justify-between">
-                <span class="uppercase tracking-wider text-stone-500 dark:text-zinc-400">{{ oasisTask.task_type }}</span>
-                <span class="capitalize" :class="oasisTaskStatusColor(oasisTask.status)">{{ oasisTask.status }}</span>
-              </div>
-              <p class="text-stone-700 dark:text-zinc-300">{{ oasisTask.message || 'Processing...' }}</p>
-              <div class="h-1.5 rounded bg-stone-200/70 dark:bg-zinc-800/70 overflow-hidden">
-                <div
-                  class="h-full bg-amber-500 transition-all duration-300"
-                  :style="{ width: `${oasisTask.progress || 0}%` }"
-                />
-              </div>
-              <div class="flex items-center justify-between gap-2 text-[11px] text-stone-500 dark:text-zinc-400">
-                <span>Task ID: {{ oasisTask.task_id }}</span>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  :disabled="oasisTaskPolling"
-                  @click="handleRefreshOasisTaskStatus"
-                >
-                  Refresh status
-                </Button>
-              </div>
-            </div>
-            <div
-              v-if="!oasisTask && oasisTaskLastId"
-              class="rounded-lg border border-stone-300/80 dark:border-zinc-700/60 bg-stone-100/75 dark:bg-zinc-800/40 p-3 text-xs text-stone-700 dark:text-zinc-300 space-y-2"
-            >
-              <p>Last OASIS task: {{ oasisTaskLastId }}</p>
-              <Button
-                variant="secondary"
-                size="sm"
-                :disabled="oasisTaskPolling"
-                @click="handleRefreshOasisTaskStatus"
-              >
-                Refresh last task status
-              </Button>
-            </div>
-            <div
-              v-if="graphAnalysisResult"
-              class="rounded-lg border border-stone-300/80 dark:border-zinc-700/60 bg-stone-100/75 dark:bg-zinc-800/40 p-3 text-sm text-stone-700 dark:text-zinc-200 whitespace-pre-wrap max-h-48 overflow-y-auto"
-            >
-              {{ graphAnalysisResult }}
-            </div>
-            <div
-              v-if="hasOasisAnalysis"
-              class="rounded-lg border border-emerald-300/70 bg-emerald-100 p-3 text-xs text-emerald-800 dark:border-emerald-700/50 dark:bg-emerald-900/20 dark:text-emerald-300"
-            >
-              OASIS summary ready. Guidance and agent profiles are now used by continuation generation.
-            </div>
-            <div
-              v-if="oasisPackage"
-              class="rounded-lg border border-amber-700/30 bg-amber-900/10 p-3 text-xs text-amber-800 dark:text-amber-200 space-y-1"
-            >
-              <p>Simulation Package: {{ oasisPackage.simulation_id }}</p>
-              <p>Profiles: {{ oasisPackage.profiles?.length || 0 }}</p>
-              <p>Events: {{ oasisPackage.simulation_config?.events?.length || 0 }}</p>
-              <p>Platforms: {{ (oasisPackage.simulation_config?.active_platforms || []).join(', ') || 'N/A' }}</p>
-            </div>
-            <div
-              v-if="oasisRunResult"
-              class="rounded-lg border border-stone-300/80 bg-stone-100/75 p-3 text-xs text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-200 space-y-1"
-            >
-              <p>Run: {{ oasisRunResult.run_id }}</p>
-              <p>Rounds: {{ oasisRunResult.metrics?.total_rounds || 0 }}</p>
-              <p>Active Agents: {{ oasisRunResult.metrics?.active_agents || 0 }}</p>
-              <p>Estimated Posts: {{ oasisRunResult.metrics?.estimated_posts || 0 }}</p>
-            </div>
-            <div
-              v-if="oasisReport"
-              class="rounded-lg border border-amber-300/80 bg-amber-100/75 p-3 text-xs text-amber-900 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-200 space-y-1"
-            >
-              <p>Report: {{ oasisReport.report_id }}</p>
-              <p class="font-medium">{{ oasisReport.title }}</p>
-              <p class="text-amber-800 dark:text-amber-200/90 line-clamp-3">{{ oasisReport.executive_summary }}</p>
-            </div>
-          </Card>
-
-          <div v-if="rightPanelTab === 'graph' && graphData.nodes.length > 0" class="space-y-4">
-            <div class="h-72 overflow-hidden rounded-lg">
-              <GraphPanel :data="graphData" />
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              class="w-full"
-              @click="router.push(`/projects/${projectId}/graph`)"
-            >
-              Open Full Graph View
-            </Button>
-          </div>
-
-          <div v-else-if="rightPanelTab === 'graph' && !graphLoading" class="text-center py-8">
-            <Network class="w-10 h-10 mx-auto text-stone-600 dark:text-zinc-500 mb-3" />
-            <p class="text-sm text-stone-500 dark:text-zinc-500">No graph data yet. Follow steps 1-2 to build the graph.</p>
-          </div>
-
-          <GraphSearch v-if="rightPanelTab === 'graph'" :project-id="projectId" />
-        </div>
-
-      </div>
+          </template>
+        </ProjectAIOperationsShell>
     </div>
     </div>
 
-    <Teleport to="body">
-      <div class="fixed bottom-4 right-4 z-[95] flex flex-col items-end gap-2">
-        <div
-          v-if="taskCenterExpanded"
-          class="w-[min(92vw,420px)] max-h-[70vh] overflow-hidden rounded-2xl border border-stone-300/80 bg-[#f8f4ea]/95 shadow-2xl backdrop-blur-sm dark:border-zinc-700/70 dark:bg-zinc-900/92"
-        >
-          <div class="flex items-center justify-between gap-2 border-b border-stone-300/70 px-3 py-2 dark:border-zinc-700/60">
-            <div>
-              <p class="text-xs font-semibold uppercase tracking-wider text-stone-700 dark:text-zinc-200">
-                Task Center
-              </p>
-              <p class="text-[11px] text-stone-500 dark:text-zinc-500">
-                Running {{ runningTaskCount }} / Total {{ taskList.length }}
-              </p>
-            </div>
-            <div class="flex items-center gap-2">
-              <div class="w-28">
-                <Select v-model="taskListFilter">
-                  <option value="all">All</option>
-                  <option value="running">Running</option>
-                  <option value="completed">Completed</option>
-                  <option value="failed">Failed</option>
-                  <option value="cancelled">Cancelled</option>
-                </Select>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                :loading="taskListLoading"
-                @click="handleRefreshTaskList"
-              >
-                Refresh
-              </Button>
-            </div>
-          </div>
+    <ProjectTaskCenter
+      :tasks="taskList"
+      :loading="taskListLoading"
+      :error="taskListError"
+      :expanded="taskCenterExpanded"
+      :filter="taskListFilter"
+      :cancelling-task-ids="cancellingTaskIds"
+      :format-date="formatDate"
+      @update:expanded="taskCenterExpanded = $event"
+      @update:filter="taskListFilter = $event"
+      @refresh="handleRefreshTaskList"
+      @cancel="handleCancelTask"
+    />
 
-          <div class="max-h-[58vh] overflow-y-auto px-3 py-2 space-y-2">
-            <Alert v-if="taskListError" variant="destructive" class="text-xs">
-              {{ taskListError }}
-            </Alert>
-
-            <div v-if="filteredTaskList.length" class="space-y-1.5">
-              <div
-                v-for="task in filteredTaskList"
-                :key="task.task_id"
-                class="rounded-lg border border-stone-300/70 dark:border-zinc-700/50 bg-stone-100/80 dark:bg-zinc-800/45 p-2 space-y-1.5"
-              >
-                <div class="flex items-center justify-between gap-2">
-                  <span class="text-xs font-medium text-stone-700 dark:text-zinc-200">
-                    {{ taskTypeLabel(task.task_type) }}
-                  </span>
-                  <span class="text-xs capitalize" :class="taskStatusClass(task.status)">
-                    {{ task.status }}
-                  </span>
-                </div>
-                <p class="text-[11px] text-stone-600 dark:text-zinc-300 line-clamp-2">
-                  {{ task.message || '-' }}
-                </p>
-                <div class="h-1.5 rounded bg-stone-200/70 dark:bg-zinc-800/70 overflow-hidden">
-                  <div
-                    class="h-full bg-amber-500 transition-all duration-300"
-                    :style="{ width: `${Math.max(0, Math.min(100, Number(task.progress || 0)))}%` }"
-                  />
-                </div>
-                <div class="flex items-center justify-between gap-2 text-[10px] text-stone-500 dark:text-zinc-500">
-                  <span>{{ formatDate(task.updated_at) }}</span>
-                  <span class="truncate max-w-[180px]">#{{ task.task_id }}</span>
-                </div>
-                <div class="flex items-center justify-between gap-2">
-                  <p v-if="task.error" class="min-w-0 flex-1 text-[10px] text-red-700 dark:text-red-300 line-clamp-2">
-                    {{ task.error }}
-                  </p>
-                  <Button
-                    v-if="isTaskCancellable(task)"
-                    variant="ghost"
-                    size="sm"
-                    class="h-6 px-2 text-[10px] text-red-700 hover:text-red-700 dark:text-red-300 dark:hover:text-red-200"
-                    :loading="isTaskCancelling(task.task_id)"
-                    :disabled="isTaskCancelling(task.task_id)"
-                    @click="handleCancelTask(task)"
-                  >
-                    Terminate
-                  </Button>
-                </div>
-              </div>
-            </div>
-            <p v-else class="text-[11px] text-stone-500 dark:text-zinc-500 py-3 text-center">
-              No tasks yet.
-            </p>
-          </div>
-        </div>
-
-        <Button
-          variant="primary"
-          size="sm"
-          class="shadow-xl"
-          @click="taskCenterExpanded = !taskCenterExpanded"
-        >
-          Task Center
-          <span class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-black/20 px-1.5 text-[10px] text-white">
-            {{ runningTaskCount }}
-          </span>
-        </Button>
-      </div>
-    </Teleport>
-
-    <Teleport to="body">
-      <div
-        v-if="chapterContextMenu.visible && contextMenuChapter"
-        data-chapter-context-menu="true"
-        class="fixed z-[90] w-48 rounded-lg border border-stone-300 bg-stone-50 p-1 shadow-xl dark:border-zinc-700 dark:bg-zinc-800"
-        :style="chapterContextMenuStyle"
-        @contextmenu.prevent
-      >
-        <Button
-          variant="ghost"
-          size="sm"
-          class="h-auto w-full justify-start px-2 py-1.5 text-left text-xs text-stone-700 dark:text-zinc-200"
-          @click="handleContextMenuOpen"
-        >
-          打开章节
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          class="h-auto w-full justify-start px-2 py-1.5 text-left text-xs text-stone-700 dark:text-zinc-200"
-          @click="handleContextMenuRename"
-        >
-          重命名章节
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          class="h-auto w-full justify-start px-2 py-1.5 text-left text-xs text-stone-700 dark:text-zinc-200"
-          @click="handleContextMenuToggleScope"
-        >
-          {{ contextMenuChapterInScope ? '移出流程范围' : '加入流程范围' }}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          class="h-auto w-full justify-start px-2 py-1.5 text-left text-xs text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-300 dark:hover:bg-red-900/20 dark:hover:text-red-200"
-          @click="handleContextMenuDelete"
-        >
-          删除章节
-        </Button>
-      </div>
-    </Teleport>
+    <ProjectChapterContextMenu
+      :visible="chapterContextMenu.visible && !!contextMenuChapter"
+      :style="chapterContextMenuStyle"
+      :in-scope="contextMenuChapterInScope"
+      @open="handleContextMenuOpen"
+      @rename="handleContextMenuRename"
+      @toggle-scope="handleContextMenuToggleScope"
+      @delete="handleContextMenuDelete"
+    />
   </AppLayout>
 </template>
+
 
 
 

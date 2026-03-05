@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import AsyncClient
+from app.services.task_state import TaskStatus, task_manager
 
 def _scalar_one_or_none(value):
     result = MagicMock()
@@ -251,17 +253,18 @@ class TestProviderModels:
         }
 
     @pytest.mark.asyncio
-    async def test_create_provider_rejects_invalid_type(self, admin_client: AsyncClient, mock_db: AsyncMock):
+    async def test_create_provider_accepts_openai_alias(self, admin_client: AsyncClient, mock_db: AsyncMock):
         resp = await admin_client.post(
             "/api/admin/providers",
             json={
-                "name": "bad-provider",
+                "name": "openai-alias-provider",
                 "provider": "openai",
                 "api_key": "sk-test",
             },
         )
-        assert resp.status_code == 400
-        assert "openai_compatible" in resp.json()["detail"]
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["provider"] == "openai_compatible"
 
     @pytest.mark.asyncio
     async def test_create_provider_rejects_models_field(self, admin_client: AsyncClient, mock_db: AsyncMock):
@@ -385,6 +388,57 @@ class TestAdminUsers:
         mock_db.delete.assert_awaited_once_with(user)
 
 
+class TestAdminTasks:
+
+    @pytest.mark.asyncio
+    async def test_list_tasks_with_filters(self, admin_client: AsyncClient):
+        task_type = f"admin-task-test-{uuid.uuid4().hex}"
+        task_one = task_manager.create_task(task_type, metadata={"user_id": "user-1", "project_id": "project-1"})
+        task_two = task_manager.create_task(task_type, metadata={"user_id": "user-2", "project_id": "project-1"})
+        task_manager.update_task(
+            task_one.task_id,
+            status=TaskStatus.PROCESSING,
+            progress=30,
+            message="Building",
+            progress_detail={"stage": "build", "step": "collect", "processed": 3, "total": 10},
+        )
+        task_manager.update_task(task_two.task_id, status=TaskStatus.COMPLETED, progress=100, message="Done")
+
+        resp = await admin_client.get(
+            "/api/admin/tasks",
+            params={"task_type": task_type, "status": "processing", "user_id": "user-1", "limit": 200},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["tasks"][0]["task_id"] == task_one.task_id
+        assert body["tasks"][0]["status"] == "processing"
+        assert body["tasks"][0]["progress_detail"]["stage"] == "build"
+
+    @pytest.mark.asyncio
+    async def test_get_task_detail_not_found(self, admin_client: AsyncClient):
+        resp = await admin_client.get(f"/api/admin/tasks/missing-task-{uuid.uuid4().hex}")
+
+        assert resp.status_code == 404
+        assert "Task not found" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_cancel_task(self, admin_client: AsyncClient):
+        task = task_manager.create_task(
+            f"admin-cancel-test-{uuid.uuid4().hex}",
+            metadata={"user_id": "user-1", "project_id": "project-2"},
+        )
+        task_manager.update_task(task.task_id, status=TaskStatus.PROCESSING, progress=45, message="Running")
+
+        resp = await admin_client.post(f"/api/admin/tasks/{task.task_id}/cancel")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["task"]["status"] == "cancelled"
+        assert body["task"]["task_id"] == task.task_id
+
+
 class TestPaymentConfig:
 
     @pytest.mark.asyncio
@@ -455,9 +509,14 @@ class TestOasisConfig:
         assert resp.status_code == 200
         body = resp.json()
         assert body["max_agent_profiles"] == 16
-        assert body["llm_request_timeout_seconds"] == 120
-        assert body["llm_retry_count"] == 2
-        assert body["llm_retry_interval_seconds"] == 1.5
+        assert body["llm_request_timeout_seconds"] == 180
+        assert body["llm_retry_count"] == 4
+        assert body["llm_retry_interval_seconds"] == 2.0
+        assert body["llm_prefer_stream"] is True
+        assert body["llm_stream_fallback_nonstream"] is True
+        assert body["llm_task_concurrency"] == 1
+        assert body["llm_model_default_concurrency"] == 8
+        assert body["llm_model_concurrency_overrides"] == {}
 
     @pytest.mark.asyncio
     async def test_update_oasis_config_clamps_llm_retry_settings(self, admin_client: AsyncClient, mock_db: AsyncMock):
@@ -470,6 +529,13 @@ class TestOasisConfig:
                 "llm_request_timeout_seconds": 99999,
                 "llm_retry_count": -3,
                 "llm_retry_interval_seconds": 999,
+                "llm_task_concurrency": 999,
+                "llm_model_default_concurrency": 0,
+                "llm_model_concurrency_overrides": {
+                    "gpt-4o-mini": 999,
+                    "": 3,
+                    "invalid": "abc",
+                },
             },
         )
 
@@ -478,6 +544,9 @@ class TestOasisConfig:
         assert body["llm_request_timeout_seconds"] == 1800
         assert body["llm_retry_count"] == 0
         assert body["llm_retry_interval_seconds"] == 60.0
+        assert body["llm_task_concurrency"] == 64
+        assert body["llm_model_default_concurrency"] == 1
+        assert body["llm_model_concurrency_overrides"] == {"gpt-4o-mini": 64}
 
     @pytest.mark.asyncio
     async def test_update_oasis_config_partial_merge_preserves_existing_fields(
@@ -494,6 +563,11 @@ class TestOasisConfig:
                 "llm_request_timeout_seconds": 90,
                 "llm_retry_count": 4,
                 "llm_retry_interval_seconds": 2.5,
+                "llm_prefer_stream": False,
+                "llm_stream_fallback_nonstream": False,
+                "llm_task_concurrency": 3,
+                "llm_model_default_concurrency": 6,
+                "llm_model_concurrency_overrides": {"gpt-4o-mini": 4},
             },
         )
         mock_db.execute.return_value = _scalar_one_or_none(existing)
@@ -512,3 +586,8 @@ class TestOasisConfig:
         assert body["llm_request_timeout_seconds"] == 90
         assert body["llm_retry_count"] == 1
         assert body["llm_retry_interval_seconds"] == 2.5
+        assert body["llm_prefer_stream"] is False
+        assert body["llm_stream_fallback_nonstream"] is False
+        assert body["llm_task_concurrency"] == 3
+        assert body["llm_model_default_concurrency"] == 6
+        assert body["llm_model_concurrency_overrides"] == {"gpt-4o-mini": 4}

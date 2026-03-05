@@ -79,46 +79,6 @@ class TestOntologyService:
         result = _sanitize_ontology(data)
         assert len(result["entity_types"]) == 1
 
-    def test_fallback_ontology_basic(self):
-        """Test fallback ontology generation."""
-        from app.services.ontology import _fallback_ontology
-
-        result = _fallback_ontology("John works at Microsoft")
-        assert "entity_types" in result
-        assert "edge_types" in result
-        assert "analysis_summary" in result
-
-    def test_fallback_ontology_empty_text(self):
-        """Test fallback ontology with empty text."""
-        from app.services.ontology import _fallback_ontology
-
-        result = _fallback_ontology("")
-        assert "entity_types" in result
-        assert len(result["entity_types"]) >= 1
-
-    def test_fallback_ontology_with_requirement(self):
-        """Test fallback ontology includes requirement."""
-        from app.services.ontology import _fallback_ontology
-
-        result = _fallback_ontology("Test text", "Custom requirement")
-        assert "Custom requirement" in result["analysis_summary"]
-
-    def test_fallback_ontology_detects_person(self):
-        """Test fallback contains character-like entity type."""
-        from app.services.ontology import _fallback_ontology
-
-        result = _fallback_ontology("He went to the store. She stayed home.")
-        entity_names = [e["name"] for e in result["entity_types"]]
-        assert "CHARACTER" in entity_names
-
-    def test_fallback_ontology_detects_organization(self):
-        """Test fallback detects organization keywords."""
-        from app.services.ontology import _fallback_ontology
-
-        result = _fallback_ontology("The company announced a new product. The team worked hard.")
-        entity_names = [e["name"] for e in result["entity_types"]]
-        assert "ORGANIZATION" in entity_names
-
     @pytest.mark.asyncio
     async def test_generate_ontology_empty_text(self):
         """Test generating ontology with empty text raises ValueError."""
@@ -158,8 +118,8 @@ class TestOntologyService:
             assert "entity_types" in result
 
     @pytest.mark.asyncio
-    async def test_generate_ontology_llm_failure_returns_fallback(self):
-        """Test that LLM failure returns fallback ontology."""
+    async def test_generate_ontology_llm_failure_raises_runtime_error(self):
+        """Test that LLM failure raises explicit pipeline error."""
         from app.services.ontology import generate_ontology
 
         mock_db = AsyncMock()
@@ -172,16 +132,11 @@ class TestOntologyService:
         with patch("app.services.ontology.call_llm") as mock_llm:
             mock_llm.side_effect = Exception("LLM error")
 
-            result = await generate_ontology(
-                text="Some text to analyze",
-                db=mock_db,
-            )
-
-            assert result is not None
-            assert "entity_types" in result
-            # Should be fallback ontology
-            assert result["entity_types"][0]["name"] == "CHARACTER"
-            assert str(result.get("_meta", {}).get("fallback_reason") or "").startswith("ontology_pipeline_failed")
+            with pytest.raises(RuntimeError, match="ontology_pipeline_failed:Exception:LLM error"):
+                await generate_ontology(
+                    text="Some text to analyze",
+                    db=mock_db,
+                )
 
     @pytest.mark.asyncio
     async def test_generate_ontology_infers_edge_types_when_missing(self):
@@ -207,7 +162,26 @@ class TestOntologyService:
             assert result["edge_types"][0]["name"] == "WORKS_FOR"
             assert result["edge_types"][0]["source_type"] == "PERSON"
             assert result["edge_types"][0]["target_type"] == "ORGANIZATION"
-            assert result.get("_meta", {}).get("fallback_reason") is None
+
+    @pytest.mark.asyncio
+    async def test_generate_ontology_invalid_json_raises(self):
+        """Test invalid JSON response raises strict validation error."""
+        from app.services.ontology import generate_ontology
+
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_db.execute.return_value = mock_result
+
+        with patch("app.services.ontology.call_llm") as mock_llm, \
+             patch("app.services.ontology._repair_ontology_json", new_callable=AsyncMock, return_value=None):
+            mock_llm.return_value = {"content": "not json"}
+
+            with pytest.raises(ValueError, match="llm_response_not_json_or_invalid_schema_after_repair"):
+                await generate_ontology(
+                    text="Tom works for Acme.",
+                    db=mock_db,
+                )
 
     def test_build_graph_input_with_ontology_none(self):
         """Test building graph input with None ontology."""

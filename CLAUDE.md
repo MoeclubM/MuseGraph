@@ -10,12 +10,12 @@ MuseGraph 是一个商业级 AI 文本创作/分析/续写系统，使用 Cognee
 - 后端: Python / FastAPI
 - 知识图谱: Cognee + Neo4j
 - 数据库: PostgreSQL + Redis (Docker 本地部署)
-- 存储: MinIO
+- 存储: 本地持久化文件存储（Docker 卷）
 - 包管理: uv (Python), pnpm (前端)
 
 ## Docker 开发环境
 
-### 启动基础设施服务 (PostgreSQL, Redis, MinIO, Neo4j)
+### 启动基础设施服务 (PostgreSQL, Redis, Neo4j)
 
 ```bash
 cd docker
@@ -35,7 +35,6 @@ docker-compose up -d
 |------|------|
 | PostgreSQL | 5432 |
 | Redis | 6379 |
-| MinIO | 9000 (API), 9001 (Console) |
 | Neo4j | 7474 (HTTP), 7687 (Bolt) |
 | 后端 API | 4000 |
 | 前端 Web | 3000 |
@@ -152,11 +151,7 @@ REDIS_URL=redis://localhost:6379
 JWT_SECRET=your-super-secret-jwt-key
 JWT_ALGORITHM=HS256
 JWT_EXPIRES_HOURS=168
-MINIO_ENDPOINT=localhost:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin123
-MINIO_USE_SSL=false
-MINIO_BUCKET=musegraph
+FILE_STORAGE_ROOT=.musegraph/storage
 NEO4J_URL=bolt://localhost:7687
 NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=musegraph123

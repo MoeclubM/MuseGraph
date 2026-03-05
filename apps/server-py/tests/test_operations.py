@@ -146,6 +146,7 @@ class TestContinueOperation:
             id="project-1",
             user_id=fake_user.id,
             content=None,
+            cognee_dataset_id=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -171,6 +172,7 @@ class TestAnalyzeOperation:
             id="project-1",
             user_id=fake_user.id,
             content="Text to analyze for themes and patterns.",
+            cognee_dataset_id=None,
         )
 
         # ANALYZE is only available via file upload
@@ -198,6 +200,7 @@ class TestRewriteOperation:
             id="project-1",
             user_id=fake_user.id,
             content="Original text that needs to be rewritten.",
+            cognee_dataset_id=None,
         )
 
         # REWRITE is only available via file upload
@@ -225,6 +228,7 @@ class TestSummarizeOperation:
             id="project-1",
             user_id=fake_user.id,
             content="Long text that needs to be summarized into a concise form...",
+            cognee_dataset_id=None,
         )
 
         # SUMMARIZE is only available via file upload

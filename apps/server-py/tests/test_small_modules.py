@@ -89,9 +89,9 @@ class TestAuthLogout:
         orig = g["delete_session"]
         g["delete_session"] = mock_del
         try:
+            client.cookies.set("session_token", "tok-abc123")
             resp = await client.post(
                 "/api/auth/logout",
-                cookies={"session_token": "tok-abc123"},
             )
         finally:
             g["delete_session"] = orig
@@ -150,12 +150,15 @@ class TestTaskStateManager:
     """Cover app/services/task_state.py lines 90, 101, 113, 130."""
 
     def _fresh_manager(self):
-        """Create a fresh InMemoryTaskManager instance (bypass singleton)."""
-        from app.services.task_state import InMemoryTaskManager
+        """Create a fresh TaskManager instance backed by in-memory store only."""
+        from app.services.task_state import TaskManager, _InMemoryTaskStore
         import threading
-        mgr = object.__new__(InMemoryTaskManager)
-        mgr._tasks = {}
-        mgr._tasks_lock = threading.Lock()
+        mgr = object.__new__(TaskManager)
+        mgr._memory = _InMemoryTaskStore()
+        mgr._redis = None
+        mgr._sqlite = None
+        mgr._runners = {}
+        mgr._runner_lock = threading.Lock()
         return mgr
 
     def test_update_nonexistent_task(self):
@@ -189,9 +192,9 @@ class TestTaskStateManager:
         recent = mgr.create_task("test_type")
         recent.status = TaskStatus.COMPLETED
 
-        assert len(mgr._tasks) == 2
+        assert len(mgr._memory._tasks) == 2  # type: ignore[attr-defined]
         mgr.cleanup_old_tasks(max_age_hours=24)
-        assert len(mgr._tasks) == 1
+        assert len(mgr._memory._tasks) == 1  # type: ignore[attr-defined]
         assert mgr.get_task(recent.task_id) is not None
         assert mgr.get_task(task.task_id) is None
 

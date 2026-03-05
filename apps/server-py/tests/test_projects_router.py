@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
 from httpx import AsyncClient
 
 
@@ -383,7 +382,7 @@ class TestCreateOperation:
             user_id=fake_user.id,
             chapters=[],
             component_models={},
-            cognee_dataset_id=None,
+            cognee_dataset_id="dataset-1",
         )
         op = SimpleNamespace(
             id="op-1",
@@ -518,7 +517,7 @@ class TestCreateOperation:
             user_id=fake_user.id,
             chapters=[],
             component_models={},
-            cognee_dataset_id=None,
+            cognee_dataset_id="dataset-1",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
         resp = await client.post(
@@ -619,7 +618,7 @@ class TestCreateOperationUpload:
             user_id=fake_user.id,
             chapters=[],
             component_models={},
-            cognee_dataset_id=None,
+            cognee_dataset_id="dataset-1",
         )
         op = SimpleNamespace(
             id="op-1",
@@ -684,16 +683,20 @@ class TestCreateOperationUpload:
             user_id=fake_user.id,
             chapters=[],
             component_models={},
+            cognee_dataset_id="dataset-1",
         )
-        mock_db.execute.return_value = _scalar_one_or_none(project)
+        chapter_query_result = MagicMock()
+        chapter_scalars = MagicMock()
+        chapter_scalars.all.return_value = []
+        chapter_query_result.scalars.return_value = chapter_scalars
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(project),
+            chapter_query_result,
+        ]
         mock_db.flush = AsyncMock()
 
         orig_extract = _create_operation_upload_globals["extract_text_from_file"]
-        orig_resolve_input = _create_operation_upload_globals["_resolve_operation_input"]
         _create_operation_upload_globals["extract_text_from_file"] = MagicMock(return_value="hello world")
-        _create_operation_upload_globals["_resolve_operation_input"] = AsyncMock(
-            side_effect=HTTPException(status_code=400, detail="Invalid chapter_ids for project: bad-id")
-        )
         try:
             files = {"file": ("doc.txt", BytesIO(b"hello world"), "text/plain")}
             resp = await client.post(
@@ -703,7 +706,6 @@ class TestCreateOperationUpload:
             )
         finally:
             _create_operation_upload_globals["extract_text_from_file"] = orig_extract
-            _create_operation_upload_globals["_resolve_operation_input"] = orig_resolve_input
 
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Invalid chapter_ids for project: bad-id"
@@ -749,7 +751,10 @@ class TestCreateOperationStream:
 
         fake_text_operation = MagicMock(return_value=op)
         fake_run_async = AsyncMock(return_value=None)
-        fake_create_task = MagicMock()
+        def _close_task(coro):
+            coro.close()
+            return MagicMock()
+        fake_create_task = MagicMock(side_effect=_close_task)
         orig_text_operation = _create_operation_stream_globals["TextOperation"]
         orig_run_async = _create_operation_stream_globals["run_operation_async"]
         orig_asyncio = _create_operation_stream_globals["asyncio"]
@@ -769,7 +774,7 @@ class TestCreateOperationStream:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "PENDING"
-        assert fake_run_async.await_args.kwargs["use_rag"] is False
+        assert fake_run_async.call_args.kwargs["use_rag"] is False
 
     @pytest.mark.asyncio
     async def test_stream_non_create_requires_graph(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
@@ -825,7 +830,10 @@ class TestCreateOperationStream:
 
         fake_text_operation = MagicMock(return_value=op)
         fake_run_async = AsyncMock(return_value=None)
-        fake_create_task = MagicMock()
+        def _close_task(coro):
+            coro.close()
+            return MagicMock()
+        fake_create_task = MagicMock(side_effect=_close_task)
         orig_text_operation = _create_operation_stream_globals["TextOperation"]
         orig_run_async = _create_operation_stream_globals["run_operation_async"]
         orig_asyncio = _create_operation_stream_globals["asyncio"]
@@ -843,7 +851,7 @@ class TestCreateOperationStream:
             _create_operation_stream_globals["asyncio"] = orig_asyncio
 
         assert resp.status_code == 200
-        assert fake_run_async.await_args.kwargs["use_rag"] is True
+        assert fake_run_async.call_args.kwargs["use_rag"] is True
 
     @pytest.mark.asyncio
     async def test_stream_project_not_found(self, client: AsyncClient, mock_db: AsyncMock, fake_user):

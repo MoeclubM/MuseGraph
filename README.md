@@ -8,7 +8,7 @@ AI 文本创作/分析系统，使用 Cognee + Neo4j 知识图谱构建实体关
 - **前端**: Vue 3 + Vite + Tailwind
 - **知识图谱**: Cognee + Neo4j
 - **数据库**: PostgreSQL (pgvector) + Redis
-- **存储**: MinIO
+- **存储**: 本地持久化文件存储（Docker 卷）
 - **包管理**: uv (Python), pnpm (前端)
 
 ## 快速开始
@@ -48,9 +48,10 @@ docker compose up -d --build
 | 前端 | http://localhost:3000 |
 | 后端 API | http://localhost:4080 |
 | Neo4j Browser | http://localhost:17474 |
-| MinIO Console | http://localhost:9001 |
 
-说明：任务系统状态会持久化到 Docker 卷 `task_state_data`（`/app/.musegraph/task_state.sqlite3`），用户离线后返回仍可查询任务进度与结果。
+说明：任务系统状态与上传文件会持久化到 Docker 卷 `task_state_data`
+（`/app/.musegraph/task_state.sqlite3` 与 `/app/.musegraph/storage`），
+用户离线后返回仍可查询任务进度与结果。
 
 ### 4. 初始化数据库
 
@@ -69,7 +70,7 @@ python seed.py
 
 ## 本地开发
 
-仅启动基础设施（PostgreSQL, Redis, MinIO, Neo4j）：
+仅启动基础设施（PostgreSQL, Redis, Neo4j）：
 
 ```bash
 cd docker
@@ -90,6 +91,20 @@ uvicorn app.main:app --reload --port 4000
 cd apps/web-vue
 pnpm install
 pnpm dev
+```
+
+## 测试
+
+前端单元测试：
+
+```bash
+pnpm --filter @musegraph/web test
+```
+
+前端覆盖率（包含最低覆盖率门禁）：
+
+```bash
+pnpm --filter @musegraph/web test:coverage
 ```
 
 ## 项目结构

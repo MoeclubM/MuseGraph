@@ -116,6 +116,71 @@ class TestPredictionHelpers:
         assert "Active conflicts" in result
         assert "Conflict 1" in result
 
+    def test_build_reference_rag_context_with_alias_trigger(self):
+        """Glossary aliases should expand retrieval anchors."""
+        reference_cards = {
+            "characters": [
+                {"id": "c1", "name": "林默", "role": "侦探", "profile": "理性克制", "notes": "怕海"},
+            ],
+            "glossary_terms": [
+                {
+                    "id": "g1",
+                    "term": "回声井",
+                    "definition": "旧城地下结构",
+                    "aliases": ["回声点", "Echo Well"],
+                    "notes": "涉及主线",
+                }
+            ],
+            "worldbook_entries": [
+                {
+                    "id": "w1",
+                    "title": "旧城下水道",
+                    "category": "地点",
+                    "content": "潮汐期间会封闭闸门",
+                    "tags": ["地下", "闸门"],
+                    "notes": "",
+                }
+            ],
+            "explicit_glossary_term_ids": ["g1"],
+        }
+        context = prediction.build_reference_rag_context(
+            reference_cards,
+            focus_text="林默昨晚在回声点附近看到了闸门异动",
+        )
+        assert context["character_lines"]
+        assert context["glossary_lines"]
+        assert any("回声点 -> 回声井" in row for row in context["alias_expansions"])
+        assert "回声井" in context["query_terms"]
+        assert "林默" in context["query_terms"]
+
+    def test_build_retrieval_query_groups(self):
+        groups = prediction._build_retrieval_query_groups(
+            focus_text="林默在回声点调查旧城闸门",
+            reference_context={
+                "query_terms": ["林默", "回声井", "旧城下水道", "闸门"],
+                "alias_expansions": ["回声点 -> 回声井"],
+            },
+        )
+        assert groups
+        assert any("林默" in row for row in groups)
+        assert any("回声井" in row for row in groups)
+
+    def test_rank_search_rows_filters_low_relevance(self):
+        rows = [
+            {"content": "林默在旧城闸门前发现异常脚印", "score": 0.8, "type": "DocumentChunk"},
+            {"content": "完全无关的厨房清单", "score": 0.1, "type": "DocumentChunk"},
+        ]
+        ranked = prediction._rank_search_rows(
+            rows,
+            focus_text="林默在闸门调查",
+            limit=5,
+            max_chars=120,
+            require_overlap_for_low_score=True,
+        )
+        assert ranked
+        assert any("林默" in row for row in ranked)
+        assert all("厨房清单" not in row for row in ranked)
+
 
 class TestBuildPredictionPrompt:
     """Test build_prediction_prompt function."""
@@ -157,18 +222,38 @@ class TestBuildPredictionPrompt:
         )
         assert "Must be realistic" in result
 
+    def test_build_prompt_includes_reference_rag_context(self):
+        """Reference RAG blocks should appear in the enhanced prompt."""
+        result = prediction.build_prediction_prompt(
+            input_text="Test input",
+            graph_context={"insights": [], "relationships": []},
+            oasis_analysis=None,
+            simulation_requirement=None,
+            structure_analysis=None,
+            base_prompt="Base prompt",
+            reference_rag_context={
+                "character_lines": ["- 林默: 侦探"],
+                "glossary_lines": ["- 回声井 | definition: 地下结构"],
+                "worldbook_lines": [],
+                "query_terms": ["林默", "回声井"],
+                "alias_expansions": [],
+            },
+        )
+        assert "Reference characters" in result
+        assert "回声井" in result
+
 
 class TestGetEnhancedPrompt:
     """Test get_enhanced_prompt function."""
 
     @pytest.mark.asyncio
     async def test_get_enhanced_prompt_non_continue_op(self):
-        """Test returns base for non-CONTINUE operations."""
+        """Unsupported operation type should return base prompt."""
         mock_db = AsyncMock()
 
         result = await prediction.get_enhanced_prompt(
             project_id="proj-1",
-            op_type="SUMMARIZE",
+            op_type="EXPORT",
             input_text="Test",
             base_prompt="Base",
             db=mock_db,
@@ -293,3 +378,41 @@ async def test_get_enhanced_prompt_returns_base_when_no_context(monkeypatch: pyt
     )
 
     assert prompt == "BASE_PROMPT"
+
+
+@pytest.mark.asyncio
+async def test_get_enhanced_prompt_uses_reference_cards_without_graph(monkeypatch: pytest.MonkeyPatch):
+    fake_project = SimpleNamespace(
+        id="p3",
+        title="Story",
+        description="desc",
+        simulation_requirement="",
+        component_models={"operation_analyze": "model-analyze"},
+        oasis_analysis=None,
+        cognee_dataset_id=None,
+    )
+    fake_db = AsyncMock()
+    fake_db.execute.return_value = _scalar_one_or_none(fake_project)
+
+    async def _fake_call_llm(*, model: str, prompt: str, db):
+        return {"content": '{"narrative_state":{"phase":"","summary":""},"core_entities":[],"active_conflicts":[],"hard_constraints":[],"style_anchors":[],"next_beats":[],"unknowns":[]}'}
+
+    monkeypatch.setattr("app.services.ai.call_llm", _fake_call_llm)
+
+    prompt = await prediction.get_enhanced_prompt(
+        project_id="p3",
+        op_type="CONTINUE",
+        input_text="林默调查回声点",
+        base_prompt="BASE_PROMPT",
+        db=fake_db,
+        reference_cards={
+            "characters": [{"id": "c1", "name": "林默", "role": "侦探"}],
+            "glossary_terms": [{"id": "g1", "term": "回声井", "aliases": ["回声点"], "definition": "地下设施"}],
+            "worldbook_entries": [],
+            "explicit_character_ids": ["c1"],
+            "explicit_glossary_term_ids": ["g1"],
+        },
+    )
+
+    assert prompt != "BASE_PROMPT"
+    assert "Reference glossary terms" in prompt

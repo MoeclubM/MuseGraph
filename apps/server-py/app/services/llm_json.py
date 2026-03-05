@@ -130,38 +130,38 @@ def extract_json_object(raw: str) -> dict[str, Any] | None:
         return None
 
     direct = _json_loads_loose(text)
-    if direct:
+    if direct is not None:
         return direct
 
     for match in CODE_FENCE_RE.finditer(_normalize_text(raw)):
         block = normalize_json_content(match.group(1))
         parsed = _json_loads_loose(block)
-        if parsed:
+        if parsed is not None:
             return parsed
 
     for candidate in _balanced_json_candidates(text):
         parsed = _json_loads_loose(candidate)
-        if parsed:
+        if parsed is not None:
             return parsed
 
     raw_text = _normalize_text(raw)
     if raw_text and raw_text != text:
         for candidate in _balanced_json_candidates(raw_text):
             parsed = _json_loads_loose(candidate)
-            if parsed:
+            if parsed is not None:
                 return parsed
 
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
         parsed = _json_loads_loose(text[start : end + 1])
-        if parsed:
+        if parsed is not None:
             return parsed
 
     raw_start = raw_text.find("{")
     raw_end = raw_text.rfind("}")
     if raw_start != -1 and raw_end != -1 and raw_end > raw_start:
         parsed = _json_loads_loose(raw_text[raw_start : raw_end + 1])
-        if parsed:
+        if parsed is not None:
             return parsed
     return None

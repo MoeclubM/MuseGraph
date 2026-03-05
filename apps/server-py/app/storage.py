@@ -1,29 +1,33 @@
-import io
-
-from minio import Minio
+from pathlib import Path
 
 from app.config import settings
 
-minio_client = Minio(
-    settings.MINIO_ENDPOINT,
-    access_key=settings.MINIO_ACCESS_KEY,
-    secret_key=settings.MINIO_SECRET_KEY,
-    secure=settings.MINIO_USE_SSL,
-)
+
+def _storage_root() -> Path:
+    return Path(settings.FILE_STORAGE_ROOT).expanduser()
 
 
-def ensure_bucket():
-    if not minio_client.bucket_exists(settings.MINIO_BUCKET):
-        minio_client.make_bucket(settings.MINIO_BUCKET)
+def _resolve_target_path(file_name: str) -> Path:
+    root = _storage_root().resolve()
+    normalized = str(file_name or "").strip().replace("\\", "/").lstrip("/")
+    if not normalized:
+        raise ValueError("file_name cannot be empty")
+    target = (root / normalized).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Invalid file_name path") from exc
+    return target
+
+
+def ensure_bucket() -> None:
+    _storage_root().mkdir(parents=True, exist_ok=True)
 
 
 def upload_file(file_name: str, data: bytes, content_type: str) -> str:
+    del content_type  # kept for interface compatibility
     ensure_bucket()
-    minio_client.put_object(
-        settings.MINIO_BUCKET,
-        file_name,
-        io.BytesIO(data),
-        length=len(data),
-        content_type=content_type,
-    )
+    target_path = _resolve_target_path(file_name)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(data)
     return file_name

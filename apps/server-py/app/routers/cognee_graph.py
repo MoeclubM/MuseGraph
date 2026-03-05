@@ -1,5 +1,7 @@
 import asyncio
 import hashlib
+import inspect
+import json
 from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine
 
@@ -52,6 +54,7 @@ router = APIRouter()
 GRAPH_BUILD_REBUILD = "rebuild"
 GRAPH_BUILD_INCREMENTAL = "incremental"
 _TERMINAL_TASK_STATUSES = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+_RERANKER_SEARCH_TYPES = {"RAG_COMPLETION", "GRAPH_COMPLETION", "GRAPH_SUMMARY_COMPLETION"}
 
 
 async def _get_project(project_id: str, user: User, db: AsyncSession) -> TextProject:
@@ -81,6 +84,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+async def _await_if_needed(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
 def _normalize_chapter_ids(chapter_ids: list[str] | None) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
@@ -95,6 +104,119 @@ def _normalize_chapter_ids(chapter_ids: list[str] | None) -> list[str]:
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _hash_json_payload(payload: Any) -> str:
+    try:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+    except Exception:
+        encoded = str(payload)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _text_hash_or_empty(text: str | None) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    return _hash_text(normalized)
+
+
+def _build_task_idempotency_key(*, task_type: str, project_id: str, payload: dict[str, Any]) -> str:
+    task = str(task_type or "").strip().lower() or "task"
+    fingerprint = _hash_json_payload(
+        {
+            "task_type": task,
+            "project_id": str(project_id or "").strip(),
+            "payload": payload,
+        }
+    )
+    return f"{task}:{fingerprint[:24]}"
+
+
+def _build_graph_task_idempotency_key(project_id: str, body: CogneeAddRequest) -> str:
+    return _build_task_idempotency_key(
+        task_type="graph_build",
+        project_id=project_id,
+        payload={
+            "chapter_ids": _normalize_chapter_ids(body.chapter_ids),
+            "build_mode": _normalize_graph_build_mode(body.build_mode),
+            "text_hash": _text_hash_or_empty(body.text),
+            "ontology_hash": _hash_json_payload(body.ontology) if isinstance(body.ontology, dict) else "",
+        },
+    )
+
+
+def _build_ontology_task_idempotency_key(project_id: str, body: CogneeOntologyGenerateRequest) -> str:
+    return _build_task_idempotency_key(
+        task_type="ontology_generate",
+        project_id=project_id,
+        payload={
+            "chapter_ids": _normalize_chapter_ids(body.chapter_ids),
+            "text_hash": _text_hash_or_empty(body.text),
+            "model": str(body.model or "").strip(),
+            "requirement": str(body.requirement or "").strip(),
+        },
+    )
+
+
+def _build_oasis_analyze_task_idempotency_key(project_id: str, body: CogneeOasisAnalyzeRequest) -> str:
+    return _build_task_idempotency_key(
+        task_type="oasis_analyze",
+        project_id=project_id,
+        payload={
+            "chapter_ids": _normalize_chapter_ids(body.chapter_ids),
+            "text_hash": _text_hash_or_empty(body.text),
+            "prompt_hash": _text_hash_or_empty(body.prompt),
+            "analysis_model": str(body.analysis_model or "").strip(),
+            "simulation_model": str(body.simulation_model or "").strip(),
+            "requirement": str(body.requirement or "").strip(),
+            "requirement_provided": "requirement" in body.model_fields_set,
+        },
+    )
+
+
+def _build_oasis_prepare_task_idempotency_key(project_id: str, body: CogneeOasisPrepareRequest) -> str:
+    return _build_task_idempotency_key(
+        task_type="oasis_prepare",
+        project_id=project_id,
+        payload={
+            "chapter_ids": _normalize_chapter_ids(body.chapter_ids),
+            "text_hash": _text_hash_or_empty(body.text),
+            "prompt_hash": _text_hash_or_empty(body.prompt),
+            "analysis_model": str(body.analysis_model or "").strip(),
+            "simulation_model": str(body.simulation_model or "").strip(),
+            "requirement": str(body.requirement or "").strip(),
+            "requirement_provided": "requirement" in body.model_fields_set,
+        },
+    )
+
+
+def _build_oasis_run_task_idempotency_key(project_id: str, body: CogneeOasisRunRequest) -> str:
+    return _build_task_idempotency_key(
+        task_type="oasis_run",
+        project_id=project_id,
+        payload={
+            "chapter_ids": _normalize_chapter_ids(body.chapter_ids),
+            "package_hash": _hash_json_payload(body.package) if isinstance(body.package, dict) else "",
+        },
+    )
+
+
+def _build_oasis_report_task_idempotency_key(project_id: str, body: CogneeOasisReportRequest) -> str:
+    return _build_task_idempotency_key(
+        task_type="oasis_report",
+        project_id=project_id,
+        payload={
+            "chapter_ids": _normalize_chapter_ids(body.chapter_ids),
+            "report_model": str(body.report_model or "").strip(),
+        },
+    )
 
 
 def _build_provenance(*, source_chapter_ids: list[str], text: str) -> dict[str, Any]:
@@ -237,11 +359,13 @@ def _resolve_report_model(project: TextProject, body: CogneeOasisReportRequest) 
 
 
 def _get_project_analysis(project: TextProject) -> dict[str, Any] | None:
-    return project.oasis_analysis if isinstance(project.oasis_analysis, dict) else None
+    analysis = getattr(project, "oasis_analysis", None)
+    return analysis if isinstance(analysis, dict) else None
 
 
 def _store_analysis_payload(project: TextProject, **fields: Any) -> dict[str, Any]:
-    base = dict(project.oasis_analysis or {})
+    existing_analysis = getattr(project, "oasis_analysis", None)
+    base = dict(existing_analysis or {})
     for key, value in fields.items():
         base[key] = value
     project.oasis_analysis = base
@@ -274,6 +398,127 @@ def _extract_graph_build_hashes(project: TextProject) -> dict[str, str]:
         if chapter_id and hash_value:
             hashes[chapter_id] = hash_value
     return hashes
+
+
+def _to_utc_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _is_running_task_status(status_value: TaskStatus | str | None) -> bool:
+    normalized = str(status_value.value if isinstance(status_value, TaskStatus) else status_value or "").strip().lower()
+    return normalized in {"pending", "processing"}
+
+
+def _latest_running_graph_task(project_id: str) -> TaskRecord | None:
+    tasks = task_manager.list_tasks(task_type="graph_build", project_id=project_id, limit=20)
+    for task in tasks:
+        if _is_running_task_status(task.status):
+            return task
+    return None
+
+
+async def _build_graph_freshness_payload(project: TextProject, db: AsyncSession) -> dict[str, Any]:
+    state = _extract_graph_build_state(project)
+    last_build_at = str(state.get("updated_at") or "").strip() or None
+    graph_mode = str(state.get("mode") or "").strip() or None
+
+    base_payload: dict[str, Any] = {
+        "graph_freshness": "empty",
+        "graph_reason": None,
+        "graph_changed_count": 0,
+        "graph_added_count": 0,
+        "graph_modified_count": 0,
+        "graph_removed_count": 0,
+        "graph_last_build_at": last_build_at,
+        "graph_mode": graph_mode,
+        "graph_syncing_task_id": None,
+    }
+
+    if not project.ontology_schema:
+        base_payload["graph_freshness"] = "no_ontology"
+        base_payload["graph_reason"] = "ontology_missing"
+        return base_payload
+
+    running_task = _latest_running_graph_task(project.id)
+    if running_task:
+        base_payload["graph_freshness"] = "syncing"
+        base_payload["graph_reason"] = "graph_build_task_running"
+        base_payload["graph_syncing_task_id"] = running_task.task_id
+        return base_payload
+
+    if not project.cognee_dataset_id:
+        base_payload["graph_freshness"] = "empty"
+        base_payload["graph_reason"] = "dataset_missing"
+        return base_payload
+
+    source_ids_raw = state.get("source_chapter_ids") if isinstance(state.get("source_chapter_ids"), list) else []
+    source_ids = _normalize_chapter_ids(source_ids_raw)
+    source_id_set = set(source_ids)
+    previous_hashes_all = _extract_graph_build_hashes(project)
+    previous_chapter_ids = (
+        {chapter_id for chapter_id in previous_hashes_all.keys() if chapter_id in source_id_set}
+        if source_ids
+        else {chapter_id for chapter_id in previous_hashes_all.keys() if chapter_id != "__manual__"}
+    )
+
+    if not previous_chapter_ids:
+        base_payload["graph_freshness"] = "stale"
+        base_payload["graph_reason"] = "graph_baseline_missing_or_scope_changed"
+        return base_payload
+
+    last_build_dt = _to_utc_datetime(last_build_at)
+    if not last_build_dt:
+        base_payload["graph_freshness"] = "stale"
+        base_payload["graph_reason"] = "graph_build_timestamp_missing_or_invalid"
+        return base_payload
+
+    chapter_query = select(ProjectChapter.id, ProjectChapter.updated_at).where(ProjectChapter.project_id == project.id)
+    if source_ids:
+        chapter_query = chapter_query.where(ProjectChapter.id.in_(source_ids))
+    result = await db.execute(chapter_query)
+    chapter_rows = result.all()
+    current_chapter_ids = {str(row[0]) for row in chapter_rows if str(row[0] or "").strip()}
+    current_updated_at: dict[str, datetime | None] = {
+        str(row[0]): _to_utc_datetime(row[1])
+        for row in chapter_rows
+        if str(row[0] or "").strip()
+    }
+
+    added = [chapter_id for chapter_id in current_chapter_ids if chapter_id not in previous_chapter_ids]
+    removed = [chapter_id for chapter_id in previous_chapter_ids if chapter_id not in current_chapter_ids]
+    modified = [
+        chapter_id
+        for chapter_id in (current_chapter_ids & previous_chapter_ids)
+        if (current_updated_at.get(chapter_id) or last_build_dt) > last_build_dt
+    ]
+
+    changed_count = len(added) + len(modified) + len(removed)
+    base_payload["graph_changed_count"] = changed_count
+    base_payload["graph_added_count"] = len(added)
+    base_payload["graph_modified_count"] = len(modified)
+    base_payload["graph_removed_count"] = len(removed)
+
+    if changed_count > 0:
+        base_payload["graph_freshness"] = "stale"
+        base_payload["graph_reason"] = "chapter_metadata_changed_after_last_graph_build"
+        return base_payload
+
+    base_payload["graph_freshness"] = "fresh"
+    base_payload["graph_reason"] = "graph_synced_with_current_chapters"
+    return base_payload
 
 
 def _store_graph_build_state(
@@ -445,11 +690,22 @@ def _start_project_task(
     worker: Callable[[str], Coroutine[Any, Any, None]],
     metadata: dict[str, Any] | None = None,
 ) -> CogneeTaskStartResponse:
+    task_metadata: dict[str, Any] = dict(metadata or {})
+    idempotency_key = str(task_metadata.get("idempotency_key") or "").strip()
+    if idempotency_key:
+        existing = task_manager.find_inflight_task_by_idempotency(
+            task_type=task_type,
+            project_id=project_id,
+            idempotency_key=idempotency_key,
+        )
+        if existing is not None:
+            return CogneeTaskStartResponse(status="accepted", task=_task_to_schema(existing))
+
     task = _create_project_task(
         task_type=task_type,
         project_id=project_id,
         user_id=user_id,
-        metadata=metadata,
+        metadata=task_metadata,
     )
 
     async def _runner() -> None:
@@ -781,11 +1037,13 @@ async def _execute_graph_build(
         if progress_callback:
             progress_callback(25, "Cleaning previous dataset...")
         try:
-            await delete_dataset(
-                project_id,
-                model=graph_model,
-                embedding_model=graph_embedding_model or None,
-                db=db,
+            await _await_if_needed(
+                delete_dataset(
+                    project_id,
+                    model=graph_model,
+                    embedding_model=graph_embedding_model or None,
+                    db=db,
+                )
             )
         except Exception as exc:
             raise RuntimeError(f"Failed to clear previous dataset before rebuild: {exc}") from exc
@@ -1324,13 +1582,19 @@ async def add_to_graph(
     db: AsyncSession = Depends(get_db),
 ):
     project = await _get_project(project_id, user, db)
+    incoming_ontology = body.ontology if isinstance(body.ontology, dict) else None
+    if not incoming_ontology and not project.ontology_schema:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ontology not generated. Please generate ontology first.",
+        )
     try:
         build_result = await _execute_graph_build(
             project_id=project_id,
             project=project,
             body_text=body.text,
             chapter_ids=body.chapter_ids,
-            ontology=body.ontology if isinstance(body.ontology, dict) else None,
+            ontology=incoming_ontology,
             mode=body.build_mode,
             db=db,
         )
@@ -1338,7 +1602,7 @@ async def add_to_graph(
     except HTTPException:
         raise
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -1351,11 +1615,15 @@ async def add_to_graph_task(
     db: AsyncSession = Depends(get_db),
 ):
     await _get_project(project_id, user, db)
+    idempotency_key = _build_graph_task_idempotency_key(project_id, body)
     return _start_project_task(
         task_type="graph_build",
         project_id=project_id,
         user_id=user.id,
-        metadata={"build_mode": _normalize_graph_build_mode(body.build_mode)},
+        metadata={
+            "build_mode": _normalize_graph_build_mode(body.build_mode),
+            "idempotency_key": idempotency_key,
+        },
         worker=lambda task_id: _run_graph_build_task(
             task_id,
             project_id=project_id,
@@ -1402,7 +1670,7 @@ async def generate_project_ontology(
     except HTTPException:
         raise
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -1415,10 +1683,15 @@ async def generate_project_ontology_task(
     db: AsyncSession = Depends(get_db),
 ):
     await _get_project(project_id, user, db)
+    idempotency_key = _build_ontology_task_idempotency_key(project_id, body)
     return _start_project_task(
         task_type="ontology_generate",
         project_id=project_id,
         user_id=user.id,
+        metadata={
+            "idempotency_key": idempotency_key,
+            "model": str(body.model or "").strip() or None,
+        },
         worker=lambda task_id: _run_ontology_task(
             task_id,
             project_id=project_id,
@@ -1474,7 +1747,7 @@ async def analyze_with_oasis(
         )
         return CogneeOasisAnalyzeResponse(status="ok", analysis=analysis, context=context)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -1489,10 +1762,15 @@ async def analyze_with_oasis_task(
     project = await _get_project(project_id, user, db)
     _require_ontology_and_graph(project, "OASIS analysis")
     requirement_provided = "requirement" in body.model_fields_set
+    idempotency_key = _build_oasis_analyze_task_idempotency_key(project_id, body)
     return _start_project_task(
         task_type="oasis_analyze",
         project_id=project_id,
         user_id=user.id,
+        metadata={
+            "idempotency_key": idempotency_key,
+            "requirement_provided": requirement_provided,
+        },
         worker=lambda task_id: _run_analyze_task(
             task_id,
             project_id=project_id,
@@ -1550,7 +1828,7 @@ async def prepare_oasis_package(
         )
         return CogneeOasisPrepareResponse(status="ok", package=package)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -1564,10 +1842,14 @@ async def prepare_oasis_package_task(
 ):
     project = await _get_project(project_id, user, db)
     _require_ontology_and_graph(project, "OASIS preparation")
+    idempotency_key = _build_oasis_prepare_task_idempotency_key(project_id, body)
     return _start_project_task(
         task_type="oasis_prepare",
         project_id=project_id,
         user_id=user.id,
+        metadata={
+            "idempotency_key": idempotency_key,
+        },
         worker=lambda task_id: _run_prepare_task(
             task_id,
             project_id=project_id,
@@ -1589,32 +1871,35 @@ async def run_oasis_simulation(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    project = await _get_project(project_id, user, db)
-    _require_ontology_and_graph(project, "OASIS simulation")
-    analysis, requirement, provenance, oasis_config = await _resolve_oasis_runtime_context(
-        project=project,
-        project_id=project_id,
-        chapter_ids=body.chapter_ids,
-        error_detail="No source text provided for OASIS simulation",
-        billing_user_id=user.id,
-        db=db,
-    )
-    package = _ensure_oasis_package(
-        project=project,
-        analysis=analysis,
-        requirement=requirement,
-        provenance=provenance,
-        oasis_config=oasis_config,
-        package_override=body.package if isinstance(body.package, dict) else None,
-    )
-    run_result = _ensure_oasis_run_result(
-        analysis=analysis,
-        package=package,
-        provenance=provenance,
-        project=project,
-    )
-    await db.flush()
-    return CogneeOasisRunResponse(status="ok", run_result=run_result)
+    try:
+        project = await _get_project(project_id, user, db)
+        _require_ontology_and_graph(project, "OASIS simulation")
+        analysis, requirement, provenance, oasis_config = await _resolve_oasis_runtime_context(
+            project=project,
+            project_id=project_id,
+            chapter_ids=body.chapter_ids,
+            error_detail="No source text provided for OASIS simulation",
+            billing_user_id=user.id,
+            db=db,
+        )
+        package = _ensure_oasis_package(
+            project=project,
+            analysis=analysis,
+            requirement=requirement,
+            provenance=provenance,
+            oasis_config=oasis_config,
+            package_override=body.package if isinstance(body.package, dict) else None,
+        )
+        run_result = _ensure_oasis_run_result(
+            analysis=analysis,
+            package=package,
+            provenance=provenance,
+            project=project,
+        )
+        await db.flush()
+        return CogneeOasisRunResponse(status="ok", run_result=run_result)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
 
 
 @router.post("/oasis/run/task", response_model=CogneeTaskStartResponse)
@@ -1627,10 +1912,15 @@ async def run_oasis_simulation_task(
     project = await _get_project(project_id, user, db)
     _require_ontology_and_graph(project, "OASIS simulation")
     package_override = body.package if isinstance(body.package, dict) else None
+    idempotency_key = _build_oasis_run_task_idempotency_key(project_id, body)
     return _start_project_task(
         task_type="oasis_run",
         project_id=project_id,
         user_id=user.id,
+        metadata={
+            "idempotency_key": idempotency_key,
+            "has_package_override": bool(package_override),
+        },
         worker=lambda task_id: _run_simulation_task(
             task_id,
             project_id=project_id,
@@ -1690,7 +1980,7 @@ async def generate_oasis_report_sync(
         await db.flush()
         return CogneeOasisReportResponse(status="ok", report=report)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
 
 
 @router.post("/oasis/report/task", response_model=CogneeTaskStartResponse)
@@ -1702,10 +1992,15 @@ async def generate_oasis_report_task(
 ):
     project = await _get_project(project_id, user, db)
     _require_ontology_and_graph(project, "OASIS report generation")
+    idempotency_key = _build_oasis_report_task_idempotency_key(project_id, body)
     return _start_project_task(
         task_type="oasis_report",
         project_id=project_id,
         user_id=user.id,
+        metadata={
+            "idempotency_key": idempotency_key,
+            "report_model": _resolve_report_model(project, body),
+        },
         worker=lambda task_id: _run_report_task(
             task_id,
             project_id=project_id,
@@ -1793,17 +2088,20 @@ async def get_graph_status(
     db: AsyncSession = Depends(get_db),
 ):
     project = await _get_project(project_id, user, db)
+    freshness_payload = await _build_graph_freshness_payload(project, db)
     if project.cognee_dataset_id:
         return CogneeStatusResponse(
             dataset_id=project.cognee_dataset_id,
             status="ready",
             ontology_status="ready" if project.ontology_schema else "empty",
             oasis_status="ready" if project.oasis_analysis else "empty",
+            **freshness_payload,
         )
     return CogneeStatusResponse(
         status="empty",
         ontology_status="ready" if project.ontology_schema else "empty",
         oasis_status="ready" if project.oasis_analysis else "empty",
+        **freshness_payload,
     )
 
 
@@ -1817,14 +2115,14 @@ async def search(
     project = await _get_project(project_id, user, db)
     if not project.cognee_dataset_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No graph data for this project")
+    reranker_enabled_for_type = body.search_type in _RERANKER_SEARCH_TYPES
+    use_reranker = bool(body.use_reranker and reranker_enabled_for_type)
     selected_reranker_model: str | None = None
-    if body.use_reranker:
-        graph_default_model = resolve_component_model(project, "graph_build")
+    if use_reranker:
         selected_reranker_model = resolve_component_model(
             project,
             "graph_reranker",
-            body.reranker_model,
-            fallback_model=graph_default_model,
+            fallback_model="",
         )
     try:
         with llm_billing_scope(
@@ -1837,7 +2135,7 @@ async def search(
                 body.search_type,
                 body.top_k,
                 db=db,
-                use_reranker=bool(body.use_reranker),
+                use_reranker=use_reranker,
                 reranker_model=selected_reranker_model,
                 reranker_top_n=body.reranker_top_n,
             )
@@ -1869,15 +2167,26 @@ async def visualization(
         "graph_entity_resolution",
         fallback_model=graph_model,
     )
-    with llm_billing_scope(
-        user_id=user.id,
-        project_id=project.id,
-    ):
-        data = await get_graph_visualization(
-            project_id,
-            db=db,
-            alias_model=alias_model,
-        )
+    try:
+        with llm_billing_scope(
+            user_id=user.id,
+            project_id=project.id,
+        ):
+            data = await get_graph_visualization(
+                project_id,
+                db=db,
+                alias_model=alias_model,
+            )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Graph visualization failed: {type(exc).__name__}",
+        ) from exc
     return CogneeVisualizationResponse(nodes=data["nodes"], edges=data["edges"])
 
 
@@ -1897,11 +2206,13 @@ async def delete_graph(
                 "graph_embedding",
                 fallback_model="",
             )
-            await delete_dataset(
-                project_id,
-                model=graph_model,
-                embedding_model=graph_embedding_model or None,
-                db=db,
+            await _await_if_needed(
+                delete_dataset(
+                    project_id,
+                    model=graph_model,
+                    embedding_model=graph_embedding_model or None,
+                    db=db,
+                )
             )
         except Exception as exc:
             raise HTTPException(
