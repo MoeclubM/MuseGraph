@@ -17,14 +17,6 @@ def _scalar_one_or_none(value):
     return result
 
 
-def _scalars_all(items: list):
-    result = MagicMock()
-    scalars = MagicMock()
-    scalars.all.return_value = items
-    result.scalars.return_value = scalars
-    return result
-
-
 def _get_endpoint_globals(app, endpoint_name: str) -> dict:
     """Get the __globals__ dict of a named endpoint to patch its imports."""
     for route in app.routes:
@@ -219,22 +211,3 @@ class TestOrderEndpoint:
         mock_db.execute.return_value = _scalar_one_or_none(order)
         resp = await client.get("/api/payment/order/ORD200")
         assert resp.status_code == 403
-
-
-class TestListPlans:
-    """Cover GET /api/payment/plans."""
-
-    @pytest.mark.asyncio
-    async def test_list_plans_returns_active(self, client: AsyncClient, mock_db: AsyncMock):
-        plans = [
-            SimpleNamespace(
-                id="p1", description="Basic", price=Decimal("9.99"),
-                duration=30, rate_limit=100, target_group_id="g1",
-            ),
-        ]
-        mock_db.execute.return_value = _scalars_all(plans)
-        resp = await client.get("/api/payment/plans")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body) == 1
-        assert body[0]["id"] == "p1"

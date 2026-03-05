@@ -94,6 +94,14 @@ export interface OasisTask {
   metadata?: Record<string, any> | null
 }
 
+export interface AdminTask extends OasisTask {}
+
+export interface AdminTaskListResponse {
+  tasks: AdminTask[]
+  total: number
+  limit: number
+}
+
 export type ComponentModelConfig = Record<string, string>
 
 export interface User {
@@ -166,6 +174,43 @@ export interface ProjectChapter {
   updated_at: string
 }
 
+export interface ProjectCharacter {
+  id: string
+  project_id: string
+  name: string
+  role: string | null
+  profile: string | null
+  notes: string | null
+  order_index: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ProjectGlossaryTerm {
+  id: string
+  project_id: string
+  term: string
+  definition: string
+  aliases: string[] | null
+  notes: string | null
+  order_index: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ProjectWorldbookEntry {
+  id: string
+  project_id: string
+  title: string
+  category: string | null
+  content: string
+  tags: string[] | null
+  notes: string | null
+  order_index: number
+  created_at: string
+  updated_at: string
+}
+
 export interface Project {
   id: string
   user_id: string
@@ -216,6 +261,22 @@ export interface GraphEdge {
 export interface GraphData {
   nodes: GraphNode[]
   edges: GraphEdge[]
+}
+
+export interface GraphStatus {
+  dataset_id?: string | null
+  status: string
+  ontology_status?: string | null
+  oasis_status?: string | null
+  graph_freshness?: 'no_ontology' | 'empty' | 'syncing' | 'stale' | 'fresh' | null
+  graph_reason?: string | null
+  graph_changed_count?: number | null
+  graph_added_count?: number | null
+  graph_modified_count?: number | null
+  graph_removed_count?: number | null
+  graph_last_build_at?: string | null
+  graph_mode?: string | null
+  graph_syncing_task_id?: string | null
 }
 
 export interface AuthResponse {
@@ -337,6 +398,11 @@ export interface OasisConfig {
   llm_request_timeout_seconds: number
   llm_retry_count: number
   llm_retry_interval_seconds: number
+  llm_prefer_stream: boolean
+  llm_stream_fallback_nonstream: boolean
+  llm_task_concurrency: number
+  llm_model_default_concurrency: number
+  llm_model_concurrency_overrides: Record<string, number>
 }
 
 export interface PaymentOrder {

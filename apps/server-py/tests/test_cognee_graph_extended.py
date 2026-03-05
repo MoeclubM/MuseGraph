@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
+from app.services.task_state import TaskRecord, TaskStatus
 
 
 def _scalar_one_or_none(value):
@@ -512,12 +513,13 @@ class TestOasisPrepareTask:
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
+        nonce = datetime.now(timezone.utc).isoformat()
 
         with patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"), \
              patch.object(_cg_mod.asyncio, "create_task", side_effect=_close_and_stub_task) as mock_ct:
             resp = await client.post(
                 "/api/projects/proj-1/graphs/oasis/prepare/task",
-                json={"text": "prepare text"},
+                json={"text": f"prepare text {nonce}"},
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -551,9 +553,42 @@ class TestOasisRun:
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
         mock_run_result = {"steps": [], "summary": "done"}
+        valid_analysis = {
+            "scenario_summary": "Ready",
+            "continuation_guidance": {"must_follow": ["rule1"], "next_steps": ["step1"], "avoid": []},
+            "agent_profiles": [
+                {
+                    "name": "Agent1",
+                    "role": "Analyst",
+                    "persona": "Tracks narrative trends",
+                    "stance": "neutral",
+                    "likely_actions": ["Summarize events"],
+                }
+            ],
+            "simulation_config": {
+                "active_platforms": ["twitter"],
+                "time_config": {
+                    "total_hours": 48,
+                    "minutes_per_round": 60,
+                    "peak_hours": [19, 20],
+                    "off_peak_hours": [1, 2],
+                },
+                "events": [{"title": "Kickoff", "trigger_hour": 1, "description": "Start"}],
+                "agent_activity": [
+                    {
+                        "name": "Agent1",
+                        "activity_level": 0.6,
+                        "posts_per_hour": 1.0,
+                        "response_delay_minutes": 30,
+                        "stance": "neutral",
+                    }
+                ],
+            },
+            "latest_package": {"simulation_id": "sim-1", "content_hash": "h"},
+        }
 
         with patch.object(_cg_mod, "build_oasis_run_result", return_value=mock_run_result), \
-             patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value={"agents": [], "scenarios": [], "latest_package": {"config": {}, "content_hash": "h"}}):
+             patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value=valid_analysis):
             resp = await client.post(
                 "/api/projects/proj-1/graphs/oasis/run", json={},
             )
@@ -583,6 +618,39 @@ class TestOasisRun:
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
+        valid_analysis = {
+            "scenario_summary": "Ready",
+            "continuation_guidance": {"must_follow": ["rule1"], "next_steps": ["step1"], "avoid": []},
+            "agent_profiles": [
+                {
+                    "name": "Agent1",
+                    "role": "Analyst",
+                    "persona": "Tracks narrative trends",
+                    "stance": "neutral",
+                    "likely_actions": ["Summarize events"],
+                }
+            ],
+            "simulation_config": {
+                "active_platforms": ["twitter"],
+                "time_config": {
+                    "total_hours": 48,
+                    "minutes_per_round": 60,
+                    "peak_hours": [19, 20],
+                    "off_peak_hours": [1, 2],
+                },
+                "events": [{"title": "Kickoff", "trigger_hour": 1, "description": "Start"}],
+                "agent_activity": [
+                    {
+                        "name": "Agent1",
+                        "activity_level": 0.6,
+                        "posts_per_hour": 1.0,
+                        "response_delay_minutes": 30,
+                        "stance": "neutral",
+                    }
+                ],
+            },
+            "latest_package": {"simulation_id": "sim-1", "content_hash": "h"},
+        }
 
         with patch.object(
             _cg_mod,
@@ -597,7 +665,7 @@ class TestOasisRun:
                 },
             ),
         ), \
-             patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value={}):
+             patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value=valid_analysis):
             resp = await client.post(
                 "/api/projects/proj-1/graphs/oasis/run", json={},
             )
@@ -627,10 +695,12 @@ class TestOasisRunTask:
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
+        nonce = datetime.now(timezone.utc).isoformat()
 
         with patch.object(_cg_mod.asyncio, "create_task", side_effect=_close_and_stub_task) as mock_ct:
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/run/task", json={},
+                "/api/projects/proj-1/graphs/oasis/run/task",
+                json={"package": {"nonce": nonce}},
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -638,6 +708,49 @@ class TestOasisRunTask:
             assert data["task"]["task_type"] == "oasis_run"
             assert data["task"]["status"] == "pending"
             mock_ct.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_task_reuses_inflight_idempotent_task(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
+        project = SimpleNamespace(
+            id="proj-1", user_id=fake_user.id, title="Test",
+            chapters=[
+                SimpleNamespace(
+                    id="ch-1",
+                    project_id="proj-1",
+                    title="Main Draft",
+                    content="Some content",
+                    order_index=0,
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+            ], ontology_schema={"entity_types": ["Person"]},
+            cognee_dataset_id="dataset-1", oasis_analysis=None,
+            simulation_requirement=None, component_models=None,
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(project)
+        existing_task = TaskRecord(
+            task_id="task-existing-1",
+            task_type="oasis_run",
+            status=TaskStatus.PROCESSING,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            progress=35,
+            message="Running simulation estimation...",
+            metadata={"project_id": "proj-1", "idempotency_key": "oasis_run:existing"},
+        )
+
+        with patch.object(_cg_mod, "task_manager") as mock_tm, \
+             patch.object(_cg_mod.asyncio, "create_task") as mock_ct:
+            mock_tm.find_inflight_task_by_idempotency.return_value = existing_task
+            resp = await client.post(
+                "/api/projects/proj-1/graphs/oasis/run/task", json={},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "accepted"
+            assert data["task"]["task_id"] == "task-existing-1"
+            mock_tm.create_task.assert_not_called()
+            mock_ct.assert_not_called()
 
 
 class TestOasisReport:
@@ -668,9 +781,43 @@ class TestOasisReport:
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
         mock_report = {"sections": [], "summary": "Report complete"}
+        valid_analysis = {
+            "scenario_summary": "Ready",
+            "continuation_guidance": {"must_follow": ["rule1"], "next_steps": ["step1"], "avoid": []},
+            "agent_profiles": [
+                {
+                    "name": "Agent1",
+                    "role": "Analyst",
+                    "persona": "Tracks narrative trends",
+                    "stance": "neutral",
+                    "likely_actions": ["Summarize events"],
+                }
+            ],
+            "simulation_config": {
+                "active_platforms": ["twitter"],
+                "time_config": {
+                    "total_hours": 48,
+                    "minutes_per_round": 60,
+                    "peak_hours": [19, 20],
+                    "off_peak_hours": [1, 2],
+                },
+                "events": [{"title": "Kickoff", "trigger_hour": 1, "description": "Start"}],
+                "agent_activity": [
+                    {
+                        "name": "Agent1",
+                        "activity_level": 0.6,
+                        "posts_per_hour": 1.0,
+                        "response_delay_minutes": 30,
+                        "stance": "neutral",
+                    }
+                ],
+            },
+            "latest_package": {"simulation_id": "sim-1", "content_hash": "h"},
+            "latest_run": {"steps": [], "summary": "done", "content_hash": "h"},
+        }
 
         with patch.object(_cg_mod, "generate_oasis_report", new_callable=AsyncMock) as mock_fn, \
-             patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value={"agents": [], "scenarios": [], "latest_package": {"config": {}, "content_hash": "h"}, "latest_run": {"steps": [], "summary": "done", "content_hash": "h"}}), \
+             patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value=valid_analysis), \
              patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"):
             mock_fn.return_value = mock_report
             resp = await client.post(
@@ -702,6 +849,39 @@ class TestOasisReport:
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
+        valid_analysis = {
+            "scenario_summary": "Ready",
+            "continuation_guidance": {"must_follow": ["rule1"], "next_steps": ["step1"], "avoid": []},
+            "agent_profiles": [
+                {
+                    "name": "Agent1",
+                    "role": "Analyst",
+                    "persona": "Tracks narrative trends",
+                    "stance": "neutral",
+                    "likely_actions": ["Summarize events"],
+                }
+            ],
+            "simulation_config": {
+                "active_platforms": ["twitter"],
+                "time_config": {
+                    "total_hours": 48,
+                    "minutes_per_round": 60,
+                    "peak_hours": [19, 20],
+                    "off_peak_hours": [1, 2],
+                },
+                "events": [{"title": "Kickoff", "trigger_hour": 1, "description": "Start"}],
+                "agent_activity": [
+                    {
+                        "name": "Agent1",
+                        "activity_level": 0.6,
+                        "posts_per_hour": 1.0,
+                        "response_delay_minutes": 30,
+                        "stance": "neutral",
+                    }
+                ],
+            },
+            "latest_package": {"simulation_id": "sim-1", "content_hash": "h"},
+        }
 
         mock_report = {"sections": [], "summary": "generated"}
         with patch.object(
@@ -718,7 +898,7 @@ class TestOasisReport:
             ),
         ), \
              patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"), \
-             patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value={}), \
+             patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value=valid_analysis), \
              patch.object(_cg_mod, "generate_oasis_report", new_callable=AsyncMock, return_value=mock_report):
             resp = await client.post(
                 "/api/projects/proj-1/graphs/oasis/report", json={},
@@ -752,9 +932,42 @@ class TestOasisReport:
         mock_db.execute.return_value = _scalar_one_or_none(project)
         mock_run = {"steps": [], "summary": "auto"}
         mock_report = {"sections": []}
+        valid_analysis = {
+            "scenario_summary": "Ready",
+            "continuation_guidance": {"must_follow": ["rule1"], "next_steps": ["step1"], "avoid": []},
+            "agent_profiles": [
+                {
+                    "name": "Agent1",
+                    "role": "Analyst",
+                    "persona": "Tracks narrative trends",
+                    "stance": "neutral",
+                    "likely_actions": ["Summarize events"],
+                }
+            ],
+            "simulation_config": {
+                "active_platforms": ["twitter"],
+                "time_config": {
+                    "total_hours": 48,
+                    "minutes_per_round": 60,
+                    "peak_hours": [19, 20],
+                    "off_peak_hours": [1, 2],
+                },
+                "events": [{"title": "Kickoff", "trigger_hour": 1, "description": "Start"}],
+                "agent_activity": [
+                    {
+                        "name": "Agent1",
+                        "activity_level": 0.6,
+                        "posts_per_hour": 1.0,
+                        "response_delay_minutes": 30,
+                        "stance": "neutral",
+                    }
+                ],
+            },
+            "latest_package": {"simulation_id": "sim-1", "content_hash": "h"},
+        }
 
         with patch.object(_cg_mod, "build_oasis_run_result", return_value=mock_run), \
-             patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value={"agents": [], "scenarios": [], "latest_package": {"config": {}, "content_hash": "h"}}), \
+             patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value=valid_analysis), \
              patch.object(_cg_mod, "generate_oasis_report", new_callable=AsyncMock, return_value=mock_report), \
              patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"):
             resp = await client.post(
@@ -788,11 +1001,12 @@ class TestOasisReportTask:
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
+        nonce = datetime.now(timezone.utc).isoformat()
 
         with patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"), \
              patch.object(_cg_mod.asyncio, "create_task", side_effect=_close_and_stub_task) as mock_ct:
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/report/task", json={},
+                "/api/projects/proj-1/graphs/oasis/report/task", json={"report_model": f"gpt-4-{nonce}"},
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -928,6 +1142,24 @@ class TestGraphVisualizationSuccess:
             assert len(data["nodes"]) == 1
             assert len(data["edges"]) == 1
             assert data["nodes"][0]["label"] == "Person"
+
+    @pytest.mark.asyncio
+    async def test_visualization_runtime_error_returns_502(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
+        project = SimpleNamespace(
+            id="proj-1", user_id=fake_user.id,
+            cognee_dataset_id="dataset-1",
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(project)
+
+        with patch.object(
+            _cg_mod,
+            "get_graph_visualization",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("graph backend unavailable"),
+        ):
+            resp = await client.get("/api/projects/proj-1/graphs/visualization")
+            assert resp.status_code == 502
+            assert "graph backend unavailable" in resp.json()["detail"]
 
 
 class TestAddToGraphOntologyFromBody:

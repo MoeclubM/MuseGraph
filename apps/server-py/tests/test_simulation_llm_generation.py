@@ -12,6 +12,7 @@ from app.routers import simulation as simulation_router
 async def test_build_run_artifacts_with_llm_generates_posts_and_actions(monkeypatch: pytest.MonkeyPatch):
     sim = SimpleNamespace(
         simulation_id="sim_123",
+        user_id="user-1",
         profiles=[{"name": "AgentA", "role": "analyst"}, {"name": "AgentB", "role": "critic"}],
         simulation_config={
             "active_platforms": ["twitter", "reddit"],
@@ -21,6 +22,7 @@ async def test_build_run_artifacts_with_llm_generates_posts_and_actions(monkeypa
         },
     )
     project = SimpleNamespace(
+        id="proj-1",
         simulation_requirement="focus on stakeholder conflict",
         oasis_analysis={
             "scenario_summary": "A product launch under public pressure",
@@ -63,13 +65,15 @@ async def test_build_run_artifacts_with_llm_generates_posts_and_actions(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_build_run_artifacts_with_llm_returns_none_when_invalid_json(monkeypatch: pytest.MonkeyPatch):
+async def test_build_run_artifacts_with_llm_raises_when_invalid_json(monkeypatch: pytest.MonkeyPatch):
     sim = SimpleNamespace(
         simulation_id="sim_456",
+        user_id="user-2",
         profiles=[{"name": "AgentA", "role": "analyst"}],
         simulation_config={"active_platforms": ["twitter"], "events": [], "agent_activity": []},
     )
     project = SimpleNamespace(
+        id="proj-2",
         simulation_requirement="",
         oasis_analysis={},
         component_models={"oasis_simulation": "model-sim"},
@@ -81,12 +85,11 @@ async def test_build_run_artifacts_with_llm_returns_none_when_invalid_json(monke
 
     monkeypatch.setattr(simulation_router, "call_llm", _fake_call_llm)
 
-    generated = await simulation_router._build_run_artifacts_with_llm(
-        sim=sim,
-        project=project,
-        run_result=run_result,
-        max_rounds=1,
-        db=AsyncMock(),
-    )
-
-    assert generated is None
+    with pytest.raises(ValueError, match="simulation_run_llm_response_not_json_or_invalid_schema"):
+        await simulation_router._build_run_artifacts_with_llm(
+            sim=sim,
+            project=project,
+            run_result=run_result,
+            max_rounds=1,
+            db=AsyncMock(),
+        )

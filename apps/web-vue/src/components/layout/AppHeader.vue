@@ -66,11 +66,11 @@ async function handleLogout() {
 </script>
 
 <template>
-  <header class="sticky top-0 z-40 border-b border-stone-300/80 bg-[#f7f3e8]/95 backdrop-blur-md dark:border-zinc-700/60 dark:bg-zinc-900/90">
+  <header class="sticky top-0 z-40 border-b border-stone-300/70 bg-[color:var(--muse-panel-strong)] backdrop-blur-md dark:border-zinc-700/60 dark:bg-zinc-900/90">
     <div class="flex h-14 w-full items-center justify-between px-2 sm:px-3">
       <div class="flex items-center gap-6">
         <router-link to="/dashboard" class="flex items-center gap-2 text-lg font-bold text-stone-800 dark:text-stone-100">
-          <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-600">
+          <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-amber-500 to-amber-700 shadow-[0_8px_18px_rgba(217,119,6,0.35)]">
             <span class="text-sm font-bold text-white">M</span>
           </div>
           MuseGraph
@@ -130,7 +130,7 @@ async function handleLogout() {
         >
           <div
             v-if="showUserMenu"
-            class="absolute right-0 mt-1 w-48 rounded-lg border border-stone-300 bg-[#fbf7ef] py-1 shadow-xl dark:border-zinc-700 dark:bg-zinc-800"
+            class="muse-surface absolute right-0 mt-1 w-52 rounded-xl py-1"
           >
             <div class="px-3 py-2 border-b border-stone-300 dark:border-zinc-700">
               <p class="text-sm font-medium text-stone-800 dark:text-stone-200">{{ displayName }}</p>

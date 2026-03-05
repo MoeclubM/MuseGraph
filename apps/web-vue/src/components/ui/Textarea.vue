@@ -25,12 +25,12 @@ const emit = defineEmits<{
 }>()
 
 const textareaVariants = cva(
-  'w-full min-h-20 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 shadow-xs outline-none transition-[color,box-shadow] placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:placeholder:text-zinc-500',
+  'w-full min-h-20 rounded-xl border border-stone-300/90 bg-stone-100/92 px-3 py-2 text-sm text-stone-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] outline-none transition-all duration-200 placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800/88 dark:text-zinc-200 dark:placeholder:text-zinc-500',
   {
     variants: {
       state: {
         default: 'focus-visible:border-amber-500 focus-visible:ring-[3px] focus-visible:ring-amber-500/35',
-        error: 'border-red-500 focus-visible:border-red-500 focus-visible:ring-[3px] focus-visible:ring-red-500/30',
+        error: 'border-red-500/90 focus-visible:border-red-500 focus-visible:ring-[3px] focus-visible:ring-red-500/30',
       },
     },
     defaultVariants: {

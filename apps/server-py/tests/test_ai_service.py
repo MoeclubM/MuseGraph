@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -291,8 +292,16 @@ class TestCallLLM:
             "input_tokens": 100,
             "output_tokens": 50,
         }
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 4,
+            "llm_retry_interval_seconds": 2.0,
+            "llm_prefer_stream": False,
+            "llm_stream_fallback_nonstream": True,
+        }
 
-        with patch("openai.AsyncOpenAI") as mock_openai:
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
             mock_client = MagicMock()
             mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
             mock_openai.return_value = mock_client
@@ -350,9 +359,17 @@ class TestCallLLM:
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content="Response"))]
         mock_response.usage = MagicMock(prompt_tokens=50, completion_tokens=25)
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 4,
+            "llm_retry_interval_seconds": 2.0,
+            "llm_prefer_stream": False,
+            "llm_stream_fallback_nonstream": True,
+        }
 
         with patch("openai.AsyncOpenAI") as mock_openai, \
-             patch("app.services.ai.settings") as mock_settings:
+             patch("app.services.ai.settings") as mock_settings, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
             mock_settings.OPENAI_API_KEY = "settings-key"
             mock_client = MagicMock()
             mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
@@ -387,8 +404,16 @@ class TestCallLLM:
             "input_tokens": 60,
             "output_tokens": 30,
         }
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 4,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": False,
+            "llm_stream_fallback_nonstream": True,
+        }
 
-        with patch("openai.AsyncOpenAI") as mock_openai:
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
             mock_client = MagicMock()
             mock_client.chat.completions.create = AsyncMock(
                 side_effect=[RuntimeError("temporary network issue"), mock_response]
@@ -420,7 +445,16 @@ class TestCallLLM:
         class _BadRequestError(Exception):
             status_code = 400
 
-        with patch("openai.AsyncOpenAI") as mock_openai:
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 4,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": False,
+            "llm_stream_fallback_nonstream": True,
+        }
+
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
             mock_client = MagicMock()
             mock_client.chat.completions.create = AsyncMock(side_effect=_BadRequestError("bad request"))
             mock_openai.return_value = mock_client
@@ -428,6 +462,301 @@ class TestCallLLM:
             with pytest.raises(_BadRequestError):
                 await call_llm("gpt-4o-mini", "Bad prompt", mock_db)
             assert mock_client.chat.completions.create.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_call_llm_openai_stream_success(self, mock_db: AsyncMock):
+        from app.services.ai import call_llm
+
+        config = SimpleNamespace(
+            provider="openai_compatible",
+            api_key="test-key",
+            base_url=None,
+            models=["gpt-4o-mini"],
+            is_active=True,
+        )
+        result_mock = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = [config]
+        result_mock.scalars.return_value = scalars_mock
+        mock_db.execute.return_value = result_mock
+
+        async def _stream():
+            yield SimpleNamespace(
+                usage={"input_tokens": 120, "output_tokens": 0},
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Hello "))],
+            )
+            yield SimpleNamespace(
+                usage={"input_tokens": 120, "output_tokens": 45},
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="stream"))],
+            )
+
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 0,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": True,
+            "llm_stream_fallback_nonstream": True,
+        }
+
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(return_value=_stream())
+            mock_openai.return_value = mock_client
+
+            result = await call_llm("gpt-4o-mini", "Test stream prompt", mock_db)
+
+            assert result["content"] == "Hello stream"
+            assert result["input_tokens"] == 120
+            assert result["output_tokens"] == 45
+            first_kwargs = mock_client.chat.completions.create.await_args_list[0].kwargs
+            assert first_kwargs.get("stream") is True
+            assert first_kwargs.get("stream_options") == {"include_usage": True}
+
+    @pytest.mark.asyncio
+    async def test_call_llm_openai_stream_failure_fallbacks_to_nonstream(self, mock_db: AsyncMock):
+        from app.services.ai import call_llm
+
+        config = SimpleNamespace(
+            provider="openai_compatible",
+            api_key="test-key",
+            base_url=None,
+            models=["gpt-4o-mini"],
+            is_active=True,
+        )
+        result_mock = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = [config]
+        result_mock.scalars.return_value = scalars_mock
+        mock_db.execute.return_value = result_mock
+
+        nonstream_response = MagicMock()
+        nonstream_response.choices = [MagicMock(message=MagicMock(content="Recovered non-stream"))]
+        nonstream_response.usage = {
+            "prompt_tokens": 90,
+            "completion_tokens": 30,
+            "input_tokens": 90,
+            "output_tokens": 30,
+        }
+
+        async def _create_with_stream_fallback(**kwargs):
+            if kwargs.get("stream"):
+                raise RuntimeError("gateway timeout")
+            return nonstream_response
+
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 0,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": True,
+            "llm_stream_fallback_nonstream": True,
+        }
+
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(side_effect=_create_with_stream_fallback)
+            mock_openai.return_value = mock_client
+
+            result = await call_llm("gpt-4o-mini", "Test stream fallback", mock_db)
+
+            assert result["content"] == "Recovered non-stream"
+            assert result["input_tokens"] == 90
+            assert result["output_tokens"] == 30
+            assert mock_client.chat.completions.create.await_count == 2
+            assert mock_client.chat.completions.create.await_args_list[0].kwargs.get("stream") is True
+            assert "stream" not in mock_client.chat.completions.create.await_args_list[1].kwargs
+
+    @pytest.mark.asyncio
+    async def test_call_llm_openai_stream_failure_without_fallback_raises(self, mock_db: AsyncMock):
+        from app.services.ai import call_llm
+
+        config = SimpleNamespace(
+            provider="openai_compatible",
+            api_key="test-key",
+            base_url=None,
+            models=["gpt-4o-mini"],
+            is_active=True,
+        )
+        result_mock = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = [config]
+        result_mock.scalars.return_value = scalars_mock
+        mock_db.execute.return_value = result_mock
+
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 0,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": True,
+            "llm_stream_fallback_nonstream": False,
+        }
+
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(side_effect=RuntimeError("gateway timeout"))
+            mock_openai.return_value = mock_client
+
+            with pytest.raises(RuntimeError, match="gateway timeout"):
+                await call_llm("gpt-4o-mini", "No fallback", mock_db)
+            assert mock_client.chat.completions.create.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_call_llm_openai_nonstream_when_prefer_stream_disabled(self, mock_db: AsyncMock):
+        from app.services.ai import call_llm
+
+        config = SimpleNamespace(
+            provider="openai_compatible",
+            api_key="test-key",
+            base_url=None,
+            models=["gpt-4o-mini"],
+            is_active=True,
+        )
+        result_mock = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = [config]
+        result_mock.scalars.return_value = scalars_mock
+        mock_db.execute.return_value = result_mock
+
+        nonstream_response = MagicMock()
+        nonstream_response.choices = [MagicMock(message=MagicMock(content="Non-stream only"))]
+        nonstream_response.usage = {
+            "prompt_tokens": 66,
+            "completion_tokens": 22,
+            "input_tokens": 66,
+            "output_tokens": 22,
+        }
+
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 0,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": False,
+            "llm_stream_fallback_nonstream": True,
+        }
+
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(return_value=nonstream_response)
+            mock_openai.return_value = mock_client
+
+            result = await call_llm("gpt-4o-mini", "No stream preference", mock_db)
+
+            assert result["content"] == "Non-stream only"
+            assert result["input_tokens"] == 66
+            assert result["output_tokens"] == 22
+            assert mock_client.chat.completions.create.await_count == 1
+            assert "stream" not in mock_client.chat.completions.create.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_call_llm_queues_requests_when_task_concurrency_exceeded(self, mock_db: AsyncMock):
+        from app.services.ai import call_llm
+
+        config = SimpleNamespace(
+            provider="openai_compatible",
+            api_key="test-key",
+            base_url=None,
+            models=["gpt-4o-mini"],
+            is_active=True,
+        )
+        result_mock = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = [config]
+        result_mock.scalars.return_value = scalars_mock
+        mock_db.execute.return_value = result_mock
+
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 0,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": False,
+            "llm_stream_fallback_nonstream": True,
+            "llm_task_concurrency": 1,
+            "llm_model_default_concurrency": 32,
+            "llm_model_concurrency_overrides": {},
+        }
+
+        observed = {"inflight": 0, "max_inflight": 0}
+
+        async def _slow_nonstream(**kwargs):
+            observed["inflight"] += 1
+            observed["max_inflight"] = max(observed["max_inflight"], observed["inflight"])
+            await asyncio.sleep(0.03)
+            observed["inflight"] -= 1
+            response = MagicMock()
+            response.choices = [MagicMock(message=MagicMock(content="queued"))]
+            response.usage = {"input_tokens": 10, "output_tokens": 5}
+            return response
+
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(side_effect=_slow_nonstream)
+            mock_openai.return_value = mock_client
+
+            await asyncio.gather(
+                call_llm("gpt-4o-mini", "Prompt A", mock_db, billing_operation_id="task-queue-1"),
+                call_llm("gpt-4o-mini", "Prompt B", mock_db, billing_operation_id="task-queue-1"),
+                call_llm("gpt-4o-mini", "Prompt C", mock_db, billing_operation_id="task-queue-1"),
+            )
+
+            assert observed["max_inflight"] == 1
+
+    @pytest.mark.asyncio
+    async def test_call_llm_respects_per_model_concurrency_overrides(self, mock_db: AsyncMock):
+        from app.services.ai import call_llm
+
+        config = SimpleNamespace(
+            provider="openai_compatible",
+            api_key="test-key",
+            base_url=None,
+            models=["gpt-4o-mini"],
+            is_active=True,
+        )
+        result_mock = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = [config]
+        result_mock.scalars.return_value = scalars_mock
+        mock_db.execute.return_value = result_mock
+
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 0,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": False,
+            "llm_stream_fallback_nonstream": True,
+            "llm_task_concurrency": 8,
+            "llm_model_default_concurrency": 32,
+            "llm_model_concurrency_overrides": {"gpt-4o-mini": 1},
+        }
+
+        observed = {"inflight": 0, "max_inflight": 0}
+
+        async def _slow_nonstream(**kwargs):
+            observed["inflight"] += 1
+            observed["max_inflight"] = max(observed["max_inflight"], observed["inflight"])
+            await asyncio.sleep(0.03)
+            observed["inflight"] -= 1
+            response = MagicMock()
+            response.choices = [MagicMock(message=MagicMock(content="model-limited"))]
+            response.usage = {"input_tokens": 10, "output_tokens": 5}
+            return response
+
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(side_effect=_slow_nonstream)
+            mock_openai.return_value = mock_client
+
+            await asyncio.gather(
+                call_llm("gpt-4o-mini", "Prompt A", mock_db, billing_operation_id="task-model-a"),
+                call_llm("gpt-4o-mini", "Prompt B", mock_db, billing_operation_id="task-model-b"),
+                call_llm("gpt-4o-mini", "Prompt C", mock_db, billing_operation_id="task-model-c"),
+            )
+
+            assert observed["max_inflight"] == 1
 
 
 class TestRunOperation:
@@ -652,8 +981,16 @@ class TestCallLLMFallback:
             "input_tokens": 60,
             "output_tokens": 30,
         }
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 4,
+            "llm_retry_interval_seconds": 2.0,
+            "llm_prefer_stream": False,
+            "llm_stream_fallback_nonstream": True,
+        }
 
-        with patch("openai.AsyncOpenAI") as mock_openai:
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
             mock_client = MagicMock()
             mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
             mock_openai.return_value = mock_client

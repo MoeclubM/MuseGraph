@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Search } from 'lucide-vue-next'
 import { searchGraph } from '@/api/graph'
 import Input from '@/components/ui/Input.vue'
@@ -20,7 +20,11 @@ const error = ref<string | null>(null)
 const hasSearched = ref(false)
 const useReranker = ref(false)
 const rerankerTopN = ref<number>(6)
-const rerankerModel = ref('')
+const rerankerSupported = computed(() =>
+  searchType.value === 'RAG_COMPLETION'
+  || searchType.value === 'GRAPH_COMPLETION'
+  || searchType.value === 'GRAPH_SUMMARY_COMPLETION'
+)
 
 const searchTypes = [
   { value: 'INSIGHTS', label: 'Insights' },
@@ -49,11 +53,11 @@ async function handleSearch() {
   hasSearched.value = true
   try {
     const topN = Number(rerankerTopN.value || 0)
+    const effectiveUseReranker = rerankerSupported.value ? useReranker.value : false
     results.value = await searchGraph(props.projectId, query.value, {
       searchType: searchType.value,
-      useReranker: useReranker.value,
-      rerankerModel: rerankerModel.value.trim() || undefined,
-      rerankerTopN: useReranker.value ? Math.max(1, Math.min(50, topN || 6)) : undefined,
+      useReranker: effectiveUseReranker,
+      rerankerTopN: effectiveUseReranker ? Math.max(1, Math.min(50, topN || 6)) : undefined,
     })
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.response?.data?.message || e.message || 'Search failed'
@@ -94,7 +98,10 @@ async function handleSearch() {
       </Button>
     </div>
 
-    <div class="flex flex-wrap items-center gap-3 rounded-md border border-stone-300/70 bg-stone-100/70 px-3 py-2 dark:border-zinc-700/60 dark:bg-zinc-800/40">
+    <div
+      v-if="rerankerSupported"
+      class="flex flex-wrap items-center gap-3 rounded-md border border-stone-300/70 bg-stone-100/70 px-3 py-2 dark:border-zinc-700/60 dark:bg-zinc-800/40"
+    >
       <label class="inline-flex items-center gap-2 text-xs text-stone-700 dark:text-zinc-300">
         <Checkbox v-model="useReranker" />
         Enable reranker
@@ -107,12 +114,9 @@ async function handleSearch() {
         class="w-24"
         placeholder="Top N"
       />
-      <Input
-        v-model="rerankerModel"
-        type="text"
-        class="min-w-[180px] flex-1"
-        placeholder="Optional reranker model (fallback: project graph_reranker)"
-      />
+      <span class="text-xs text-stone-500 dark:text-zinc-500">
+        Model uses workspace setting: <code>graph_reranker</code>
+      </span>
     </div>
 
     <Alert v-if="error" variant="destructive">

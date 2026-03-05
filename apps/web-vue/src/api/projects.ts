@@ -1,5 +1,12 @@
 import api from './index'
-import type { Project, Operation, ProjectChapter } from '@/types'
+import type {
+  Project,
+  Operation,
+  ProjectChapter,
+  ProjectCharacter,
+  ProjectGlossaryTerm,
+  ProjectWorldbookEntry,
+} from '@/types'
 
 export interface ModelInfo {
   id: string
@@ -12,6 +19,9 @@ export interface RunOperationPayload {
   input?: string
   model?: string
   chapter_ids?: string[]
+  character_ids?: string[]
+  glossary_term_ids?: string[]
+  worldbook_entry_ids?: string[]
   use_rag?: boolean
 }
 
@@ -114,4 +124,123 @@ export async function reorderProjectChapters(
   const chapters = chapterIdsInOrder.map((id, index) => ({ id, order_index: index }))
   const { data } = await api.post<ProjectChapter[]>(`/api/projects/${projectId}/chapters/reorder`, { chapters })
   return data
+}
+
+export async function listProjectCharacters(projectId: string): Promise<ProjectCharacter[]> {
+  const { data } = await api.get<ProjectCharacter[]>(`/api/projects/${projectId}/characters`)
+  return data
+}
+
+export async function createProjectCharacter(
+  projectId: string,
+  payload: {
+    name: string
+    role?: string
+    profile?: string
+    notes?: string
+    order_index?: number
+  }
+): Promise<ProjectCharacter> {
+  const { data } = await api.post<ProjectCharacter>(`/api/projects/${projectId}/characters`, payload)
+  return data
+}
+
+export async function updateProjectCharacter(
+  projectId: string,
+  characterId: string,
+  payload: {
+    name?: string
+    role?: string
+    profile?: string
+    notes?: string
+    order_index?: number
+  }
+): Promise<ProjectCharacter> {
+  const { data } = await api.put<ProjectCharacter>(
+    `/api/projects/${projectId}/characters/${characterId}`,
+    payload
+  )
+  return data
+}
+
+export async function deleteProjectCharacter(projectId: string, characterId: string): Promise<void> {
+  await api.delete(`/api/projects/${projectId}/characters/${characterId}`)
+}
+
+export async function listProjectGlossaryTerms(projectId: string): Promise<ProjectGlossaryTerm[]> {
+  const { data } = await api.get<ProjectGlossaryTerm[]>(`/api/projects/${projectId}/glossary-terms`)
+  return data
+}
+
+export async function createProjectGlossaryTerm(
+  projectId: string,
+  payload: {
+    term: string
+    definition?: string
+    aliases?: string[]
+    notes?: string
+    order_index?: number
+  }
+): Promise<ProjectGlossaryTerm> {
+  const { data } = await api.post<ProjectGlossaryTerm>(`/api/projects/${projectId}/glossary-terms`, payload)
+  return data
+}
+
+export async function updateProjectGlossaryTerm(
+  projectId: string,
+  termId: string,
+  payload: {
+    term?: string
+    definition?: string
+    aliases?: string[]
+    notes?: string
+    order_index?: number
+  }
+): Promise<ProjectGlossaryTerm> {
+  const { data } = await api.put<ProjectGlossaryTerm>(`/api/projects/${projectId}/glossary-terms/${termId}`, payload)
+  return data
+}
+
+export async function deleteProjectGlossaryTerm(projectId: string, termId: string): Promise<void> {
+  await api.delete(`/api/projects/${projectId}/glossary-terms/${termId}`)
+}
+
+export async function listProjectWorldbookEntries(projectId: string): Promise<ProjectWorldbookEntry[]> {
+  const { data } = await api.get<ProjectWorldbookEntry[]>(`/api/projects/${projectId}/worldbook-entries`)
+  return data
+}
+
+export async function createProjectWorldbookEntry(
+  projectId: string,
+  payload: {
+    title: string
+    category?: string
+    content?: string
+    tags?: string[]
+    notes?: string
+    order_index?: number
+  }
+): Promise<ProjectWorldbookEntry> {
+  const { data } = await api.post<ProjectWorldbookEntry>(`/api/projects/${projectId}/worldbook-entries`, payload)
+  return data
+}
+
+export async function updateProjectWorldbookEntry(
+  projectId: string,
+  entryId: string,
+  payload: {
+    title?: string
+    category?: string
+    content?: string
+    tags?: string[]
+    notes?: string
+    order_index?: number
+  }
+): Promise<ProjectWorldbookEntry> {
+  const { data } = await api.put<ProjectWorldbookEntry>(`/api/projects/${projectId}/worldbook-entries/${entryId}`, payload)
+  return data
+}
+
+export async function deleteProjectWorldbookEntry(projectId: string, entryId: string): Promise<void> {
+  await api.delete(`/api/projects/${projectId}/worldbook-entries/${entryId}`)
 }

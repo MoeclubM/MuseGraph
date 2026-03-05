@@ -20,7 +20,6 @@ RUN uv pip install --system --no-cache-dir \
     "pydantic[email]>=2.10.0" \
     "pydantic-settings>=2.6.0" \
     "redis[hiredis]>=5.2.0" \
-    "minio>=7.2.0" \
     "passlib[bcrypt]>=1.7.4" \
     "python-jose[cryptography]>=3.3.0" \
     "python-multipart>=0.0.12" \

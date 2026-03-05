@@ -62,63 +62,18 @@ class TestPaymentOrderCreation:
         assert "payment_url" in body
 
     @pytest.mark.asyncio
-    async def test_create_subscription_order(self, client: AsyncClient, mock_db: AsyncMock):
-        """Test creating a subscription order."""
-        plan = SimpleNamespace(
-            id="plan-1",
-            description="Pro Plan",
-            price=Decimal("29.99"),
-            duration=30,
-            target_group_id="group-pro",
-            is_active=True,
-        )
-        epay_config = SimpleNamespace(
-            id="epay-1",
-            type="epay",
-            is_active=True,
-            config={
-                "url": "https://pay.example.com",
-                "pid": "10001",
-                "key": "secret-key",
-                "payment_type": "alipay",
-            },
-        )
-
-        mock_db.execute.side_effect = [
-            _scalar_one_or_none(plan),         # Plan lookup
-            _scalar_one_or_none(epay_config),  # EPay config (for get_active_epay_config)
-        ]
-
+    async def test_create_non_recharge_order_rejected(self, client: AsyncClient, mock_db: AsyncMock):
+        """Test non-recharge order type is rejected by API."""
         resp = await client.post(
             "/api/payment/create",
             json={
                 "type": "SUBSCRIPTION",
-                "amount": 29.99,  # Amount is required
-                "plan_id": "plan-1",
+                "amount": 29.99,
                 "payment_method": "alipay",
             },
         )
 
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "order_no" in body
-
-    @pytest.mark.asyncio
-    async def test_create_order_invalid_plan(self, client: AsyncClient, mock_db: AsyncMock):
-        """Test creating an order with invalid plan_id returns error."""
-        mock_db.execute.return_value = _scalar_one_or_none(None)  # Plan not found
-
-        resp = await client.post(
-            "/api/payment/create",
-            json={
-                "type": "SUBSCRIPTION",
-                "amount": 29.99,  # Amount is required
-                "plan_id": "nonexistent-plan",
-                "payment_method": "alipay",
-            },
-        )
-
-        assert resp.status_code == 404
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_create_order_no_payment_config(self, client: AsyncClient, mock_db: AsyncMock):
@@ -302,46 +257,29 @@ class TestOrderStatus:
         assert resp.status_code == 404
 
 
-class TestPlansList:
-    """Test plans listing for users."""
+class TestOrdersList:
+    """Test recharge orders listing."""
 
     @pytest.mark.asyncio
-    async def test_list_active_plans(self, client: AsyncClient, mock_db: AsyncMock):
-        """Test listing active plans for users."""
-        plans = [
-            SimpleNamespace(
-                id="plan-1",
-                description="Basic Plan",
-                price=Decimal("9.99"),
-                duration=30,
-                rate_limit=100,
-                is_active=True,
-                target_group_id="group-basic",
-            ),
-            SimpleNamespace(
-                id="plan-2",
-                description="Pro Plan",
-                price=Decimal("29.99"),
-                duration=30,
-                rate_limit=500,
-                is_active=True,
-                target_group_id="group-pro",
-            ),
-        ]
-        mock_db.execute.return_value = _scalars_all(plans)
+    async def test_list_orders_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
+        order = SimpleNamespace(
+            order_no="ORD-LIST-1",
+            user_id=fake_user.id,
+            type="RECHARGE",
+            amount=Decimal("8.88"),
+            status="PENDING",
+            payment_method="alipay",
+            paid_at=None,
+            created_at=datetime.now(timezone.utc),
+        )
+        count_result = MagicMock()
+        count_result.scalar.return_value = 1
+        list_result = _scalars_all([order])
+        mock_db.execute.side_effect = [count_result, list_result]
 
-        resp = await client.get("/api/payment/plans")
+        resp = await client.get("/api/payment/orders")
 
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 2
-
-    @pytest.mark.asyncio
-    async def test_list_plans_empty(self, client: AsyncClient, mock_db: AsyncMock):
-        """Test listing plans when none are active."""
-        mock_db.execute.return_value = _scalars_all([])
-
-        resp = await client.get("/api/payment/plans")
-
-        assert resp.status_code == 200
-        assert resp.json() == []
+        assert body["total"] == 1
+        assert body["orders"][0]["order_no"] == "ORD-LIST-1"

@@ -81,6 +81,15 @@ class CogneeStatusResponse(BaseModel):
     status: str
     ontology_status: Optional[str] = None
     oasis_status: Optional[str] = None
+    graph_freshness: Optional[str] = None
+    graph_reason: Optional[str] = None
+    graph_changed_count: Optional[int] = None
+    graph_added_count: Optional[int] = None
+    graph_modified_count: Optional[int] = None
+    graph_removed_count: Optional[int] = None
+    graph_last_build_at: Optional[str] = None
+    graph_mode: Optional[str] = None
+    graph_syncing_task_id: Optional[str] = None
 
 
 class CogneeOntologyResponse(BaseModel):
@@ -119,6 +128,7 @@ class CogneeTaskInfo(BaseModel):
     message: str = ""
     result: Optional[dict[str, Any]] = None
     error: Optional[str] = None
+    progress_detail: Optional[dict[str, Any]] = None
     metadata: Optional[dict[str, Any]] = None
 
 

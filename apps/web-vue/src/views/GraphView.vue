@@ -14,6 +14,7 @@ const router = useRouter()
 const projectId = computed(() => route.params.id as string)
 const graphData = ref<GraphData>({ nodes: [], edges: [] })
 const loading = ref(true)
+const loadError = ref<string | null>(null)
 const showSidebar = ref(true)
 
 const NODE_COLORS: Record<string, string> = {
@@ -51,10 +52,12 @@ function getNodeColor(type: string): string {
 
 async function loadGraph() {
   loading.value = true
+  loadError.value = null
   try {
     graphData.value = await getVisualization(projectId.value)
-  } catch {
+  } catch (e: any) {
     graphData.value = { nodes: [], edges: [] }
+    loadError.value = e?.response?.data?.detail || e?.response?.data?.message || e?.message || 'Failed to load graph visualization'
   } finally {
     loading.value = false
   }
@@ -91,6 +94,18 @@ onMounted(loadGraph)
       <div class="flex-1 relative">
         <div v-if="loading" class="absolute inset-0 flex items-center justify-center">
           <div class="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent" />
+        </div>
+        <div v-else-if="loadError" class="absolute inset-0 flex items-center justify-center">
+          <div class="text-center max-w-[440px] px-4">
+            <p class="text-red-700 dark:text-red-300 mb-2">Failed to load graph data</p>
+            <p class="text-xs text-stone-500 dark:text-zinc-500 mb-4 break-words">{{ loadError }}</p>
+            <div class="flex items-center justify-center gap-2">
+              <Button variant="secondary" @click="loadGraph">Retry</Button>
+              <Button variant="ghost" @click="router.push(`/projects/${projectId}`)">
+                Back to Project
+              </Button>
+            </div>
+          </div>
         </div>
         <div v-else-if="graphData.nodes.length === 0" class="absolute inset-0 flex items-center justify-center">
           <div class="text-center">

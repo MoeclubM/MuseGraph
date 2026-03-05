@@ -2,26 +2,96 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
+  :root {
+    --muse-bg: #f6f2e8;
+    --muse-bg-soft: #fbf8f2;
+    --muse-text: #1f1b16;
+    --muse-border: rgba(120, 113, 108, 0.28);
+    --muse-panel: rgba(255, 255, 255, 0.75);
+    --muse-panel-strong: rgba(255, 255, 255, 0.9);
+    --muse-ring: rgba(217, 119, 6, 0.35);
+  }
+
+  .dark {
+    --muse-bg: #0f0f12;
+    --muse-bg-soft: #15161a;
+    --muse-text: #efede7;
+    --muse-border: rgba(113, 113, 122, 0.45);
+    --muse-panel: rgba(24, 24, 27, 0.75);
+    --muse-panel-strong: rgba(24, 24, 27, 0.9);
+    --muse-ring: rgba(245, 158, 11, 0.35);
+  }
+
+  html,
+  body,
+  #app {
+    min-height: 100%;
+  }
+
   body {
-    @apply text-stone-900 antialiased dark:bg-zinc-900 dark:text-zinc-100;
-    background-color: #f7f3e8;
-    transition: background-color 0.2s ease, color 0.2s ease;
+    color: var(--muse-text);
+    font-family: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background-color: var(--muse-bg);
+    background-image:
+      radial-gradient(1200px 480px at -8% -8%, rgba(245, 158, 11, 0.12), transparent 56%),
+      radial-gradient(1000px 460px at 102% -12%, rgba(16, 185, 129, 0.1), transparent 52%),
+      linear-gradient(180deg, var(--muse-bg-soft), var(--muse-bg));
+    transition: background-color 0.25s ease, color 0.25s ease;
+    @apply antialiased;
+  }
+
+  ::selection {
+    background: rgba(245, 158, 11, 0.28);
+    color: inherit;
   }
 
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 9px;
+    height: 9px;
   }
 
   ::-webkit-scrollbar-track {
-    @apply bg-stone-300 dark:bg-zinc-800;
+    background: transparent;
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply bg-stone-500 dark:bg-zinc-600 rounded-full;
+    border: 2px solid transparent;
+    border-radius: 9999px;
+    background-clip: content-box;
+    background-color: rgba(120, 113, 108, 0.62);
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-stone-600 dark:bg-zinc-500;
+    background-color: rgba(87, 83, 78, 0.78);
+  }
+}
+
+@layer components {
+  .muse-shell {
+    background:
+      radial-gradient(900px 420px at 8% -8%, rgba(245, 158, 11, 0.08), transparent 56%),
+      radial-gradient(800px 360px at 100% 0%, rgba(20, 184, 166, 0.06), transparent 50%),
+      linear-gradient(180deg, var(--muse-bg-soft), var(--muse-bg));
+  }
+
+  .muse-surface {
+    border: 1px solid var(--muse-border);
+    background: var(--muse-panel);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 14px 34px rgba(41, 37, 36, 0.08);
+  }
+
+  .dark .muse-surface {
+    box-shadow: 0 16px 34px rgba(0, 0, 0, 0.35);
+  }
+
+  .muse-elevated {
+    border: 1px solid var(--muse-border);
+    background: var(--muse-panel-strong);
+    box-shadow: 0 10px 26px rgba(41, 37, 36, 0.12);
+  }
+
+  .dark .muse-elevated {
+    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.4);
   }
 }
