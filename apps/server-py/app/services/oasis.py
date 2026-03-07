@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -11,6 +13,13 @@ from app.models.config import PaymentConfig
 from app.services.ai import DEFAULT_MODEL, call_llm
 from app.services.cognee import get_graph_visualization, search_graph
 from app.services.llm_json import extract_json_object
+
+logger = logging.getLogger(__name__)
+
+OASIS_ANALYSIS_MAX_TOKENS = 4096
+OASIS_SIMULATION_CONFIG_MAX_TOKENS = 2048
+OASIS_JSON_MAX_ATTEMPTS = 3
+
 
 DEFAULT_OASIS_CONFIG: dict[str, Any] = {
     "analysis_prompt_prefix": "",
@@ -197,14 +206,14 @@ def _as_text_list(results: list[dict[str, Any]]) -> list[str]:
     return texts
 
 
-async def collect_graph_context(project_id: str, prompt: str | None = None) -> dict[str, Any]:
+async def collect_graph_context(project_id: str, prompt: str | None = None, *, db: AsyncSession | None = None) -> dict[str, Any]:
     focus = (prompt or "").strip() or "core entities, relationships, conflicts, and scenario progression"
     tasks = [
-        search_graph(project_id, f"{focus}. Key stakeholders and roles.", "INSIGHTS", 10),
-        search_graph(project_id, f"{focus}. Relationship structure and influence paths.", "GRAPH_COMPLETION", 8),
-        search_graph(project_id, f"{focus}. Risks, controversies, and failure signals.", "GRAPH_SUMMARY_COMPLETION", 8),
-        search_graph(project_id, f"{focus}. Timeline and event evolution.", "SUMMARIES", 8),
-        get_graph_visualization(project_id),
+        search_graph(project_id, f"{focus}. Key stakeholders and roles.", "INSIGHTS", 10, db=db),
+        search_graph(project_id, f"{focus}. Relationship structure and influence paths.", "GRAPH_COMPLETION", 8, db=db),
+        search_graph(project_id, f"{focus}. Risks, controversies, and failure signals.", "GRAPH_SUMMARY_COMPLETION", 8, db=db),
+        search_graph(project_id, f"{focus}. Timeline and event evolution.", "SUMMARIES", 8, db=db),
+        get_graph_visualization(project_id, db=db),
     ]
     raw = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -231,6 +240,128 @@ async def collect_graph_context(project_id: str, prompt: str | None = None) -> d
         ],
     }
 
+
+
+
+def _build_retry_prompt(base_prompt: str, reason: str, raw_content: str) -> str:
+    preview = str(raw_content or "").strip()[:1200]
+    retry_note = (
+        "\n\nIMPORTANT: The previous response was invalid for downstream parsing. "
+        f"Reason: {reason}. "
+        "Return exactly one complete JSON object matching the requested schema, with all required fields non-empty. "
+        "Do not include markdown fences or extra commentary."
+    )
+    if preview:
+        retry_note += f"\nPrevious response preview:\n{preview}"
+    return f"{base_prompt}{retry_note}"
+
+
+def _extract_named_json_value(raw: str, key: str) -> Any | None:
+    text = str(raw or "")
+    if not text:
+        return None
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:')
+    decoder = json.JSONDecoder()
+    for match in pattern.finditer(text):
+        idx = match.end()
+        while idx < len(text) and text[idx].isspace():
+            idx += 1
+        if idx >= len(text):
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[idx:])
+            return value
+        except Exception:
+            continue
+    return None
+
+
+def _salvage_oasis_analysis_payload(raw_content: str) -> dict[str, Any] | None:
+    payload = {
+        "scenario_summary": _extract_named_json_value(raw_content, "scenario_summary"),
+        "continuation_guidance": {
+            "must_follow": _extract_named_json_value(raw_content, "must_follow"),
+            "next_steps": _extract_named_json_value(raw_content, "next_steps"),
+            "avoid": _extract_named_json_value(raw_content, "avoid"),
+        },
+        "agent_profiles": _extract_named_json_value(raw_content, "agent_profiles"),
+    }
+    if not any(value not in (None, "", [], {}) for value in payload.values()):
+        return None
+    return payload
+
+
+def _salvage_oasis_simulation_config_payload(raw_content: str) -> dict[str, Any] | None:
+    payload = {
+        "active_platforms": _extract_named_json_value(raw_content, "active_platforms"),
+        "time_config": _extract_named_json_value(raw_content, "time_config"),
+        "events": _extract_named_json_value(raw_content, "events"),
+        "agent_activity": _extract_named_json_value(raw_content, "agent_activity"),
+    }
+    if not any(value not in (None, "", [], {}) for value in payload.values()):
+        return None
+    return payload
+
+
+async def _call_llm_json_with_validation(
+    *,
+    model: str,
+    prompt: str,
+    db: AsyncSession,
+    max_tokens: int,
+    validator,
+    repairer=None,
+    max_attempts: int = OASIS_JSON_MAX_ATTEMPTS,
+) -> dict[str, Any]:
+    last_error: ValueError | None = None
+    retry_prompt = prompt
+    safe_attempts = max(1, int(max_attempts or 1))
+    for attempt in range(safe_attempts):
+        llm_result = await call_llm(model, retry_prompt, db, max_tokens=max_tokens)
+        raw_content = str(llm_result.get("content") or "")
+        parsed = extract_json_object(raw_content)
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        if isinstance(parsed, dict):
+            candidates.append(("parsed", parsed))
+        repaired = repairer(raw_content) if repairer else None
+        if isinstance(repaired, dict) and repaired and all(repaired != candidate for _, candidate in candidates):
+            candidates.append(("repaired", repaired))
+
+        if not candidates:
+            last_error = ValueError("response_not_json_or_invalid_schema")
+            logger.warning(
+                "OASIS JSON response parse failed on attempt %s (preview=%s)",
+                attempt + 1,
+                raw_content[:400],
+            )
+            retry_prompt = _build_retry_prompt(prompt, str(last_error), raw_content)
+            continue
+
+        attempt_error: ValueError | None = None
+        for source, candidate in candidates:
+            try:
+                validated = validator(candidate)
+                if source == "repaired":
+                    logger.warning(
+                        "OASIS JSON response salvaged on attempt %s via field-level extraction",
+                        attempt + 1,
+                    )
+                return validated
+            except ValueError as exc:
+                attempt_error = exc
+                last_error = exc
+                continue
+
+        if attempt_error is not None:
+            logger.warning(
+                "OASIS JSON response validation failed on attempt %s: %s",
+                attempt + 1,
+                attempt_error,
+            )
+            retry_prompt = _build_retry_prompt(prompt, str(attempt_error), raw_content)
+    if last_error is not None:
+        raise last_error
+    raise ValueError("response_not_json_or_invalid_schema")
 
 def _safe_list(value: Any, max_items: int = 12) -> list[str]:
     if not isinstance(value, list):
@@ -479,6 +610,26 @@ def sanitize_oasis_simulation_config(
     }
 
 
+def _build_oasis_summary_fallback(payload: dict[str, Any], graph_context: dict[str, Any]) -> str:
+    parts: list[str] = []
+    key_drivers = _safe_list(payload.get("key_drivers"), 3)
+    if key_drivers:
+        parts.append("Key drivers: " + "; ".join(key_drivers))
+    risk_signals = _safe_list(payload.get("risk_signals"), 2)
+    if risk_signals:
+        parts.append("Risks: " + "; ".join(risk_signals))
+    relationship_signals = _safe_list(graph_context.get("relationships"), 2)
+    if relationship_signals:
+        parts.append("Relationships: " + "; ".join(relationship_signals))
+    top_nodes = graph_context.get("top_nodes") if isinstance(graph_context.get("top_nodes"), list) else []
+    labels = [str(item.get("label") or "").strip() for item in top_nodes if isinstance(item, dict)]
+    labels = [label for label in labels if label][:3]
+    if labels:
+        parts.append("Focus entities: " + ", ".join(labels))
+    summary = " ".join(parts).strip()
+    return summary[:400]
+
+
 def sanitize_oasis_analysis(
     data: dict[str, Any],
     graph_context: dict[str, Any],
@@ -488,12 +639,10 @@ def sanitize_oasis_analysis(
 ) -> dict[str, Any]:
     payload = data if isinstance(data, dict) else {}
     summary = str(payload.get("scenario_summary") or "").strip()
+    if not summary:
+        summary = _build_oasis_summary_fallback(payload, graph_context)
     sanitized = {
         "scenario_summary": summary,
-        "key_drivers": _safe_list(payload.get("key_drivers"), 10),
-        "risk_signals": _safe_list(payload.get("risk_signals"), 10),
-        "opportunity_signals": _safe_list(payload.get("opportunity_signals"), 10),
-        "timeline": _safe_list(payload.get("timeline"), 10),
         "continuation_guidance": {
             "must_follow": _safe_list((payload.get("continuation_guidance") or {}).get("must_follow"), 8)
             if isinstance(payload.get("continuation_guidance"), dict)
@@ -510,25 +659,11 @@ def sanitize_oasis_analysis(
             max_items=max(1, min(64, int(max_agent_profiles or 16))),
             strict=strict,
         ),
-        "evidence": {
-            "insight_count": len(graph_context.get("insights") or []),
-            "relationship_count": len(graph_context.get("relationships") or []),
-            "risk_count": len(graph_context.get("risk_signals") or []),
-            "node_count": int(graph_context.get("node_count") or 0),
-            "edge_count": int(graph_context.get("edge_count") or 0),
-        },
     }
     if strict and not sanitized["scenario_summary"]:
         raise ValueError("oasis_analysis_summary_empty")
-    if strict and not sanitized["key_drivers"]:
-        raise ValueError("oasis_analysis_key_drivers_empty")
     if strict and not sanitized["agent_profiles"]:
         raise ValueError("oasis_analysis_agent_profiles_empty")
-    guidance = sanitized.get("continuation_guidance") if isinstance(sanitized.get("continuation_guidance"), dict) else {}
-    if strict and not _safe_list(guidance.get("must_follow"), 8):
-        raise ValueError("oasis_analysis_guidance_must_follow_empty")
-    if strict and not _safe_list(guidance.get("next_steps"), 8):
-        raise ValueError("oasis_analysis_guidance_next_steps_empty")
     return sanitized
 
 
@@ -543,7 +678,7 @@ async def generate_oasis_analysis(
     oasis_config: dict[str, Any] | None = None,
     db: AsyncSession,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    graph_context = await collect_graph_context(project_id, prompt=prompt)
+    graph_context = await collect_graph_context(project_id, prompt=prompt, db=db)
     selected_model = (model or "").strip() or DEFAULT_MODEL
     content_text = (text or "").strip()
     if not content_text:
@@ -553,18 +688,14 @@ async def generate_oasis_analysis(
     prompt_prefix = str(cfg.get("analysis_prompt_prefix") or "").strip()
     prefix_block = f"Additional constraints:\n{prompt_prefix}\n\n" if prompt_prefix else ""
     llm_prompt = (
-        "You are an OASIS simulation analyst. Build a structured analysis for downstream continuation generation.\n"
+        "You are an OASIS simulation analyst. Build only the minimum analysis needed to prepare profiles and continue the scenario.\n"
         "Return JSON only with this exact schema:\n"
         "{\n"
         '  "scenario_summary": "...",\n'
-        '  "key_drivers": ["..."],\n'
-        '  "risk_signals": ["..."],\n'
-        '  "opportunity_signals": ["..."],\n'
-        '  "timeline": ["..."],\n'
         '  "continuation_guidance": {"must_follow":["..."], "next_steps":["..."], "avoid":["..."]},\n'
         '  "agent_profiles": [{"name":"...", "role":"...", "persona":"...", "stance":"...", "likely_actions":["..."]}]\n'
         "}\n"
-        "Use concise, factual language. Keep each list item short.\n\n"
+        "Do not add any extra sections or summary lists outside this schema.\n\n"
         f"{prefix_block}"
         f"Requirement:\n{(requirement or '').strip()}\n\n"
         f"Prompt Focus:\n{(prompt or '').strip()}\n\n"
@@ -573,16 +704,21 @@ async def generate_oasis_analysis(
         f"Text:\n{content_text[:8000]}"
     )
 
-    llm_result = await call_llm(selected_model, llm_prompt, db)
-    parsed = extract_json_object(str(llm_result.get("content") or ""))
-    if not isinstance(parsed, dict):
-        raise ValueError("oasis_analysis_llm_response_not_json_or_invalid_schema")
-    return sanitize_oasis_analysis(
-        parsed,
-        graph_context,
-        max_agent_profiles=int(cfg.get("max_agent_profiles") or 16),
-        strict=True,
-    ), graph_context
+    analysis_payload = await _call_llm_json_with_validation(
+        model=selected_model,
+        prompt=llm_prompt,
+        db=db,
+        max_tokens=OASIS_ANALYSIS_MAX_TOKENS,
+        validator=lambda parsed: sanitize_oasis_analysis(
+            parsed,
+            graph_context,
+            max_agent_profiles=int(cfg.get("max_agent_profiles") or 16),
+            strict=True,
+        ),
+        repairer=_salvage_oasis_analysis_payload,
+        max_attempts=OASIS_JSON_MAX_ATTEMPTS,
+    )
+    return analysis_payload, graph_context
 
 
 async def enrich_simulation_config(
@@ -622,23 +758,27 @@ async def enrich_simulation_config(
         f"Agent Profiles:\n{json.dumps(profiles or [], ensure_ascii=False)[:7000]}"
     )
 
-    llm_result = await call_llm(selected_model, sim_prompt, db)
-    parsed = extract_json_object(str(llm_result.get("content") or ""))
-    if not isinstance(parsed, dict):
-        raise ValueError("oasis_simulation_llm_response_not_json_or_invalid_schema")
-    return sanitize_oasis_simulation_config(
-        parsed,
-        profiles if isinstance(profiles, list) else [],
-        max_events=int(cfg.get("max_events") or 16),
-        max_agent_activity=int(cfg.get("max_agent_activity") or 48),
-        allowed_platforms=allowed_platforms,
-        min_total_hours=int(cfg.get("min_total_hours") or 6),
-        max_total_hours=int(cfg.get("max_total_hours") or 336),
-        min_minutes_per_round=int(cfg.get("min_minutes_per_round") or 10),
-        max_minutes_per_round=int(cfg.get("max_minutes_per_round") or 240),
-        max_posts_per_hour=float(cfg.get("max_posts_per_hour") or 20.0),
-        max_response_delay_minutes=int(cfg.get("max_response_delay_minutes") or 720),
-        strict=True,
+    return await _call_llm_json_with_validation(
+        model=selected_model,
+        prompt=sim_prompt,
+        db=db,
+        max_tokens=OASIS_SIMULATION_CONFIG_MAX_TOKENS,
+        validator=lambda parsed: sanitize_oasis_simulation_config(
+            parsed,
+            profiles if isinstance(profiles, list) else [],
+            max_events=int(cfg.get("max_events") or 16),
+            max_agent_activity=int(cfg.get("max_agent_activity") or 48),
+            allowed_platforms=allowed_platforms,
+            min_total_hours=int(cfg.get("min_total_hours") or 6),
+            max_total_hours=int(cfg.get("max_total_hours") or 336),
+            min_minutes_per_round=int(cfg.get("min_minutes_per_round") or 10),
+            max_minutes_per_round=int(cfg.get("max_minutes_per_round") or 240),
+            max_posts_per_hour=float(cfg.get("max_posts_per_hour") or 20.0),
+            max_response_delay_minutes=int(cfg.get("max_response_delay_minutes") or 720),
+            strict=True,
+        ),
+        repairer=_salvage_oasis_simulation_config_payload,
+        max_attempts=OASIS_JSON_MAX_ATTEMPTS,
     )
 
 
@@ -696,16 +836,6 @@ def _build_report_markdown(
         str(analysis_data.get("scenario_summary") or "No summary available."),
     ]
 
-    risk_signals = _safe_list(analysis_data.get("risk_signals"), 10)
-    if risk_signals:
-        lines.extend(["", "## Risk Signals"])
-        lines.extend([f"- {item}" for item in risk_signals])
-
-    opportunity_signals = _safe_list(analysis_data.get("opportunity_signals"), 10)
-    if opportunity_signals:
-        lines.extend(["", "## Opportunity Signals"])
-        lines.extend([f"- {item}" for item in opportunity_signals])
-
     next_steps = _safe_list(
         (analysis_data.get("continuation_guidance") or {}).get("next_steps")
         if isinstance(analysis_data.get("continuation_guidance"), dict)
@@ -717,6 +847,7 @@ def _build_report_markdown(
         lines.extend([f"- {step}" for step in next_steps])
 
     return "\n".join(lines).strip()
+
 
 def build_oasis_package(
     *,
@@ -762,19 +893,12 @@ def build_oasis_package(
     )
 
     simulation_id = f"sim_{uuid.uuid4().hex[:12]}"
-    prepared_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     return {
         "simulation_id": simulation_id,
         "project_id": project_id,
-        "project_title": project_title,
-        "prepared_at": prepared_at,
         "simulation_requirement": (requirement or "").strip(),
-        "ontology": ontology or {},
-        "analysis_summary": scenario_summary,
-        "continuation_guidance": analysis_data.get("continuation_guidance") or {},
         "profiles": profiles,
         "simulation_config": sim_cfg,
-        "component_models": component_models if isinstance(component_models, dict) else {},
     }
 
 
@@ -831,25 +955,10 @@ def build_oasis_run_result(
         )
     normalized_events.sort(key=lambda item: item["trigger_hour"])
 
-    highlights: list[str] = [
-        f"Simulation projected for {total_hours}h across {total_rounds} rounds.",
-        f"Estimated active agents: {active_agents}.",
-        f"Estimated generated posts: {estimated_posts}.",
-    ]
-    for event in normalized_events[:8]:
-        highlights.append(f"H+{event['trigger_hour']}: {event['title']}")
-
-    analysis_data = analysis if isinstance(analysis, dict) else {}
-    risk_signals = _safe_list(analysis_data.get("risk_signals"), 8)
-    opportunity_signals = _safe_list(analysis_data.get("opportunity_signals"), 8)
-
-    now = datetime.now(timezone.utc).isoformat()
     return {
         "run_id": f"run_{uuid.uuid4().hex[:12]}",
         "simulation_id": str(pkg.get("simulation_id") or f"sim_{uuid.uuid4().hex[:12]}"),
         "status": "completed",
-        "started_at": now,
-        "completed_at": now,
         "metrics": {
             "total_hours": total_hours,
             "minutes_per_round": minutes_per_round,
@@ -858,10 +967,6 @@ def build_oasis_run_result(
             "estimated_posts": estimated_posts,
             "event_count": len(normalized_events),
         },
-        "triggered_events": normalized_events,
-        "highlights": highlights,
-        "risk_signals": risk_signals,
-        "opportunity_signals": opportunity_signals,
     }
 
 

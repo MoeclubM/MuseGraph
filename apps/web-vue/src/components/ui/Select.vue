@@ -21,12 +21,12 @@ const emit = defineEmits<{
 }>()
 
 const selectVariants = cva(
-  'h-9 w-full appearance-none rounded-xl border border-stone-300/90 bg-stone-100/92 px-3 pr-9 text-sm text-stone-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] outline-none transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800/88 dark:text-zinc-300',
+  'muse-field-base muse-focus-ring h-11 w-full appearance-none rounded-md px-3.5 pr-12 text-sm outline-none',
   {
     variants: {
       state: {
-        default: 'focus-visible:border-amber-500 focus-visible:ring-[3px] focus-visible:ring-amber-500/35',
-        error: 'border-red-500/90 focus-visible:border-red-500 focus-visible:ring-[3px] focus-visible:ring-red-500/30',
+        default: '',
+        error: 'muse-field-error',
       },
     },
     defaultVariants: {
@@ -54,7 +54,7 @@ function onChange(e: Event) {
 </script>
 
 <template>
-  <div class="relative">
+  <div class="group relative">
     <select
       :value="modelValue"
       :disabled="disabled"
@@ -63,13 +63,24 @@ function onChange(e: Event) {
     >
       <slot />
     </select>
-    <svg
-      class="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-500 dark:text-zinc-400"
-      viewBox="0 0 20 20"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path d="M6 8L10 12L14 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
+    <div class="pointer-events-none absolute inset-y-0 right-0 flex w-11 items-center justify-center text-[color:var(--muse-text-muted)] transition-colors duration-150 group-hover:text-[color:var(--muse-text)]">
+      <span class="absolute inset-y-2 left-0 w-px bg-[color:var(--muse-field-divider)]"></span>
+      <svg
+        class="h-4 w-4"
+        viewBox="0 0 20 20"
+        fill="none"
+        aria-hidden="true"
+      >
+        <path d="M6 8L10 12L14 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </div>
   </div>
 </template>
+
+<style scoped>
+:deep(option),
+:deep(optgroup) {
+  background: var(--muse-panel);
+  color: var(--muse-text);
+}
+</style>

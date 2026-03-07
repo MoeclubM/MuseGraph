@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
 import json
+import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +23,12 @@ from app.services.oasis import analyze_and_enrich_oasis, build_oasis_package, bu
 from app.services.task_state import TaskStatus, task_manager
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+SIMULATION_RUN_JSON_MAX_ATTEMPTS = 3
+SIMULATION_RUN_MAX_TOKENS_BASE = 2048
+SIMULATION_RUN_MAX_TOKENS_PER_ROUND = 1200
+SIMULATION_RUN_MAX_TOKENS_CEILING = 16384
 
 
 class SimulationCreateRequest(BaseModel):
@@ -310,11 +318,77 @@ def _build_sectioned_profiles(
     raise ValueError("simulation_profiles_missing")
 
 
+def _resolve_prepared_runtime(
+    package: dict[str, Any], project: TextProject
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    profiles, config = _build_sectioned_profiles(package, project)
+    if not config:
+        raise ValueError("simulation_config_missing")
+    return profiles, config
+
+
 def _get_sim_metadata(sim: SimulationRuntime) -> dict[str, Any]:
     meta = getattr(sim, "metadata_", None)
     if meta is None:
         meta = getattr(sim, "metadata", None)
     return _ensure_dict(meta)
+
+
+def _resolve_simulation_runtime_provenance(sim: SimulationRuntime) -> dict[str, Any] | None:
+    for payload in (_ensure_dict(sim.simulation_config), _ensure_dict(sim.run_state), _get_sim_metadata(sim)):
+        provenance = _read_provenance(payload)
+        if provenance:
+            return provenance
+    return None
+
+
+def _simulation_runtime_is_prepared(
+    sim: SimulationRuntime,
+    *,
+    provenance: dict[str, Any] | None = None,
+) -> bool:
+    profiles = [item for item in _ensure_list(sim.profiles) if isinstance(item, dict)]
+    config = _ensure_dict(sim.simulation_config)
+    if not profiles or not config or not _ensure_dict(config.get("time_config")):
+        return False
+    if provenance is None:
+        return True
+    runtime_provenance = _resolve_simulation_runtime_provenance(sim)
+    return bool(runtime_provenance) and runtime_provenance.get("content_hash") == provenance.get("content_hash")
+
+
+def _apply_prepared_runtime(
+    sim: SimulationRuntime,
+    *,
+    profiles: list[dict[str, Any]],
+    config: dict[str, Any],
+    provenance: dict[str, Any],
+) -> None:
+    existing_meta = _get_sim_metadata(sim)
+    sim.status = "ready"
+    sim.profiles = [item for item in profiles if isinstance(item, dict)]
+    sim.simulation_config = _inject_provenance(dict(config), provenance)
+    sim.run_state = {
+        "status": "ready",
+        "is_running": False,
+        "current_round": 0,
+        "total_rounds": int(_ensure_dict(config.get("time_config")).get("total_hours") or 72),
+        "source_chapter_ids": provenance.get("source_chapter_ids", []),
+        "content_hash": provenance.get("content_hash", ""),
+        "generated_at": provenance.get("generated_at", _now_iso()),
+        "updated_at": _now_iso(),
+    }
+    sim.env_status = {
+        "alive": True,
+        "status": "ready",
+        "updated_at": _now_iso(),
+    }
+    sim.metadata_ = {
+        **existing_meta,
+        "source_chapter_ids": list(provenance.get("source_chapter_ids") or []),
+        "content_hash": str(provenance.get("content_hash") or ""),
+        "generated_at": str(provenance.get("generated_at") or _now_iso()),
+    }
 
 
 def _serialize_simulation(sim: SimulationRuntime) -> dict[str, Any]:
@@ -361,6 +435,57 @@ def _normalize_platform(platform: str | None) -> str | None:
     return None
 
 
+def _build_simulation_retry_prompt(base_prompt: str, reason: str, raw_content: str) -> str:
+    preview = str(raw_content or "").strip()[:1200]
+    retry_note = (
+        "\n\nIMPORTANT: The previous response was invalid for downstream parsing. "
+        f"Reason: {reason}. "
+        "Return exactly one complete JSON object matching the requested schema, with all required fields populated. "
+        "Do not include markdown fences or extra commentary."
+    )
+    if preview:
+        retry_note += f"\nPrevious response preview:\n{preview}"
+    return f"{base_prompt}{retry_note}"
+
+
+def _extract_named_json_value(raw: str, key: str) -> Any | None:
+    text = str(raw or "")
+    if not text:
+        return None
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:')
+    decoder = json.JSONDecoder()
+    for match in pattern.finditer(text):
+        idx = match.end()
+        while idx < len(text) and text[idx].isspace():
+            idx += 1
+        if idx >= len(text):
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[idx:])
+            return value
+        except Exception:
+            continue
+    return None
+
+
+def _salvage_simulation_run_payload(raw_content: str) -> dict[str, Any] | None:
+    payload = {
+        "rounds": _extract_named_json_value(raw_content, "rounds"),
+    }
+    if not any(value not in (None, "", [], {}) for value in payload.values()):
+        return None
+    return payload
+
+
+def _resolve_simulation_run_max_tokens(total_rounds: int) -> int:
+    safe_rounds = max(1, int(total_rounds or 1))
+    estimated = SIMULATION_RUN_MAX_TOKENS_BASE + (safe_rounds * SIMULATION_RUN_MAX_TOKENS_PER_ROUND)
+    return max(
+        SIMULATION_RUN_MAX_TOKENS_BASE,
+        min(SIMULATION_RUN_MAX_TOKENS_CEILING, estimated),
+    )
+
+
 async def _build_run_artifacts_with_llm(
     sim: SimulationRuntime,
     project: TextProject,
@@ -373,6 +498,7 @@ async def _build_run_artifacts_with_llm(
     if max_rounds:
         total_rounds = min(total_rounds or max_rounds, max_rounds)
     total_rounds = max(1, min(total_rounds or 24, 120))
+    run_max_tokens = _resolve_simulation_run_max_tokens(total_rounds)
 
     profiles = [p for p in _ensure_list(sim.profiles) if isinstance(p, dict)]
     if not profiles:
@@ -405,19 +531,17 @@ async def _build_run_artifacts_with_llm(
         '      "comments": [{"agent":"...", "platform":"twitter|reddit", "content":"..."}],\n'
         '      "actions": [{"agent":"...", "action_type":"post|comment|react|share", "summary":"..."}]\n'
         "    }\n"
-        "  ],\n"
-        '  "highlights": ["..."]\n'
+        "  ]\n"
         "}\n"
         "Rules:\n"
         f"- Generate exactly {total_rounds} rounds with coherent progression.\n"
-        "- Keep content concise and scenario-grounded.\n"
+        "- Keep content concise and grounded in the configured simulation setup.\n"
         "- Respect role consistency for each agent.\n"
         "- Reflect configured events near their trigger hour.\n"
-        "- Avoid generic filler text.\n\n"
+        "- Avoid generic filler text.\n"
+        "- Keep each round compact while preserving coherence.\n\n"
         f"Simulation requirement:\n{(project.simulation_requirement or '').strip()}\n\n"
         f"Scenario summary:\n{str(analysis.get('scenario_summary') or '').strip()}\n\n"
-        f"Key drivers:\n{json.dumps(_ensure_list(analysis.get('key_drivers'))[:10], ensure_ascii=False)}\n\n"
-        f"Risk signals:\n{json.dumps(_ensure_list(analysis.get('risk_signals'))[:10], ensure_ascii=False)}\n\n"
         f"Continuation guidance:\n{json.dumps(guidance, ensure_ascii=False)[:3000]}\n\n"
         f"Time config:\n{json.dumps(time_cfg, ensure_ascii=False)}\n\n"
         f"Events:\n{json.dumps(events[:16], ensure_ascii=False)}\n\n"
@@ -426,15 +550,56 @@ async def _build_run_artifacts_with_llm(
         f"Agent activity:\n{json.dumps(activity[:30], ensure_ascii=False)[:6000]}"
     )
 
-    with llm_billing_scope(
-        user_id=sim.user_id,
-        project_id=project.id,
-    ):
-        llm_result = await call_llm(model=model, prompt=prompt, db=db)
-    parsed = extract_json_object(str(llm_result.get("content") or ""))
+    parsed: dict[str, Any] | None = None
+    retry_prompt = prompt
+    last_error: ValueError | None = None
+    for attempt in range(SIMULATION_RUN_JSON_MAX_ATTEMPTS):
+        with llm_billing_scope(
+            user_id=sim.user_id,
+            project_id=project.id,
+        ):
+            llm_result = await call_llm(model=model, prompt=retry_prompt, db=db, max_tokens=run_max_tokens)
+        raw_content = str(llm_result.get("content") or "")
+        initial = extract_json_object(raw_content)
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        if isinstance(initial, dict):
+            candidates.append(("parsed", initial))
+        repaired = _salvage_simulation_run_payload(raw_content)
+        if isinstance(repaired, dict) and repaired and all(repaired != candidate for _, candidate in candidates):
+            candidates.append(("repaired", repaired))
+
+        if not candidates:
+            last_error = ValueError("simulation_run_llm_response_not_json_or_invalid_schema")
+            logger.warning(
+                "Simulation run JSON parse failed on attempt %s (preview=%s)",
+                attempt + 1,
+                raw_content[:400],
+            )
+            retry_prompt = _build_simulation_retry_prompt(prompt, str(last_error), raw_content)
+            continue
+
+        for source, candidate in candidates:
+            rounds = candidate.get("rounds")
+            if isinstance(rounds, list) and rounds:
+                parsed = candidate
+                if source == "repaired":
+                    logger.warning(
+                        "Simulation run JSON salvaged on attempt %s via field-level extraction",
+                        attempt + 1,
+                    )
+                break
+            last_error = ValueError("simulation_run_rounds_missing")
+        if parsed is not None:
+            break
+        logger.warning(
+            "Simulation run JSON validation failed on attempt %s: %s",
+            attempt + 1,
+            last_error,
+        )
+        retry_prompt = _build_simulation_retry_prompt(prompt, str(last_error), raw_content)
 
     if not isinstance(parsed, dict):
-        raise ValueError("simulation_run_llm_response_not_json_or_invalid_schema")
+        raise last_error or ValueError("simulation_run_llm_response_not_json_or_invalid_schema")
 
     rounds = parsed.get("rounds")
     if not isinstance(rounds, list) or not rounds:
@@ -562,10 +727,6 @@ async def _build_run_artifacts_with_llm(
     if not posts:
         raise ValueError("simulation_posts_empty_after_llm_generation")
 
-    highlights = _ensure_list(parsed.get("highlights"))
-    if highlights:
-        run_result["highlights"] = [str(x).strip() for x in highlights if str(x).strip()][:12]
-
     metrics["total_rounds"] = total_rounds
     metrics["estimated_posts"] = len(posts)
     metrics["generated_mode"] = "llm"
@@ -638,35 +799,15 @@ async def _run_prepare_task(
                 project.oasis_analysis = analysis
 
             task_manager.update_task(task_id, progress=55, message="Preparing profiles and simulation config...")
-            profiles, config = _build_sectioned_profiles(package, project)
-            if not config:
-                raise RuntimeError("simulation_config_missing")
+            profiles, config = _resolve_prepared_runtime(package, project)
 
             task_manager.update_task(task_id, progress=85, message="Saving prepared runtime...")
-            sim.status = "ready"
-            sim.profiles = profiles
-            sim.simulation_config = _inject_provenance(config, provenance)
-            sim.run_state = {
-                "status": "ready",
-                "is_running": False,
-                "current_round": 0,
-                "total_rounds": int(_ensure_dict(config.get("time_config")).get("total_hours") or 72),
-                "source_chapter_ids": provenance.get("source_chapter_ids", []),
-                "content_hash": provenance.get("content_hash", ""),
-                "generated_at": provenance.get("generated_at", _now_iso()),
-                "updated_at": _now_iso(),
-            }
-            sim.env_status = {
-                "alive": True,
-                "status": "ready",
-                "updated_at": _now_iso(),
-            }
-            sim.metadata_ = {
-                **existing_meta,
-                "source_chapter_ids": list(provenance.get("source_chapter_ids") or []),
-                "content_hash": str(provenance.get("content_hash") or ""),
-                "generated_at": str(provenance.get("generated_at") or _now_iso()),
-            }
+            _apply_prepared_runtime(
+                sim,
+                profiles=profiles,
+                config=config,
+                provenance=provenance,
+            )
             await db.flush()
             await db.commit()
 
@@ -808,27 +949,20 @@ async def prepare_simulation(
 ):
     sim = await _get_simulation_for_user(body.simulation_id, user, db)
     selected_chapter_ids = body.chapter_ids
-    if sim.status == "ready" and not body.force_regenerate and selected_chapter_ids is None:
-        return {
-            "status": "ok",
-            "data": {
-                "simulation_id": sim.simulation_id,
-                "already_prepared": True,
-                "message": "Simulation already prepared",
-            },
-        }
+    selected_provenance: dict[str, Any] | None = None
     if selected_chapter_ids is not None:
         project = await _get_project_for_user(sim.project_id, user, db)
-        _, provenance = await _resolve_text_for_project(
+        _, selected_provenance = await _resolve_text_for_project(
             project,
             chapter_ids=selected_chapter_ids,
             db=db,
         )
         meta = _get_sim_metadata(sim)
-        meta["source_chapter_ids"] = list(provenance.get("source_chapter_ids") or [])
-        meta["content_hash"] = str(provenance.get("content_hash") or "")
-        meta["generated_at"] = str(provenance.get("generated_at") or _now_iso())
+        meta["source_chapter_ids"] = list(selected_provenance.get("source_chapter_ids") or [])
+        meta["content_hash"] = str(selected_provenance.get("content_hash") or "")
+        meta["generated_at"] = str(selected_provenance.get("generated_at") or _now_iso())
         sim.metadata_ = meta
+    if sim.status == "ready" and not body.force_regenerate and _simulation_runtime_is_prepared(sim, provenance=selected_provenance):
         return {
             "status": "ok",
             "data": {
@@ -939,7 +1073,12 @@ async def start_simulation(
 ):
     try:
         sim = await _get_simulation_for_user(body.simulation_id, user, db)
-        if sim.status not in {"ready", "completed", "stopped"} and not body.force_restart:
+        if sim.status == "preparing" and not body.force_restart and not _simulation_runtime_is_prepared(sim):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Simulation is still preparing. Wait for /api/simulation/prepare to finish.",
+            )
+        if sim.status not in {"created", "ready", "completed", "stopped", "preparing"} and not body.force_restart:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Simulation not runnable: {sim.status}")
 
         project = await _get_project_for_user(sim.project_id, user, db)
@@ -974,8 +1113,19 @@ async def start_simulation(
             analysis["latest_package"] = package
             project.oasis_analysis = analysis
 
+        profiles, config = _resolve_prepared_runtime(package, project)
+        _apply_prepared_runtime(
+            sim,
+            profiles=profiles,
+            config=config,
+            provenance=provenance,
+        )
+
         run_result = build_oasis_run_result(package=package, analysis=analysis)
         run_result = _inject_provenance(run_result, provenance)
+        analysis["latest_package"] = package
+        analysis["latest_run"] = run_result
+        project.oasis_analysis = analysis
         run_result, posts, comments, actions = await _build_run_artifacts_with_llm(
             sim=sim,
             project=project,

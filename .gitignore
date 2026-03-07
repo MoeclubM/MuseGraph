@@ -70,3 +70,7 @@ htmlcov/
 .codex-secret-scan/
 .golutra/
 apps/server-py/coverage.xml
+
+# Local docker scratch
+.docker_tmp/
+

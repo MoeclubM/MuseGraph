@@ -1404,10 +1404,6 @@ function formatOasisAnalysis(analysis: ProjectOasisAnalysis | null): string {
   if (analysis.scenario_summary) {
     lines.push(`Scenario: ${analysis.scenario_summary}`)
   }
-  if (analysis.key_drivers?.length) {
-    lines.push('Key Drivers:')
-    lines.push(...analysis.key_drivers.slice(0, 8).map((item) => `- ${item}`))
-  }
   if (analysis.continuation_guidance?.next_steps?.length) {
     lines.push('Next Steps:')
     lines.push(...analysis.continuation_guidance.next_steps.slice(0, 8).map((item) => `- ${item}`))

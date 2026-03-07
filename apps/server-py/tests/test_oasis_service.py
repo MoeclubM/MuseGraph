@@ -15,6 +15,8 @@ from app.services.oasis import (
     _safe_agent_activity,
     _safe_agent_profiles,
     _safe_list,
+    _salvage_oasis_analysis_payload,
+    _salvage_oasis_simulation_config_payload,
     _to_float,
     _to_int,
     build_oasis_package,
@@ -117,6 +119,39 @@ class TestHelperFunctions:
         ]
         result = _safe_agent_activity(activities)
         assert len(result) == 1
+
+    def test_salvage_oasis_analysis_payload_from_invalid_top_level_json(self):
+        raw = (
+            '{'
+            '"scenario_summary":"Recovered summary",'
+            '"continuation_guidance":{'
+            '"must_follow":["rule1"],'
+            '"next_steps":["step1"],'
+            '"avoid":[],'
+            '"agent_profiles":[{"name":"Agent1","role":"Analyst","persona":"Tracks narrative trends","stance":"neutral","likely_actions":["Summarize events"]}]'
+            '}'
+            '}'
+        )
+        result = _salvage_oasis_analysis_payload(raw)
+        assert result is not None
+        assert result["scenario_summary"] == "Recovered summary"
+        assert result["continuation_guidance"]["must_follow"] == ["rule1"]
+        assert result["agent_profiles"][0]["name"] == "Agent1"
+
+    def test_salvage_oasis_simulation_config_payload_from_invalid_top_level_json(self):
+        raw = (
+            '{'
+            '"active_platforms":["twitter"],'
+            '"time_config":{"total_hours":48,"minutes_per_round":60,"peak_hours":[19,20],"off_peak_hours":[1,2]},'
+            '"events":[{"title":"Kickoff","trigger_hour":1,"description":"Start"}],'
+            '"agent_activity":[{"name":"Agent1","activity_level":0.6,"posts_per_hour":1.0,"response_delay_minutes":30,"stance":"neutral"}]'
+            '}'
+        )
+        result = _salvage_oasis_simulation_config_payload(raw)
+        assert result is not None
+        assert result["active_platforms"] == ["twitter"]
+        assert result["time_config"]["total_hours"] == 48
+        assert result["agent_activity"][0]["name"] == "Agent1"
 
     def test_to_float(self):
         """Test _to_float conversion."""
@@ -232,29 +267,33 @@ class TestSanitizeOasisAnalysis:
         """Test sanitize_analysis with valid data."""
         data = {
             "scenario_summary": "Test scenario",
-            "key_drivers": ["driver1", "driver2"],
-            "risk_signals": ["risk1"],
-            "opportunity_signals": ["opp1"],
-            "timeline": ["event1"],
             "continuation_guidance": {
                 "must_follow": ["rule1"],
                 "next_steps": ["step1"],
                 "avoid": ["avoid1"],
             },
-            "agent_profiles": [{"name": "Agent1", "role": "User"}],
+            "agent_profiles": [
+                {
+                    "name": "Agent1",
+                    "role": "User",
+                    "persona": "Tracks the narrative closely",
+                    "stance": "neutral",
+                }
+            ],
         }
         graph_context = {"insights": ["i1"], "relationships": ["r1"]}
         result = sanitize_oasis_analysis(data, graph_context)
 
         assert result["scenario_summary"] == "Test scenario"
-        assert result["key_drivers"] == ["driver1", "driver2"]
-        assert result["evidence"]["insight_count"] == 1
+        assert result["continuation_guidance"]["next_steps"] == ["step1"]
+        assert result["agent_profiles"][0]["name"] == "Agent1"
 
     def test_sanitize_analysis_with_missing_data(self):
         """Test sanitize_analysis with missing data."""
         result = sanitize_oasis_analysis({}, {})
         assert result["scenario_summary"] == ""
-        assert result["key_drivers"] == []
+        assert result["continuation_guidance"]["next_steps"] == []
+        assert result["agent_profiles"] == []
 
 
 class TestBuildOasisPackage:
@@ -304,10 +343,9 @@ class TestBuildOasisPackage:
         )
 
         assert result["project_id"] == "proj-1"
-        assert result["project_title"] == "Test Project"
         assert result["simulation_requirement"] == "Test requirement"
         assert len(result["profiles"]) == 1
-        assert result["component_models"]["oasis_report"] == "gpt-4o"
+        assert result["simulation_config"]["active_platforms"] == ["twitter"]
 
     def test_build_package_without_profiles_raises(self):
         """Test build package requires analysis-generated profiles."""
@@ -354,10 +392,10 @@ class TestBuildOasisRunResult:
         assert result["status"] == "completed"
         assert result["metrics"]["total_hours"] == 24
         assert result["metrics"]["total_rounds"] == 24
-        assert len(result["triggered_events"]) == 1
+        assert result["metrics"]["event_count"] == 1
 
     def test_build_run_result_with_analysis(self):
-        """Test run result with analysis data."""
+        """Test run result keeps a minimal metrics-only payload."""
         package = {"simulation_config": {}}
         analysis = {
             "risk_signals": ["risk1", "risk2"],
@@ -365,8 +403,9 @@ class TestBuildOasisRunResult:
         }
         result = build_oasis_run_result(package=package, analysis=analysis)
 
-        assert "risk1" in result["risk_signals"]
-        assert "opp1" in result["opportunity_signals"]
+        assert result["status"] == "completed"
+        assert result["metrics"]["total_hours"] == 72
+        assert "risk_signals" not in result
 
 
 class TestBuildReportMarkdown:
@@ -388,7 +427,7 @@ class TestBuildReportMarkdown:
         assert "48" in markdown
 
     def test_fallback_markdown_with_signals(self):
-        """Test markdown with risk and opportunity signals."""
+        """Test markdown keeps only minimal next-step guidance."""
         analysis = {
             "scenario_summary": "Summary",
             "risk_signals": ["Risk 1", "Risk 2"],
@@ -401,10 +440,10 @@ class TestBuildReportMarkdown:
             run_result=None,
         )
 
-        assert "## Risk Signals" in markdown
-        assert "- Risk 1" in markdown
-        assert "## Opportunity Signals" in markdown
+        assert "## Risk Signals" not in markdown
+        assert "## Opportunity Signals" not in markdown
         assert "## Recommended Next Steps" in markdown
+        assert "- Step 1" in markdown
 
 
 class TestAsyncOasisFunctions:
@@ -420,11 +459,13 @@ class TestAsyncOasisFunctions:
             mock_search.return_value = [{"content": "insight1"}]
             mock_viz.return_value = {"nodes": [{"label": "n1"}], "edges": [{"id": "e1"}]}
 
-            result = await collect_graph_context("proj-1", "test focus")
+            result = await collect_graph_context("proj-1", "test focus", db=mock_db)
 
             assert "insight1" in result["insights"]
             assert result["node_count"] == 1
             assert result["edge_count"] == 1
+            assert all(call.kwargs.get("db") is mock_db for call in mock_search.await_args_list)
+            mock_viz.assert_awaited_once_with("proj-1", db=mock_db)
 
     @pytest.mark.asyncio
     async def test_generate_oasis_analysis_with_llm(self, mock_db: AsyncMock):
@@ -438,7 +479,6 @@ class TestAsyncOasisFunctions:
             mock_llm.return_value = {"content": "response"}
             mock_extract.return_value = {
                 "scenario_summary": "LLM summary",
-                "key_drivers": ["driver1"],
                 "continuation_guidance": {
                     "must_follow": ["rule1"],
                     "next_steps": ["step1"],
@@ -466,6 +506,156 @@ class TestAsyncOasisFunctions:
             )
 
             assert result["scenario_summary"] == "LLM summary"
+            assert mock_llm.await_args.kwargs["max_tokens"] == 4096
+
+    @pytest.mark.asyncio
+    async def test_generate_oasis_analysis_backfills_summary_from_context(self, mock_db: AsyncMock):
+        from app.services.oasis import generate_oasis_analysis
+
+        with patch("app.services.oasis.collect_graph_context") as mock_context, \
+             patch("app.services.oasis.call_llm") as mock_llm, \
+             patch("app.services.oasis.extract_json_object") as mock_extract:
+            mock_context.return_value = {
+                "insights": [],
+                "relationships": ["Agent1 influences Agent2"],
+                "top_nodes": [{"label": "Agent1"}, {"label": "Agent2"}],
+            }
+            mock_llm.return_value = {"content": "response"}
+            mock_extract.return_value = {
+                "scenario_summary": "",
+                "continuation_guidance": {
+                    "must_follow": ["rule1"],
+                    "next_steps": ["step1"],
+                    "avoid": [],
+                },
+                "agent_profiles": [
+                    {
+                        "name": "Agent1",
+                        "role": "Analyst",
+                        "persona": "Tracks narrative trends",
+                        "stance": "neutral",
+                        "likely_actions": ["Summarize events"],
+                    }
+                ],
+            }
+
+            result, _ = await generate_oasis_analysis(
+                project_id="proj-1",
+                text="Test text",
+                ontology=None,
+                requirement="Test requirement",
+                prompt="Test prompt",
+                model="gpt-4o-mini",
+                db=mock_db,
+            )
+
+            assert result["scenario_summary"]
+            assert "Agent1" in result["scenario_summary"]
+            assert mock_llm.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_generate_oasis_analysis_retries_on_validation_error(self, mock_db: AsyncMock):
+        from app.services.oasis import generate_oasis_analysis
+
+        with patch("app.services.oasis.collect_graph_context") as mock_context,              patch("app.services.oasis.call_llm") as mock_llm,              patch("app.services.oasis.extract_json_object") as mock_extract:
+            mock_context.return_value = {"insights": []}
+            mock_llm.side_effect = [
+                {"content": "first"},
+                {"content": "second"},
+            ]
+            mock_extract.side_effect = [
+                {
+                    "scenario_summary": "First summary",
+                    "continuation_guidance": {
+                        "must_follow": ["rule1"],
+                        "next_steps": ["step1"],
+                        "avoid": [],
+                    },
+                    "agent_profiles": [],
+                },
+                {
+                    "scenario_summary": "Recovered summary",
+                    "continuation_guidance": {
+                        "must_follow": ["rule1"],
+                        "next_steps": ["step1"],
+                        "avoid": [],
+                    },
+                    "agent_profiles": [
+                        {
+                            "name": "Agent1",
+                            "role": "Analyst",
+                            "persona": "Tracks narrative trends",
+                            "stance": "neutral",
+                            "likely_actions": ["Summarize events"],
+                        }
+                    ],
+                },
+            ]
+
+            result, _ = await generate_oasis_analysis(
+                project_id="proj-1",
+                text="Test text",
+                ontology=None,
+                requirement="Test requirement",
+                prompt="Test prompt",
+                model="gpt-4o-mini",
+                db=mock_db,
+            )
+
+            assert result["scenario_summary"] == "Recovered summary"
+            assert mock_llm.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_generate_oasis_analysis_salvages_invalid_top_level_json(self, mock_db: AsyncMock):
+        from app.services.oasis import generate_oasis_analysis
+
+        malformed = (
+            '{'
+            '"scenario_summary":"Recovered summary",'
+            '"key_drivers":["driver1"],'
+            '"risk_signals":["risk1"],'
+            '"opportunity_signals":["opp1"],'
+            '"timeline":["t1"],'
+            '"continuation_guidance":{'
+            '"must_follow":["rule1"],'
+            '"next_steps":["step1"],'
+            '"avoid":[],'
+            '"agent_profiles":[{"name":"Agent1","role":"Analyst","persona":"Tracks narrative trends","stance":"neutral","likely_actions":["Summarize events"]}]'
+            '}'
+            '}'
+        )
+
+        with patch("app.services.oasis.collect_graph_context") as mock_context,              patch("app.services.oasis.call_llm") as mock_llm,              patch("app.services.oasis.extract_json_object") as mock_extract:
+            mock_context.return_value = {"insights": []}
+            mock_llm.return_value = {"content": malformed}
+            mock_extract.return_value = {
+                "must_follow": ["rule1"],
+                "next_steps": ["step1"],
+                "avoid": [],
+                "agent_profiles": [
+                    {
+                        "name": "Agent1",
+                        "role": "Analyst",
+                        "persona": "Tracks narrative trends",
+                        "stance": "neutral",
+                        "likely_actions": ["Summarize events"],
+                    }
+                ],
+            }
+
+            result, _ = await generate_oasis_analysis(
+                project_id="proj-1",
+                text="Test text",
+                ontology=None,
+                requirement="Test requirement",
+                prompt="Test prompt",
+                model="gpt-4o-mini",
+                db=mock_db,
+            )
+
+            assert result["scenario_summary"] == "Recovered summary"
+            assert result["continuation_guidance"]["next_steps"] == ["step1"]
+            assert mock_llm.await_count == 1
 
     @pytest.mark.asyncio
     async def test_generate_oasis_analysis_failure_raises(self, mock_db: AsyncMock):
@@ -530,6 +720,7 @@ class TestAsyncOasisFunctions:
             )
 
             assert "twitter" in result["active_platforms"]
+            assert mock_llm.await_args.kwargs["max_tokens"] == 2048
 
     @pytest.mark.asyncio
     async def test_generate_oasis_report(self, mock_db: AsyncMock):

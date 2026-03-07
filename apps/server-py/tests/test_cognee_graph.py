@@ -345,3 +345,51 @@ class TestCogneeGraphFlow:
         assert status_resp.json()["task"]["task_id"] == task_id
         assert list_resp.status_code == 200
         assert any(item["task_id"] == task_id for item in list_resp.json()["tasks"])
+
+@pytest.mark.asyncio
+async def test_resolve_chapters_queries_db_without_touching_lazy_relationship():
+    from app.routers import cognee_graph as cognee_graph_router
+
+    chapter = SimpleNamespace(
+        id="chapter-1",
+        project_id="proj-1",
+        title="Main Draft",
+        content="body",
+        order_index=0,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+
+    class _LazyProject(SimpleNamespace):
+        @property
+        def chapters(self):
+            raise AssertionError("lazy relationship should not be touched")
+
+    project = _LazyProject(id="proj-1")
+    query_result = MagicMock()
+    query_scalars = MagicMock()
+    query_scalars.all.return_value = [chapter]
+    query_result.scalars.return_value = query_scalars
+    db = AsyncMock()
+    db.execute.return_value = query_result
+
+    chapters = await cognee_graph_router._resolve_chapters_for_project(project, None, db)
+
+    assert [item.id for item in chapters] == ["chapter-1"]
+    db.execute.assert_awaited_once()
+
+
+class TestCogneeGraphTaskErrors:
+    def test_describe_task_exception_keeps_message(self):
+        from app.routers import cognee_graph as cognee_graph_router
+
+        assert cognee_graph_router._describe_task_exception(RuntimeError("build failed")) == "build failed"
+
+    def test_describe_task_exception_falls_back_to_type_and_repr(self):
+        from app.routers import cognee_graph as cognee_graph_router
+
+        error = RuntimeError()
+        described = cognee_graph_router._describe_task_exception(error)
+
+        assert described.startswith("RuntimeError:")
+        assert "RuntimeError()" in described

@@ -38,3 +38,11 @@ nul
 .vscode
 .DS_Store
 Thumbs.db
+.uv-env/
+.uvenv/
+apps/server-py/.uv-env/
+apps/server-py/.uvenv/
+apps/server-py/.venv/
+apps/server-py/.musegraph/
+apps/web-vue/node_modules/
+.docker_tmp/
