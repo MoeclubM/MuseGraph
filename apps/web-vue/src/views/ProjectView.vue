@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, computed, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
@@ -193,7 +193,7 @@ const ontologyProgress = ref(0)
 const ontologyMessage = ref('')
 const ontologyRequirement = ref(ONTOLOGY_PRESET_PROMPT)
 
-const graphAnalysisPrompt = ref('Generate OASIS analysis and continuation guidance based on this graph.')
+const graphAnalysisPrompt = ref('Generate scenario analysis and continuation guidance based on this graph.')
 const graphAnalysisLoading = ref(false)
 const graphAnalysisError = ref<string | null>(null)
 const graphAnalysisResult = ref<string | null>(null)
@@ -242,7 +242,7 @@ const rightPanelTab = ref<RightPanelTabKey>('graph')
 const rightPanelTabs: Array<{ key: RightPanelTabKey; label: string; icon: any }> = [
   { key: 'graph', label: 'Graph + RAG', icon: Network },
   { key: 'ai', label: 'AI Create', icon: Sparkles },
-  { key: 'oasis', label: 'OASIS Sim', icon: RefreshCw },
+  { key: 'oasis', label: 'Scenario Sim', icon: RefreshCw },
 ]
 const isMobileLayout = ref(false)
 const leftPanelCollapsed = ref(false)
@@ -747,10 +747,10 @@ function taskTypeLabel(taskType: string): string {
   const labels: Record<string, string> = {
     ontology_generate: 'Ontology',
     graph_build: 'Graph Build',
-    oasis_analyze: 'OASIS Analyze',
-    oasis_prepare: 'OASIS Prepare',
-    oasis_run: 'OASIS Run',
-    oasis_report: 'OASIS Report',
+    oasis_analyze: 'Scenario Analyze',
+    oasis_prepare: 'Runtime Prepare',
+    oasis_run: 'Simulation Run',
+    oasis_report: 'Simulation Report',
   }
   return labels[taskType] || taskType
 }
@@ -948,14 +948,14 @@ async function pollOasisTask(taskId: string) {
       stopOasisTaskPolling()
       if (data.task.task_type === 'oasis_analyze') {
         graphAnalysisLoading.value = false
-        graphAnalysisError.value = data.task.error || data.task.message || 'OASIS analysis task failed'
+        graphAnalysisError.value = data.task.error || data.task.message || 'Scenario analysis task failed'
       }
-      oasisTaskError.value = data.task.error || data.task.message || 'OASIS task failed'
+      oasisTaskError.value = data.task.error || data.task.message || 'Simulation task failed'
     }
   } catch (e: any) {
     stopOasisTaskPolling()
     graphAnalysisLoading.value = false
-    oasisTaskError.value = parseError(e, 'Failed to fetch OASIS task status')
+    oasisTaskError.value = parseError(e, 'Failed to fetch simulation task status')
   }
 }
 
@@ -973,7 +973,7 @@ function startOasisTaskPolling(taskId: string) {
 async function handleRefreshOasisTaskStatus() {
   const taskId = oasisTask.value?.task_id || oasisTaskLastId.value
   if (!taskId) {
-    oasisTaskError.value = 'No OASIS task id available to refresh'
+    oasisTaskError.value = 'No simulation task id available to refresh'
     return
   }
   oasisTaskError.value = null
@@ -1399,7 +1399,7 @@ async function handleDeleteActiveChapter() {
 }
 
 function formatOasisAnalysis(analysis: ProjectOasisAnalysis | null): string {
-  if (!analysis) return 'No OASIS analysis output returned.'
+  if (!analysis) return 'No scenario analysis output returned.'
   const lines: string[] = []
   if (analysis.scenario_summary) {
     lines.push(`Scenario: ${analysis.scenario_summary}`)
@@ -1414,7 +1414,7 @@ function formatOasisAnalysis(analysis: ProjectOasisAnalysis | null): string {
   }
   if (analysis.simulation_config?.time_config) {
     const t = analysis.simulation_config.time_config
-    lines.push('Simulation Time Config:')
+    lines.push('Timeline Schedule:')
     lines.push(`- Total Hours: ${t.total_hours}`)
     lines.push(`- Minutes Per Round: ${t.minutes_per_round}`)
     lines.push(`- Peak Hours: ${(t.peak_hours || []).join(', ') || 'N/A'}`)
@@ -1459,8 +1459,6 @@ async function handleCreateWorkflowSimulation() {
     const result = await createSimulation({
       project_id: project.id,
       graph_id: project.cognee_dataset_id,
-      enable_twitter: true,
-      enable_reddit: true,
       chapter_ids: selectedChapterIds.value.length ? selectedChapterIds.value : undefined,
     })
     await loadProjectSimulations()
@@ -1929,7 +1927,7 @@ async function handleGraphAnalysis() {
     upsertTaskListItem(result.task)
     taskCenterExpanded.value = true
     startOasisTaskPolling(result.task.task_id)
-    toast.success('OASIS analysis task started')
+    toast.success('Scenario analysis task started')
   } catch (e: any) {
     graphAnalysisError.value = parseError(e, 'Graph analysis failed')
     graphAnalysisLoading.value = false
@@ -1957,9 +1955,9 @@ async function handlePrepareOasisPackage() {
     upsertTaskListItem(result.task)
     taskCenterExpanded.value = true
     startOasisTaskPolling(result.task.task_id)
-    toast.success('OASIS package task started')
+    toast.success('Runtime package task started')
   } catch (e: any) {
-    oasisPrepareError.value = parseError(e, 'Failed to prepare OASIS package')
+    oasisPrepareError.value = parseError(e, 'Failed to prepare runtime package')
   } finally {
     oasisPrepareLoading.value = false
   }
@@ -1977,9 +1975,9 @@ async function handleRunOasisSimulation() {
     upsertTaskListItem(result.task)
     taskCenterExpanded.value = true
     startOasisTaskPolling(result.task.task_id)
-    toast.success('OASIS run task started')
+    toast.success('Simulation run task started')
   } catch (e: any) {
-    oasisTaskError.value = parseError(e, 'Failed to start OASIS run task')
+    oasisTaskError.value = parseError(e, 'Failed to start simulation run task')
   }
 }
 
@@ -1995,9 +1993,9 @@ async function handleGenerateOasisReport() {
     upsertTaskListItem(result.task)
     taskCenterExpanded.value = true
     startOasisTaskPolling(result.task.task_id)
-    toast.success('OASIS report task started')
+    toast.success('Report task started')
   } catch (e: any) {
-    oasisTaskError.value = parseError(e, 'Failed to start OASIS report task')
+    oasisTaskError.value = parseError(e, 'Failed to start report task')
   }
 }
 
@@ -2492,6 +2490,7 @@ watch(selectedChapterIds, () => {
     />
   </AppLayout>
 </template>
+
 
 
 

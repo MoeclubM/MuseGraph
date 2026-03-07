@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed } from 'vue'
 import { FileText, Network, Search, Sparkles } from 'lucide-vue-next'
 import type { ModelInfo } from '@/api/projects'
@@ -73,12 +73,32 @@ const oasisReportModelValue = computed({
   get: () => props.oasisReportModel,
   set: (value: string | number) => emit('update:oasisReportModel', String(value || '')),
 })
+
+const currentTaskLabel = computed(() => {
+  const taskType = String(props.oasisTask?.task_type || '').toLowerCase()
+
+  if (taskType === 'oasis_prepare') return 'package_prepare'
+  if (taskType === 'oasis_run') return 'scenario_run'
+  if (taskType === 'oasis_report') return 'analysis_report'
+
+  return taskType || 'task'
+})
+
+const runtimeProfileCount = computed(() => Number(props.oasisPackage?.profiles?.length || 0))
+const runtimeTriggerCount = computed(() => Number(props.oasisPackage?.simulation_config?.events?.length || 0))
+const activeRoleCount = computed(() => Number(props.oasisRunResult?.metrics?.active_agents || 0))
+const estimatedActivityCount = computed(() => Number(
+  props.oasisRunResult?.metrics?.estimated_actions
+  ?? props.oasisRunResult?.metrics?.estimated_events
+  ?? props.oasisRunResult?.metrics?.estimated_posts
+  ?? 0
+))
 </script>
 
 <template>
   <Card v-show="visible" class="space-y-4">
-    <h3 class="text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-      Step 3. OASIS Analysis
+    <h3 class="text-xs font-medium uppercase tracking-wider text-stone-500 dark:text-zinc-400">
+      Step 3. Scenario Reasoning
     </h3>
     <div class="grid grid-cols-4 gap-1.5">
       <div
@@ -93,12 +113,12 @@ const oasisReportModelValue = computed({
     <Textarea
       v-model="graphAnalysisPromptModel"
       :rows="2"
-      placeholder="Enter OASIS analysis focus"
+      placeholder="Describe the scenario analysis focus"
       class="min-h-24"
     />
     <div class="space-y-2">
-      <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-        OASIS Analysis Model
+      <label class="block text-xs font-medium uppercase tracking-wider text-stone-500 dark:text-zinc-400">
+        Analysis Model
       </label>
       <Select
         v-model="oasisAnalysisModelValue"
@@ -109,8 +129,8 @@ const oasisReportModelValue = computed({
       </Select>
     </div>
     <div class="space-y-2">
-      <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-        OASIS Simulation Model
+      <label class="block text-xs font-medium uppercase tracking-wider text-stone-500 dark:text-zinc-400">
+        Execution Model
       </label>
       <Select
         v-model="oasisSimulationModelValue"
@@ -121,8 +141,8 @@ const oasisReportModelValue = computed({
       </Select>
     </div>
     <div class="space-y-2">
-      <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-        OASIS Report Model
+      <label class="block text-xs font-medium uppercase tracking-wider text-stone-500 dark:text-zinc-400">
+        Report Model
       </label>
       <Select
         v-model="oasisReportModelValue"
@@ -139,8 +159,8 @@ const oasisReportModelValue = computed({
       :disabled="!props.graphReady || props.oasisTaskPolling"
       @click="emit('analyze')"
     >
-      <Search class="w-4 h-4" />
-      Run OASIS Analysis
+      <Search class="h-4 w-4" />
+      Generate Scenario Analysis
     </Button>
     <Button
       variant="ghost"
@@ -149,8 +169,8 @@ const oasisReportModelValue = computed({
       :disabled="!props.graphReady || !props.hasOasisAnalysis || props.oasisTaskPolling"
       @click="emit('prepare')"
     >
-      <Sparkles class="w-4 h-4" />
-      Prepare OASIS Package (Task)
+      <Sparkles class="h-4 w-4" />
+      Prepare Runtime Package
     </Button>
     <Button
       variant="ghost"
@@ -159,8 +179,8 @@ const oasisReportModelValue = computed({
       :disabled="!props.oasisPackage || props.oasisTaskPolling"
       @click="emit('run')"
     >
-      <Network class="w-4 h-4" />
-      Run OASIS Simulation (Task)
+      <Network class="h-4 w-4" />
+      Execute Scenario Run
     </Button>
     <Button
       variant="ghost"
@@ -169,10 +189,10 @@ const oasisReportModelValue = computed({
       :disabled="!props.oasisRunResult || props.oasisTaskPolling"
       @click="emit('report')"
     >
-      <FileText class="w-4 h-4" />
-      Generate OASIS Report (Task)
+      <FileText class="h-4 w-4" />
+      Generate Analysis Report
     </Button>
-    <p v-if="!props.graphReady" class="text-xs text-amber-700 dark:text-amber-300">Build graph before analysis.</p>
+    <p v-if="!props.graphReady" class="text-xs text-amber-700 dark:text-amber-300">Build the graph before starting scenario analysis.</p>
     <Alert v-if="props.graphAnalysisError" variant="destructive" class="text-sm">
       {{ props.graphAnalysisError }}
     </Alert>
@@ -184,14 +204,14 @@ const oasisReportModelValue = computed({
     </Alert>
     <div
       v-if="props.oasisTask"
-      class="rounded-lg border border-stone-300/80 dark:border-zinc-700/60 bg-stone-100/75 dark:bg-zinc-800/40 p-3 text-xs text-stone-700 dark:text-zinc-200 space-y-2"
+      class="space-y-2 rounded-lg border border-stone-300/80 bg-stone-100/75 p-3 text-xs text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-200"
     >
       <div class="flex items-center justify-between">
-        <span class="uppercase tracking-wider text-stone-500 dark:text-zinc-400">{{ props.oasisTask.task_type }}</span>
+        <span class="uppercase tracking-wider text-stone-500 dark:text-zinc-400">{{ currentTaskLabel }}</span>
         <span class="capitalize" :class="props.oasisTaskStatusColor(props.oasisTask.status)">{{ props.oasisTask.status }}</span>
       </div>
       <p class="text-stone-700 dark:text-zinc-300">{{ props.oasisTask.message || 'Processing...' }}</p>
-      <div class="h-1.5 rounded bg-stone-200/70 dark:bg-zinc-800/70 overflow-hidden">
+      <div class="h-1.5 overflow-hidden rounded bg-stone-200/70 dark:bg-zinc-800/70">
         <div
           class="h-full bg-amber-500 transition-all duration-300"
           :style="{ width: `${props.oasisTask.progress || 0}%` }"
@@ -211,9 +231,9 @@ const oasisReportModelValue = computed({
     </div>
     <div
       v-if="!props.oasisTask && props.oasisTaskLastId"
-      class="rounded-lg border border-stone-300/80 dark:border-zinc-700/60 bg-stone-100/75 dark:bg-zinc-800/40 p-3 text-xs text-stone-700 dark:text-zinc-300 space-y-2"
+      class="space-y-2 rounded-lg border border-stone-300/80 bg-stone-100/75 p-3 text-xs text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-300"
     >
-      <p>Last OASIS task: {{ props.oasisTaskLastId }}</p>
+      <p>Last scenario task: {{ props.oasisTaskLastId }}</p>
       <Button
         variant="secondary"
         size="sm"
@@ -225,7 +245,7 @@ const oasisReportModelValue = computed({
     </div>
     <div
       v-if="props.graphAnalysisResult"
-      class="rounded-lg border border-stone-300/80 dark:border-zinc-700/60 bg-stone-100/75 dark:bg-zinc-800/40 p-3 text-sm text-stone-700 dark:text-zinc-200 whitespace-pre-wrap max-h-48 overflow-y-auto"
+      class="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-lg border border-stone-300/80 bg-stone-100/75 p-3 text-sm text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-200"
     >
       {{ props.graphAnalysisResult }}
     </div>
@@ -233,33 +253,32 @@ const oasisReportModelValue = computed({
       v-if="props.hasOasisAnalysis"
       class="rounded-lg border border-emerald-300/70 bg-emerald-100 p-3 text-xs text-emerald-800 dark:border-emerald-700/50 dark:bg-emerald-900/20 dark:text-emerald-300"
     >
-      OASIS summary ready. Guidance and agent profiles are now used by continuation generation.
+      Scenario analysis is ready. Guidance and analysis profiles are now available for continuation workflows.
     </div>
     <div
       v-if="props.oasisPackage"
-      class="rounded-lg border border-amber-700/30 bg-amber-900/10 p-3 text-xs text-amber-800 dark:text-amber-200 space-y-1"
+      class="space-y-1 rounded-lg border border-amber-700/30 bg-amber-900/10 p-3 text-xs text-amber-800 dark:text-amber-200"
     >
-      <p>Simulation Package: {{ props.oasisPackage.simulation_id }}</p>
-      <p>Profiles: {{ props.oasisPackage.profiles?.length || 0 }}</p>
-      <p>Events: {{ props.oasisPackage.simulation_config?.events?.length || 0 }}</p>
-      <p>Platforms: {{ (props.oasisPackage.simulation_config?.active_platforms || []).join(', ') || 'N/A' }}</p>
+      <p>Runtime Package: {{ props.oasisPackage.simulation_id }}</p>
+      <p>Analysis Profiles: {{ runtimeProfileCount }}</p>
+      <p>Scenario Triggers: {{ runtimeTriggerCount }}</p>
     </div>
     <div
       v-if="props.oasisRunResult"
-      class="rounded-lg border border-stone-300/80 bg-stone-100/75 p-3 text-xs text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-200 space-y-1"
+      class="space-y-1 rounded-lg border border-stone-300/80 bg-stone-100/75 p-3 text-xs text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-200"
     >
       <p>Run: {{ props.oasisRunResult.run_id }}</p>
       <p>Rounds: {{ props.oasisRunResult.metrics?.total_rounds || 0 }}</p>
-      <p>Active Agents: {{ props.oasisRunResult.metrics?.active_agents || 0 }}</p>
-      <p>Estimated Posts: {{ props.oasisRunResult.metrics?.estimated_posts || 0 }}</p>
+      <p>Active Roles: {{ activeRoleCount }}</p>
+      <p>Estimated Activity Items: {{ estimatedActivityCount }}</p>
     </div>
     <div
       v-if="props.oasisReport"
-      class="rounded-lg border border-amber-300/80 bg-amber-100/75 p-3 text-xs text-amber-900 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-200 space-y-1"
+      class="space-y-1 rounded-lg border border-amber-300/80 bg-amber-100/75 p-3 text-xs text-amber-900 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-200"
     >
       <p>Report: {{ props.oasisReport.report_id }}</p>
       <p class="font-medium">{{ props.oasisReport.title }}</p>
-      <p class="text-amber-800 dark:text-amber-200/90 line-clamp-3">{{ props.oasisReport.executive_summary }}</p>
+      <p class="line-clamp-3 text-amber-800 dark:text-amber-200/90">{{ props.oasisReport.executive_summary }}</p>
     </div>
   </Card>
 </template>

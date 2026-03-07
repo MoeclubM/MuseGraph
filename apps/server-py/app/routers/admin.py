@@ -15,6 +15,7 @@ from app.models.project import TextOperation, TextProject
 from app.models.user import User
 from app.schemas.admin import StatsResponse, UserListResponse
 from app.services.auth import register_user
+from app.services.oasis import DEFAULT_OASIS_CONFIG, normalize_oasis_config as normalize_runtime_oasis_config
 from app.services.task_state import TaskRecord, TaskStatus, task_manager
 from app.services.provider_models import (
     dump_provider_models,
@@ -1065,167 +1066,11 @@ async def delete_provider(
 
 
 def _oasis_default_payload() -> dict[str, Any]:
-    return {
-        "analysis_prompt_prefix": "",
-        "simulation_prompt_prefix": "",
-        "report_prompt_prefix": "",
-        "max_agent_profiles": 16,
-        "max_events": 16,
-        "max_agent_activity": 48,
-        "min_total_hours": 6,
-        "max_total_hours": 336,
-        "min_minutes_per_round": 10,
-        "max_minutes_per_round": 240,
-        "max_posts_per_hour": 20.0,
-        "max_response_delay_minutes": 720,
-        "allowed_platforms": ["twitter", "reddit"],
-        "llm_request_timeout_seconds": 180,
-        "llm_retry_count": 4,
-        "llm_retry_interval_seconds": 2.0,
-        "llm_prefer_stream": True,
-        "llm_stream_fallback_nonstream": True,
-        "llm_task_concurrency": 1,
-        "llm_model_default_concurrency": 8,
-        "llm_model_concurrency_overrides": {},
-    }
-
-
-def _as_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    return default
-
-
-def _normalize_model_concurrency_overrides(raw: Any) -> dict[str, int]:
-    if not isinstance(raw, dict):
-        return {}
-    normalized: dict[str, int] = {}
-    for key, value in raw.items():
-        model_name = str(key or "").strip().lower()
-        if not model_name:
-            continue
-        try:
-            normalized[model_name] = max(1, min(64, int(value)))
-        except (TypeError, ValueError):
-            continue
-    return normalized
+    return dict(DEFAULT_OASIS_CONFIG)
 
 
 def _normalize_oasis_config(raw: Any) -> dict[str, Any]:
-    current = raw if isinstance(raw, dict) else {}
-    payload = _oasis_default_payload()
-
-    payload["analysis_prompt_prefix"] = str(current.get("analysis_prompt_prefix") or "").strip()
-    payload["simulation_prompt_prefix"] = str(current.get("simulation_prompt_prefix") or "").strip()
-    payload["report_prompt_prefix"] = str(current.get("report_prompt_prefix") or "").strip()
-
-    try:
-        payload["max_agent_profiles"] = max(1, min(64, int(current.get("max_agent_profiles", payload["max_agent_profiles"]))))
-    except (TypeError, ValueError):
-        pass
-    try:
-        payload["max_events"] = max(1, min(64, int(current.get("max_events", payload["max_events"]))))
-    except (TypeError, ValueError):
-        pass
-    try:
-        payload["max_agent_activity"] = max(1, min(128, int(current.get("max_agent_activity", payload["max_agent_activity"]))))
-    except (TypeError, ValueError):
-        pass
-    try:
-        payload["min_total_hours"] = max(1, min(720, int(current.get("min_total_hours", payload["min_total_hours"]))))
-    except (TypeError, ValueError):
-        pass
-    try:
-        payload["max_total_hours"] = max(1, min(720, int(current.get("max_total_hours", payload["max_total_hours"]))))
-    except (TypeError, ValueError):
-        pass
-    if payload["min_total_hours"] > payload["max_total_hours"]:
-        payload["min_total_hours"], payload["max_total_hours"] = payload["max_total_hours"], payload["min_total_hours"]
-
-    try:
-        payload["min_minutes_per_round"] = max(1, min(720, int(current.get("min_minutes_per_round", payload["min_minutes_per_round"]))))
-    except (TypeError, ValueError):
-        pass
-    try:
-        payload["max_minutes_per_round"] = max(1, min(720, int(current.get("max_minutes_per_round", payload["max_minutes_per_round"]))))
-    except (TypeError, ValueError):
-        pass
-    if payload["min_minutes_per_round"] > payload["max_minutes_per_round"]:
-        payload["min_minutes_per_round"], payload["max_minutes_per_round"] = payload["max_minutes_per_round"], payload["min_minutes_per_round"]
-
-    try:
-        payload["max_posts_per_hour"] = max(0.2, min(100.0, float(current.get("max_posts_per_hour", payload["max_posts_per_hour"]))))
-    except (TypeError, ValueError):
-        pass
-    try:
-        payload["max_response_delay_minutes"] = max(1, min(2880, int(current.get("max_response_delay_minutes", payload["max_response_delay_minutes"]))))
-    except (TypeError, ValueError):
-        pass
-    try:
-        payload["llm_request_timeout_seconds"] = max(
-            5,
-            min(1800, int(current.get("llm_request_timeout_seconds", payload["llm_request_timeout_seconds"]))),
-        )
-    except (TypeError, ValueError):
-        pass
-    try:
-        payload["llm_retry_count"] = max(
-            0,
-            min(10, int(current.get("llm_retry_count", payload["llm_retry_count"]))),
-        )
-    except (TypeError, ValueError):
-        pass
-    try:
-        payload["llm_retry_interval_seconds"] = max(
-            0.0,
-            min(60.0, float(current.get("llm_retry_interval_seconds", payload["llm_retry_interval_seconds"]))),
-        )
-    except (TypeError, ValueError):
-        pass
-    payload["llm_prefer_stream"] = _as_bool(
-        current.get("llm_prefer_stream", payload["llm_prefer_stream"]),
-        bool(payload["llm_prefer_stream"]),
-    )
-    payload["llm_stream_fallback_nonstream"] = _as_bool(
-        current.get("llm_stream_fallback_nonstream", payload["llm_stream_fallback_nonstream"]),
-        bool(payload["llm_stream_fallback_nonstream"]),
-    )
-    try:
-        payload["llm_task_concurrency"] = max(
-            1,
-            min(64, int(current.get("llm_task_concurrency", payload["llm_task_concurrency"]))),
-        )
-    except (TypeError, ValueError):
-        pass
-    try:
-        payload["llm_model_default_concurrency"] = max(
-            1,
-            min(64, int(current.get("llm_model_default_concurrency", payload["llm_model_default_concurrency"]))),
-        )
-    except (TypeError, ValueError):
-        pass
-    payload["llm_model_concurrency_overrides"] = _normalize_model_concurrency_overrides(
-        current.get("llm_model_concurrency_overrides")
-    )
-
-    allowed_raw = current.get("allowed_platforms")
-    if isinstance(allowed_raw, list):
-        platforms: list[str] = []
-        for item in allowed_raw:
-            value = str(item or "").strip().lower()
-            if value in {"twitter", "reddit"} and value not in platforms:
-                platforms.append(value)
-        if platforms:
-            payload["allowed_platforms"] = platforms
-    return payload
+    return normalize_runtime_oasis_config(raw)
 
 
 @router.get("/oasis-config")

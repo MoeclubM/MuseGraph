@@ -54,13 +54,12 @@ export interface OasisSimulationEvent {
 export interface OasisAgentActivity {
   name: string
   activity_level: number
-  posts_per_hour: number
+  actions_per_hour: number
   response_delay_minutes: number
   stance: string
 }
 
 export interface OasisSimulationConfig {
-  active_platforms: string[]
   time_config: OasisTimeConfig
   events: OasisSimulationEvent[]
   agent_activity: OasisAgentActivity[]
@@ -387,9 +386,8 @@ export interface OasisConfig {
   max_total_hours: number
   min_minutes_per_round: number
   max_minutes_per_round: number
-  max_posts_per_hour: number
+  max_actions_per_hour: number
   max_response_delay_minutes: number
-  allowed_platforms: string[]
   llm_request_timeout_seconds: number
   llm_retry_count: number
   llm_retry_interval_seconds: number
@@ -481,10 +479,10 @@ export interface SimulationAction {
   action_id: string
   round_num: number
   agent: string
-  action_type: 'post' | 'comment' | 'react' | 'share'
+  action_kind: 'seed' | 'response' | 'signal' | 'amplification' | 'update'
+  action_label: string
   summary: string
   created_at: string
-  platform?: string
 }
 
 export type ViewMode = 'graph' | 'split' | 'workbench'

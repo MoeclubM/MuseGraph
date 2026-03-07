@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed } from 'vue'
 import type { OasisConfig } from '@/types'
 import Card from '@/components/ui/Card.vue'
@@ -15,7 +15,6 @@ const props = defineProps<{
   llmRequestConfigMessage: string
   oasisAdvancedConfigError: string
   oasisAdvancedConfigMessage: string
-  oasisAllowedPlatformsInput: string
 }>()
 
 const emit = defineEmits<{
@@ -24,17 +23,11 @@ const emit = defineEmits<{
   'reload-oasis-advanced-config': []
   'save-oasis-advanced-config': []
   'update:llmModelConcurrencyOverridesInput': [value: string]
-  'update:oasisAllowedPlatformsInput': [value: string]
 }>()
 
 const llmModelConcurrencyOverridesInputValue = computed({
   get: () => props.llmModelConcurrencyOverridesInput,
   set: (value: string | number) => emit('update:llmModelConcurrencyOverridesInput', String(value || '')),
-})
-
-const oasisAllowedPlatformsInputValue = computed({
-  get: () => props.oasisAllowedPlatformsInput,
-  set: (value: string | number) => emit('update:oasisAllowedPlatformsInput', String(value || '')),
 })
 </script>
 
@@ -42,14 +35,14 @@ const oasisAllowedPlatformsInputValue = computed({
   <div class="space-y-4">
     <div>
       <h2 class="text-base font-semibold text-stone-800 dark:text-zinc-100">Advanced Settings</h2>
-      <p class="text-xs text-stone-500 dark:text-zinc-400">LLM 请求与 OASIS 高级参数配置</p>
+      <p class="text-xs text-stone-500 dark:text-zinc-400">LLM request settings and scenario reasoning limits.</p>
     </div>
 
     <Card class="space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-3">
         <div>
           <h3 class="text-sm font-medium text-stone-700 dark:text-zinc-200">LLM Request Config</h3>
-          <p class="text-xs text-stone-500 dark:text-zinc-400">配置请求超时、重试次数和重试间隔</p>
+          <p class="text-xs text-stone-500 dark:text-zinc-400">Configure timeout, retry count, and concurrency.</p>
         </div>
         <Button size="sm" variant="secondary" @click="emit('reload-llm-request-config')">Refresh</Button>
       </div>
@@ -104,8 +97,8 @@ const oasisAllowedPlatformsInputValue = computed({
     <Card class="space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-3">
         <div>
-          <h3 class="text-sm font-medium text-stone-700 dark:text-zinc-200">OASIS Advanced Config</h3>
-          <p class="text-xs text-stone-500 dark:text-zinc-400">配置分析/模拟/报告前缀与运行上限</p>
+          <h3 class="text-sm font-medium text-stone-700 dark:text-zinc-200">Scenario Reasoning Config</h3>
+          <p class="text-xs text-stone-500 dark:text-zinc-400">Configure analysis prompts, iteration cadence, and activity limits.</p>
         </div>
         <Button size="sm" variant="secondary" @click="emit('reload-oasis-advanced-config')">Refresh</Button>
       </div>
@@ -120,11 +113,11 @@ const oasisAllowedPlatformsInputValue = computed({
           />
         </div>
         <div class="space-y-1 md:col-span-2">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">simulation prompt prefix</label>
+          <label class="text-xs text-stone-500 dark:text-zinc-400">runtime prompt prefix</label>
           <Textarea
             v-model="oasisConfig.simulation_prompt_prefix"
             :rows="3"
-            placeholder="simulation prompt prefix"
+            placeholder="runtime prompt prefix"
           />
         </div>
         <div class="space-y-1 md:col-span-2">
@@ -164,16 +157,12 @@ const oasisAllowedPlatformsInputValue = computed({
           <Input v-model.number="oasisConfig.max_minutes_per_round" type="number" min="1" />
         </div>
         <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">max_posts_per_hour</label>
-          <Input v-model.number="oasisConfig.max_posts_per_hour" type="number" min="0.2" step="0.1" />
+          <label class="text-xs text-stone-500 dark:text-zinc-400">max_actions_per_hour</label>
+          <Input v-model.number="oasisConfig.max_actions_per_hour" type="number" min="0.2" step="0.1" />
         </div>
         <div class="space-y-1">
           <label class="text-xs text-stone-500 dark:text-zinc-400">max_response_delay_minutes</label>
           <Input v-model.number="oasisConfig.max_response_delay_minutes" type="number" min="1" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">allowed_platforms (comma separated)</label>
-          <Input v-model="oasisAllowedPlatformsInputValue" placeholder="weibo, x, reddit" />
         </div>
       </div>
 
@@ -181,7 +170,7 @@ const oasisAllowedPlatformsInputValue = computed({
       <Alert v-if="oasisAdvancedConfigMessage" variant="success">{{ oasisAdvancedConfigMessage }}</Alert>
 
       <div class="flex justify-end">
-        <Button size="sm" @click="emit('save-oasis-advanced-config')">Save OASIS Config</Button>
+        <Button size="sm" @click="emit('save-oasis-advanced-config')">Save Scenario Config</Button>
       </div>
     </Card>
   </div>

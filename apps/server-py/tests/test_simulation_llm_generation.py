@@ -9,16 +9,15 @@ from app.routers import simulation as simulation_router
 
 
 @pytest.mark.asyncio
-async def test_build_run_artifacts_with_llm_generates_posts_and_actions(monkeypatch: pytest.MonkeyPatch):
+async def test_build_run_artifacts_with_llm_generates_timeline_actions(monkeypatch: pytest.MonkeyPatch):
     sim = SimpleNamespace(
         simulation_id="sim_123",
         user_id="user-1",
         profiles=[{"name": "AgentA", "role": "analyst"}, {"name": "AgentB", "role": "critic"}],
         simulation_config={
-            "active_platforms": ["twitter", "reddit"],
             "time_config": {"total_hours": 4, "minutes_per_round": 60},
             "events": [{"title": "launch", "trigger_hour": 1, "description": "start"}],
-            "agent_activity": [{"name": "AgentA", "posts_per_hour": 1.2}],
+            "agent_activity": [{"name": "AgentA", "actions_per_hour": 1.2}],
         },
     )
     project = SimpleNamespace(
@@ -37,8 +36,8 @@ async def test_build_run_artifacts_with_llm_generates_posts_and_actions(monkeypa
         return {
             "content": (
                 '{"rounds":['
-                '{"round":1,"posts":[{"agent":"AgentA","platform":"twitter","content":"Round 1 post"}],"comments":[],"actions":[]},'
-                '{"round":2,"posts":[{"agent":"AgentB","platform":"reddit","content":"Round 2 post"}],"comments":[{"agent":"AgentA","platform":"reddit","content":"Round 2 comment"}],"actions":[{"agent":"AgentB","action_type":"react","summary":"liked trend"}]}'
+                '{"round":1,"situation":"Round 1 update","developments":["Stakeholders react"],"agent_updates":[{"agent":"AgentA","decision":"Publish update","rationale":"Maintain control","impact":"Narrative stabilizes"}],"signals":[{"type":"shift","summary":"Attention consolidates"}]},'
+                '{"round":2,"situation":"Round 2 escalation","developments":["Counterpart challenges framing"],"agent_updates":[{"agent":"AgentB","decision":"Escalate critique","rationale":"Force concessions","impact":"Pressure increases"}],"signals":[{"type":"risk","summary":"Conflict intensifies"}]}'
                 ']}'
             )
         }
@@ -54,10 +53,8 @@ async def test_build_run_artifacts_with_llm_generates_posts_and_actions(monkeypa
     )
 
     assert generated is not None
-    enriched, posts, comments, actions = generated
-    assert len(posts) == 2
-    assert len(comments) == 1
-    assert len(actions) >= 3
+    enriched, actions = generated
+    assert len(actions) >= 6
     assert enriched["metrics"]["generated_mode"] == "llm"
     assert "highlights" not in enriched
 
@@ -68,7 +65,7 @@ async def test_build_run_artifacts_with_llm_raises_when_invalid_json(monkeypatch
         simulation_id="sim_456",
         user_id="user-2",
         profiles=[{"name": "AgentA", "role": "analyst"}],
-        simulation_config={"active_platforms": ["twitter"], "events": [], "agent_activity": []},
+        simulation_config={"events": [], "agent_activity": []},
     )
     project = SimpleNamespace(
         id="proj-2",
