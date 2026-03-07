@@ -27,21 +27,19 @@ async def test_build_run_artifacts_with_llm_generates_posts_and_actions(monkeypa
         oasis_analysis={
             "scenario_summary": "A product launch under public pressure",
             "continuation_guidance": {"must_follow": ["keep consistency"]},
-            "key_drivers": ["trust", "cost"],
-            "risk_signals": ["backlash"],
         },
         component_models={"oasis_simulation": "model-sim"},
     )
     run_result = {"metrics": {"total_rounds": 2}}
 
-    async def _fake_call_llm(*, model: str, prompt: str, db):
+    async def _fake_call_llm(*, model: str, prompt: str, db, max_tokens: int):
         assert model == "model-sim"
         return {
             "content": (
                 '{"rounds":['
                 '{"round":1,"posts":[{"agent":"AgentA","platform":"twitter","content":"Round 1 post"}],"comments":[],"actions":[]},'
                 '{"round":2,"posts":[{"agent":"AgentB","platform":"reddit","content":"Round 2 post"}],"comments":[{"agent":"AgentA","platform":"reddit","content":"Round 2 comment"}],"actions":[{"agent":"AgentB","action_type":"react","summary":"liked trend"}]}'
-                '],"highlights":["H1"]}'
+                ']}'
             )
         }
 
@@ -61,7 +59,7 @@ async def test_build_run_artifacts_with_llm_generates_posts_and_actions(monkeypa
     assert len(comments) == 1
     assert len(actions) >= 3
     assert enriched["metrics"]["generated_mode"] == "llm"
-    assert enriched["highlights"] == ["H1"]
+    assert "highlights" not in enriched
 
 
 @pytest.mark.asyncio
@@ -80,7 +78,7 @@ async def test_build_run_artifacts_with_llm_raises_when_invalid_json(monkeypatch
     )
     run_result = {"metrics": {"total_rounds": 1}}
 
-    async def _fake_call_llm(*, model: str, prompt: str, db):
+    async def _fake_call_llm(*, model: str, prompt: str, db, max_tokens: int):
         return {"content": "not-json"}
 
     monkeypatch.setattr(simulation_router, "call_llm", _fake_call_llm)

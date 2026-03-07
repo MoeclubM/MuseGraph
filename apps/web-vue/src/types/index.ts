@@ -68,14 +68,9 @@ export interface OasisSimulationConfig {
 
 export interface ProjectOasisAnalysis {
   scenario_summary: string
-  key_drivers: string[]
-  risk_signals: string[]
-  opportunity_signals: string[]
-  timeline: string[]
-  continuation_guidance: ContinuationGuidance
+  continuation_guidance?: ContinuationGuidance
   agent_profiles: OasisAgentProfile[]
   simulation_config?: OasisSimulationConfig
-  evidence?: Record<string, any>
   latest_package?: Record<string, any>
   latest_run?: Record<string, any>
   latest_report?: Record<string, any>

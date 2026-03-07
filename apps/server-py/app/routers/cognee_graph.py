@@ -84,6 +84,13 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _describe_task_exception(exc: Exception) -> str:
+    message = str(exc or "").strip()
+    if message:
+        return message
+    return f"{type(exc).__name__}: {exc!r}"
+
+
 async def _await_if_needed(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
@@ -288,10 +295,9 @@ async def _resolve_chapters_for_project(
             )
         return sorted(chapters, key=lambda c: (c.order_index, c.created_at, c.id))
 
-    existing = getattr(project, "chapters", None)
-    if isinstance(existing, list):
-        return sorted(existing, key=lambda c: (c.order_index, c.created_at, c.id))
-
+    # Avoid async lazy-loading on project.chapters here. In background workers the
+    # relationship may not be greenlet-enabled, which turns an ordinary rebuild into
+    # `greenlet_spawn has not been called` before graph extraction even starts.
     result = await db.execute(
         select(ProjectChapter).where(ProjectChapter.project_id == project.id)
     )
@@ -811,7 +817,7 @@ async def _run_ontology_task(
             raise
         except Exception as exc:
             await db.rollback()
-            task_manager.fail_task(task_id, str(exc), "Failed to generate ontology")
+            task_manager.fail_task(task_id, _describe_task_exception(exc), "Failed to generate ontology")
 
 
 async def _resolve_graph_build_plan(
@@ -1168,7 +1174,7 @@ async def _run_graph_build_task(
             raise
         except Exception as exc:
             await db.rollback()
-            task_manager.fail_task(task_id, str(exc), "Failed to build graph")
+            task_manager.fail_task(task_id, _describe_task_exception(exc), "Failed to build graph")
 
 
 async def _generate_and_store_oasis_analysis(
@@ -1357,7 +1363,7 @@ async def _run_analyze_task(
             raise
         except Exception as exc:
             await db.rollback()
-            task_manager.fail_task(task_id, str(exc), "Failed to generate OASIS analysis")
+            task_manager.fail_task(task_id, _describe_task_exception(exc), "Failed to generate OASIS analysis")
 
 
 async def _run_prepare_task(
@@ -1430,7 +1436,7 @@ async def _run_prepare_task(
             raise
         except Exception as exc:
             await db.rollback()
-            task_manager.fail_task(task_id, str(exc), "Failed to prepare OASIS package")
+            task_manager.fail_task(task_id, _describe_task_exception(exc), "Failed to prepare OASIS package")
 
 
 async def _run_simulation_task(
@@ -1493,7 +1499,7 @@ async def _run_simulation_task(
             raise
         except Exception as exc:
             await db.rollback()
-            task_manager.fail_task(task_id, str(exc), "Failed to run OASIS simulation")
+            task_manager.fail_task(task_id, _describe_task_exception(exc), "Failed to run OASIS simulation")
 
 
 async def _run_report_task(
@@ -1571,7 +1577,7 @@ async def _run_report_task(
             raise
         except Exception as exc:
             await db.rollback()
-            task_manager.fail_task(task_id, str(exc), "Failed to generate OASIS report")
+            task_manager.fail_task(task_id, _describe_task_exception(exc), "Failed to generate OASIS report")
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

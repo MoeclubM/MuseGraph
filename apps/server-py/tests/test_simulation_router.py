@@ -36,6 +36,42 @@ def _get_endpoint_globals(app, endpoint_name: str) -> dict:
     raise RuntimeError(f"Endpoint {endpoint_name!r} not found")
 
 
+def _prepared_package(g: dict, provenance: dict, *, profile_name: str = "Agent1") -> dict:
+    return g["_inject_provenance"](
+        {
+            "profiles": [
+                {
+                    "name": profile_name,
+                    "role": "participant",
+                    "persona": "Tracks narrative shifts",
+                    "stance": "neutral",
+                    "likely_actions": ["Post updates"],
+                }
+            ],
+            "simulation_config": {
+                "active_platforms": ["twitter"],
+                "time_config": {
+                    "total_hours": 24,
+                    "minutes_per_round": 60,
+                    "peak_hours": [19, 20],
+                    "off_peak_hours": [1, 2],
+                },
+                "events": [{"title": "Kickoff", "trigger_hour": 1, "description": "Start"}],
+                "agent_activity": [
+                    {
+                        "name": profile_name,
+                        "activity_level": 0.6,
+                        "posts_per_hour": 1.0,
+                        "response_delay_minutes": 30,
+                        "stance": "neutral",
+                    }
+                ],
+            },
+        },
+        provenance,
+    )
+
+
 class TestSimulationCreate:
     """Test simulation creation endpoints."""
 
@@ -147,6 +183,14 @@ class TestSimulationPrepare:
             simulation_id="sim-1",
             user_id=fake_user.id,
             status="ready",
+            profiles=[{"name": "Agent1"}],
+            simulation_config={
+                "time_config": {"total_hours": 24},
+                "content_hash": "hash-1",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            run_state={},
+            metadata_={},
         )
         mock_db.execute.return_value = _scalar_one_or_none(sim)
 
@@ -157,6 +201,52 @@ class TestSimulationPrepare:
 
         assert resp.status_code == 200
         assert resp.json()["data"]["already_prepared"] is True
+
+    @pytest.mark.asyncio
+    async def test_prepare_simulation_with_selected_chapters_starts_task(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
+        """Test prepare with chapter_ids still starts work when runtime is not ready."""
+        now = datetime.now(timezone.utc)
+        sim = SimpleNamespace(
+            simulation_id="sim-1",
+            project_id="proj-1",
+            user_id=fake_user.id,
+            status="created",
+            profiles=[],
+            simulation_config={},
+            run_state={},
+            metadata_={},
+        )
+        project = SimpleNamespace(
+            id="proj-1",
+            user_id=fake_user.id,
+            chapters=[
+                SimpleNamespace(
+                    id="ch-1",
+                    project_id="proj-1",
+                    title="Main Draft",
+                    content="Some content",
+                    order_index=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            ],
+        )
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(sim),
+            _scalar_one_or_none(project),
+            _scalars_all(project.chapters),
+        ]
+
+        resp = await client.post(
+            "/api/simulation/prepare",
+            json={"simulation_id": "sim-1", "chapter_ids": ["ch-1"]},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()["data"]
+        assert body.get("already_prepared") is not True
+        assert "task_id" in body
+        assert sim.status == "preparing"
 
     @pytest.mark.asyncio
     async def test_prepare_status_by_task(self, client: AsyncClient, mock_db: AsyncMock):
@@ -240,10 +330,314 @@ class TestSimulationStart:
         ]
         g = _get_endpoint_globals(app, "start_simulation")
         expected_provenance = g["_build_provenance"](source_chapter_ids=[], text="Some content")
-        package = g["_inject_provenance"]({}, expected_provenance)
+        package = _prepared_package(g, expected_provenance)
         mock_refresh = AsyncMock(
             return_value={"latest_package": package}
         )
+        mock_build = AsyncMock(
+            return_value=(
+                {"metrics": {"total_rounds": 10}},
+                [{"id": "post1"}],
+                [],
+                [{"action_id": "a1"}],
+            )
+        )
+        orig_refresh = g["_refresh_project_analysis_with_provenance"]
+        orig_build = g["_build_run_artifacts_with_llm"]
+        g["_refresh_project_analysis_with_provenance"] = mock_refresh
+        g["_build_run_artifacts_with_llm"] = mock_build
+        try:
+            resp = await client.post(
+                "/api/simulation/start",
+                json={"simulation_id": "sim-1"},
+            )
+        finally:
+            g["_refresh_project_analysis_with_provenance"] = orig_refresh
+            g["_build_run_artifacts_with_llm"] = orig_build
+
+        assert resp.status_code == 200
+        assert resp.json()["data"]["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_build_run_artifacts_salvages_invalid_top_level_json(self, mock_db: AsyncMock):
+        from tests.conftest import app
+
+        g = _get_endpoint_globals(app, "start_simulation")
+        sim = SimpleNamespace(
+            simulation_id="sim-1",
+            user_id="user-1",
+            profiles=[
+                {
+                    "name": "Agent1",
+                    "role": "participant",
+                    "persona": "Tracks narrative shifts",
+                    "stance": "neutral",
+                }
+            ],
+            simulation_config={
+                "active_platforms": ["twitter"],
+                "time_config": {"total_hours": 24, "minutes_per_round": 60},
+                "events": [],
+                "agent_activity": [
+                    {
+                        "name": "Agent1",
+                        "activity_level": 0.6,
+                        "posts_per_hour": 1.0,
+                        "response_delay_minutes": 30,
+                        "stance": "neutral",
+                    }
+                ],
+            },
+        )
+        project = SimpleNamespace(
+            id="proj-1",
+            simulation_requirement="Test requirement",
+            oasis_analysis={
+                "scenario_summary": "Scenario summary",
+                "continuation_guidance": {
+                    "must_follow": ["rule1"],
+                    "next_steps": ["step1"],
+                    "avoid": [],
+                },
+            },
+            component_models=None,
+        )
+        run_result = {"metrics": {"total_rounds": 2}}
+        malformed = (
+            '{'
+            '"rounds":['
+            '{"round":1,"posts":[{"agent":"Agent1","platform":"twitter","content":"Post 1"}],"comments":[{"agent":"Agent1","platform":"twitter","content":"Comment 1"}],"actions":[{"agent":"Agent1","action_type":"share","summary":"Shared"}]},'
+            '{"round":2,"posts":[{"agent":"Agent1","platform":"twitter","content":"Post 2"}],"comments":[],"actions":[{"agent":"Agent1","action_type":"react","summary":"Reacted"}]}'
+            '],'
+            '"highlights":["Highlight 1"]'
+            '}'
+        )
+
+        orig_call = g["call_llm"]
+        orig_extract = g["extract_json_object"]
+        mock_call = AsyncMock(return_value={"content": malformed})
+        g["call_llm"] = mock_call
+        g["extract_json_object"] = MagicMock(return_value={"posts": [], "comments": [], "actions": []})
+        try:
+            updated_run, posts, comments, actions = await g["_build_run_artifacts_with_llm"](
+                sim=sim,
+                project=project,
+                run_result=run_result,
+                max_rounds=2,
+                db=mock_db,
+            )
+            assert len(posts) == 2
+            assert len(comments) == 1
+            assert any(action["action_type"] == "share" for action in actions)
+            assert "highlights" not in updated_run
+            assert mock_call.await_args.kwargs["max_tokens"] > 1024
+        finally:
+            g["call_llm"] = orig_call
+            g["extract_json_object"] = orig_extract
+
+    @pytest.mark.asyncio
+    async def test_start_simulation_created_syncs_runtime_from_package(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
+        """Test start can hydrate a created simulation from the latest prepared package."""
+        from tests.conftest import app
+
+        now = datetime.now(timezone.utc)
+        sim = SimpleNamespace(
+            simulation_id="sim-1",
+            project_id="proj-1",
+            user_id=fake_user.id,
+            status="created",
+            profiles=[],
+            simulation_config={},
+            run_state={},
+            posts=[],
+            comments=[],
+            actions=[],
+            env_status={},
+            metadata_={},
+        )
+        project = SimpleNamespace(
+            id="proj-1",
+            user_id=fake_user.id,
+            title="Test",
+            simulation_requirement="Test requirement",
+            oasis_analysis={},
+            ontology_schema={},
+            component_models=None,
+            chapters=[
+                SimpleNamespace(
+                    id="ch-1",
+                    project_id="proj-1",
+                    title="Main Draft",
+                    content="Some content",
+                    order_index=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            ],
+        )
+
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(sim),
+            _scalar_one_or_none(project),
+        ]
+        g = _get_endpoint_globals(app, "start_simulation")
+        expected_provenance = g["_build_provenance"](source_chapter_ids=[], text="Some content")
+        package = _prepared_package(g, expected_provenance)
+        analysis = {"latest_package": package}
+        mock_refresh = AsyncMock(return_value=analysis)
+        mock_build = AsyncMock(
+            return_value=(
+                {"metrics": {"total_rounds": 6}},
+                [{"id": "post1"}],
+                [],
+                [{"action_id": "a1"}],
+            )
+        )
+        orig_refresh = g["_refresh_project_analysis_with_provenance"]
+        orig_build = g["_build_run_artifacts_with_llm"]
+        g["_refresh_project_analysis_with_provenance"] = mock_refresh
+        g["_build_run_artifacts_with_llm"] = mock_build
+        try:
+            resp = await client.post(
+                "/api/simulation/start",
+                json={"simulation_id": "sim-1"},
+            )
+        finally:
+            g["_refresh_project_analysis_with_provenance"] = orig_refresh
+            g["_build_run_artifacts_with_llm"] = orig_build
+
+        assert resp.status_code == 200
+        assert resp.json()["data"]["status"] == "completed"
+        assert sim.profiles[0]["name"] == "Agent1"
+        assert sim.simulation_config["content_hash"] == expected_provenance["content_hash"]
+        assert project.oasis_analysis["latest_run"]["content_hash"] == expected_provenance["content_hash"]
+
+    @pytest.mark.asyncio
+    async def test_start_simulation_created_auto_prepares_runtime(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
+        """Test starting from created auto-prepares runtime before generating artifacts."""
+        from tests.conftest import app
+
+        sim = SimpleNamespace(
+            simulation_id="sim-1",
+            project_id="proj-1",
+            user_id=fake_user.id,
+            status="created",
+            profiles=[],
+            simulation_config={},
+            run_state={},
+            posts=[],
+            comments=[],
+            actions=[],
+            metadata_={},
+        )
+        project = SimpleNamespace(
+            id="proj-1",
+            user_id=fake_user.id,
+            title="Test",
+            simulation_requirement="Test requirement",
+            oasis_analysis={},
+            ontology_schema={},
+            component_models=None,
+            chapters=[
+                SimpleNamespace(
+                    id="ch-1",
+                    project_id="proj-1",
+                    title="Main Draft",
+                    content="Some content",
+                    order_index=0,
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+            ],
+        )
+
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(sim),
+            _scalar_one_or_none(project),
+        ]
+        g = _get_endpoint_globals(app, "start_simulation")
+        expected_provenance = g["_build_provenance"](source_chapter_ids=[], text="Some content")
+        package = _prepared_package(g, expected_provenance)
+        mock_refresh = AsyncMock(return_value={"latest_package": package})
+        mock_build = AsyncMock(
+            return_value=(
+                {"metrics": {"total_rounds": 10}},
+                [{"id": "post1"}],
+                [],
+                [{"action_id": "a1"}],
+            )
+        )
+        orig_refresh = g["_refresh_project_analysis_with_provenance"]
+        orig_build = g["_build_run_artifacts_with_llm"]
+        g["_refresh_project_analysis_with_provenance"] = mock_refresh
+        g["_build_run_artifacts_with_llm"] = mock_build
+        try:
+            resp = await client.post(
+                "/api/simulation/start",
+                json={"simulation_id": "sim-1"},
+            )
+        finally:
+            g["_refresh_project_analysis_with_provenance"] = orig_refresh
+            g["_build_run_artifacts_with_llm"] = orig_build
+
+        assert resp.status_code == 200
+        assert sim.profiles
+        assert sim.simulation_config["content_hash"] == expected_provenance["content_hash"]
+        assert resp.json()["data"]["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_start_simulation_preparing_with_prepared_runtime_succeeds(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
+        """Test preparing status can recover when runtime artifacts are already prepared."""
+        from tests.conftest import app
+
+        project = SimpleNamespace(
+            id="proj-1",
+            user_id=fake_user.id,
+            title="Test",
+            simulation_requirement="Test requirement",
+            oasis_analysis={},
+            ontology_schema={},
+            component_models=None,
+            chapters=[
+                SimpleNamespace(
+                    id="ch-1",
+                    project_id="proj-1",
+                    title="Main Draft",
+                    content="Some content",
+                    order_index=0,
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+            ],
+        )
+
+        g = _get_endpoint_globals(app, "start_simulation")
+        expected_provenance = g["_build_provenance"](source_chapter_ids=[], text="Some content")
+        package = _prepared_package(g, expected_provenance)
+        profiles, config = g["_resolve_prepared_runtime"](package, project)
+        sim = SimpleNamespace(
+            simulation_id="sim-1",
+            project_id="proj-1",
+            user_id=fake_user.id,
+            status="preparing",
+            profiles=profiles,
+            simulation_config=g["_inject_provenance"](dict(config), expected_provenance),
+            run_state={"status": "ready", "content_hash": expected_provenance["content_hash"]},
+            posts=[],
+            comments=[],
+            actions=[],
+            metadata_={
+                "source_chapter_ids": [],
+                "content_hash": expected_provenance["content_hash"],
+                "generated_at": expected_provenance["generated_at"],
+            },
+        )
+
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(sim),
+            _scalar_one_or_none(project),
+        ]
+        mock_refresh = AsyncMock(return_value={"latest_package": package})
         mock_build = AsyncMock(
             return_value=(
                 {"metrics": {"total_rounds": 10}},
@@ -312,7 +706,7 @@ class TestSimulationStart:
         ]
         g = _get_endpoint_globals(app, "start_simulation")
         expected_provenance = g["_build_provenance"](source_chapter_ids=[], text="Some content")
-        package = g["_inject_provenance"]({}, expected_provenance)
+        package = _prepared_package(g, expected_provenance)
         mock_refresh = AsyncMock(
             return_value={"latest_package": package}
         )
@@ -341,6 +735,10 @@ class TestSimulationStart:
             simulation_id="sim-1",
             user_id=fake_user.id,
             status="preparing",
+            profiles=[],
+            simulation_config={},
+            run_state={},
+            metadata_={},
         )
         mock_db.execute.return_value = _scalar_one_or_none(sim)
 
@@ -350,6 +748,7 @@ class TestSimulationStart:
         )
 
         assert resp.status_code == 400
+        assert "still preparing" in resp.json()["detail"]
 
 
 class TestSimulationStop:

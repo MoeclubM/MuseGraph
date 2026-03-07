@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import os
 from enum import Enum
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -82,12 +84,12 @@ class TestCogneeHelpers:
             {"id": "n1", "type": "Entity", "name": "贾母", "label": "贾母"},
             {"id": "n2", "type": "Entity", "name": "贾母去世", "label": "贾母去世"},
             {"id": "n3", "type": "Entity", "name": "贾母丧事", "label": "贾母丧事"},
-            {"id": "n4", "type": "Entity", "name": "贾母屋", "label": "贾母屋"},
+            {"id": "n4", "type": "Entity", "name": "贾母寿宴", "label": "贾母寿宴"},
         ]
 
         merged_nodes, _ = cognee_service._merge_alias_entities(nodes, [])
         assert len(merged_nodes) == 4
-        assert {node["name"] for node in merged_nodes} == {"贾母", "贾母去世", "贾母丧事", "贾母屋"}
+        assert {node["name"] for node in merged_nodes} == {"贾母", "贾母去世", "贾母丧事", "贾母寿宴"}
 
     def test_merge_alias_entities_supports_llm_decision_override(self):
         """LLM decisions can explicitly force merge/non-merge for ambiguous pairs."""
@@ -96,7 +98,6 @@ class TestCogneeHelpers:
             {"id": "n2", "type": "Entity", "name": "贾母太君", "label": "贾母太君"},
         ]
         pair_key = cognee_service._alias_pair_key("贾母", "贾母太君")
-
         merged_default, _ = cognee_service._merge_alias_entities(nodes, [])
         assert len(merged_default) == 2
 
@@ -114,21 +115,22 @@ class TestCogneeHelpers:
         )
         assert len(merged_blocked) == 2
 
+
     @pytest.mark.asyncio
     async def test_resolve_alias_merge_decisions_with_llm_parses_json(self, monkeypatch: pytest.MonkeyPatch):
         nodes = [
-            {"id": "n1", "type": "Entity", "name": "林黛玉", "label": "林黛玉"},
-            {"id": "n2", "type": "Entity", "name": "黛玉", "label": "黛玉"},
-            {"id": "n3", "type": "Entity", "name": "贾母", "label": "贾母"},
-            {"id": "n4", "type": "Entity", "name": "贾母去世", "label": "贾母去世"},
+            {"id": "n1", "type": "Entity", "name": "\u6797\u9edb\u7389", "label": "\u6797\u9edb\u7389"},
+            {"id": "n2", "type": "Entity", "name": "\u9edb\u7389", "label": "\u9edb\u7389"},
+            {"id": "n3", "type": "Entity", "name": "\u8d3e\u6bcd", "label": "\u8d3e\u6bcd"},
+            {"id": "n4", "type": "Entity", "name": "\u8d3e\u6bcd\u53bb\u4e16", "label": "\u8d3e\u6bcd\u53bb\u4e16"},
         ]
         llm_mock = AsyncMock(
             return_value={
                 "content": (
                     '{"decisions": ['
-                    '{"left":"林黛玉","right":"黛玉","same_entity":true},'
-                    '{"left":"贾母","right":"贾母去世","same_entity":false}'
-                    "]}"
+                    '{"left":"\\u6797\\u9edb\\u7389","right":"\\u9edb\\u7389","same_entity":true},'
+                    '{"left":"\\u8d3e\\u6bcd","right":"\\u8d3e\\u6bcd\\u53bb\\u4e16","same_entity":false}'
+                    ']}'
                 )
             }
         )
@@ -141,9 +143,95 @@ class TestCogneeHelpers:
             model="gpt-4o-mini",
         )
 
-        assert decisions[cognee_service._alias_pair_key("林黛玉", "黛玉")] is True
-        assert decisions[cognee_service._alias_pair_key("贾母", "贾母去世")] is False
+        assert decisions[cognee_service._alias_pair_key("\u6797\u9edb\u7389", "\u9edb\u7389")] is True
+        assert decisions[cognee_service._alias_pair_key("\u8d3e\u6bcd", "\u8d3e\u6bcd\u53bb\u4e16")] is False
         llm_mock.assert_awaited_once()
+
+
+class TestCogneeRuntimeConfigHelpers:
+    def test_apply_cognee_embedding_config_sets_runtime_env(self, monkeypatch: pytest.MonkeyPatch):
+        for key in ("EMBEDDING_MODEL", "EMBEDDING_PROVIDER", "EMBEDDING_API_KEY", "EMBEDDING_ENDPOINT"):
+            monkeypatch.delenv(key, raising=False)
+
+        cognee_service._apply_cognee_embedding_config(
+            config_obj=None,
+            model="text-embedding-3-small",
+            api_key="embed-key",
+            endpoint="https://api.example.com/v1",
+            provider="openai_compatible",
+        )
+
+        assert os.environ["EMBEDDING_MODEL"] == "openai/text-embedding-3-small"
+        assert os.environ["EMBEDDING_PROVIDER"] == "openai"
+        assert os.environ["EMBEDDING_API_KEY"] == "embed-key"
+        assert os.environ["EMBEDDING_ENDPOINT"] == "https://api.example.com/v1"
+
+    def test_resolve_cognee_runtime_provider_uses_openai_for_openai_compatible_gateway(self):
+        assert cognee_service._resolve_cognee_runtime_provider(
+            "openai_compatible",
+            endpoint="https://api.example.com/v1",
+            purpose="llm",
+        ) == "openai"
+
+    def test_resolve_cognee_runtime_provider_rejects_anthropic_embedding(self):
+        with pytest.raises(RuntimeError, match="does not support anthropic-compatible providers"):
+            cognee_service._resolve_cognee_runtime_provider(
+                "anthropic_compatible",
+                endpoint=None,
+                purpose="embedding",
+            )
+
+    def test_clear_cognee_runtime_caches_calls_cache_clear(self, monkeypatch: pytest.MonkeyPatch):
+        calls: list[str] = []
+
+        class _CacheTarget:
+            def cache_clear(self):
+                calls.append("cleared")
+
+        class _FakeModule:
+            get_fake_cache = _CacheTarget()
+
+        monkeypatch.setattr(
+            cognee_service,
+            "_COGNEE_RUNTIME_CACHE_TARGETS",
+            (("tests.fake_cognee_cache", "get_fake_cache"),),
+        )
+
+        import sys
+
+        monkeypatch.setitem(sys.modules, "tests.fake_cognee_cache", _FakeModule())
+
+        cognee_service._clear_cognee_runtime_caches()
+
+        assert calls == ["cleared"]
+
+
+    @pytest.mark.asyncio
+    async def test_prepare_cognee_search_runtime_uses_project_models(self, monkeypatch: pytest.MonkeyPatch):
+        project = SimpleNamespace(id="p1")
+        db = AsyncMock()
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = project
+        db.execute.return_value = result
+        configure_mock = AsyncMock()
+
+        monkeypatch.setitem(cognee_service.__dict__, "_configure_cognee_llm", configure_mock)
+        monkeypatch.setitem(
+            cognee_service.__dict__,
+            "resolve_component_model",
+            lambda project_obj, component: {
+                "graph_build": "chat-model",
+                "graph_embedding": "embed-model",
+            }[component],
+        )
+
+        await cognee_service.prepare_cognee_search_runtime("p1", db)
+
+        configure_mock.assert_awaited_once_with(
+            model="chat-model",
+            embedding_model="embed-model",
+            db=db,
+        )
 
 
 class TestSearchGraph:
@@ -179,6 +267,39 @@ class TestSearchGraph:
         assert kwargs["datasets"] == ["project-p1"]
 
     @pytest.mark.asyncio
+    async def test_search_graph_prepares_runtime_when_db_provided(self, monkeypatch: pytest.MonkeyPatch):
+        fake_search = AsyncMock(return_value=[{"content": "ok"}])
+        prepare_mock = AsyncMock()
+        db = AsyncMock()
+
+        monkeypatch.setitem(
+            cognee_service.__dict__,
+            "_get_search_type_map",
+            lambda: {"INSIGHTS": _FakeSearchType.INSIGHTS},
+        )
+        monkeypatch.setitem(cognee_service.__dict__, "_DEFAULT_SEARCH_TYPE", _FakeSearchType.INSIGHTS)
+        monkeypatch.setitem(cognee_service.__dict__, "prepare_cognee_search_runtime", prepare_mock)
+
+        class _CogneeModule:
+            search = fake_search
+
+        import sys
+
+        monkeypatch.setitem(sys.modules, "cognee", _CogneeModule())
+
+        await cognee_service.search_graph(
+            project_id="p1",
+            query="q",
+            search_type="INSIGHTS",
+            top_k=2,
+            db=db,
+        )
+
+        assert prepare_mock.await_count >= 1
+        assert prepare_mock.await_args_list[0].args == ("p1", db)
+        fake_search.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_search_graph_raises_when_all_candidates_fail(self, monkeypatch: pytest.MonkeyPatch):
         async def _search(**_kwargs):
             raise RuntimeError("search failed")
@@ -209,8 +330,8 @@ class TestSearchGraph:
     async def test_search_graph_uses_lexical_reranker_when_enabled(self, monkeypatch: pytest.MonkeyPatch):
         async def _search(**_kwargs):
             return [
-                {"content": "贾母参加宴会"},
-                {"content": "林黛玉在大观园抚琴"},
+                {"content": "\u8d3e\u6bcd\u53c2\u52a0\u5bb4\u4f1a"},
+                {"content": "\u6797\u9edb\u7389\u5728\u5927\u89c2\u56ed\u629a\u7434"},
             ]
 
         monkeypatch.setitem(
@@ -219,6 +340,7 @@ class TestSearchGraph:
             lambda: {"INSIGHTS": _FakeSearchType.INSIGHTS},
         )
         monkeypatch.setitem(cognee_service.__dict__, "_DEFAULT_SEARCH_TYPE", _FakeSearchType.INSIGHTS)
+        monkeypatch.setitem(cognee_service.__dict__, "prepare_cognee_search_runtime", AsyncMock())
 
         class _CogneeModule:
             search = staticmethod(_search)
@@ -229,7 +351,7 @@ class TestSearchGraph:
 
         results = await cognee_service.search_graph(
             project_id="p1",
-            query="林黛玉",
+            query="\u6797\u9edb\u7389",
             search_type="INSIGHTS",
             top_k=2,
             use_reranker=True,
@@ -237,7 +359,7 @@ class TestSearchGraph:
         )
 
         assert len(results) == 1
-        assert "林黛玉" in str(results[0].get("content") or "")
+        assert "\u6797\u9edb\u7389" in str(results[0].get("content") or "")
         assert results[0].get("reranker_source") == "lexical_fallback"
 
     @pytest.mark.asyncio
@@ -253,7 +375,9 @@ class TestSearchGraph:
                 "content": '{"ranked":[{"id":2,"score":0.99},{"id":1,"score":0.10}]}'
             }
         )
+        prepare_mock = AsyncMock()
         monkeypatch.setitem(cognee_service.__dict__, "call_llm", llm_mock)
+        monkeypatch.setitem(cognee_service.__dict__, "prepare_cognee_search_runtime", prepare_mock)
         monkeypatch.setitem(
             cognee_service.__dict__,
             "_get_search_type_map",
@@ -306,7 +430,11 @@ class TestAddAndCognify:
         with pytest.raises(RuntimeError, match="cognify failed"):
             await cognee_service.add_and_cognify("p1", "text")
         add_mock.assert_awaited_once()
-        cognify_mock.assert_awaited_once_with(datasets=["project-p1"])
+        cognify_kwargs = cognify_mock.await_args.kwargs
+        assert cognify_kwargs["datasets"] == ["project-p1"]
+        schema = cognify_kwargs["graph_model"].model_json_schema()
+        assert schema["additionalProperties"] is False
+        assert set(schema["required"]) == {"nodes", "edges"}
         memify_mock.assert_not_called()
 
     @pytest.mark.asyncio
@@ -328,8 +456,128 @@ class TestAddAndCognify:
 
         assert dataset == "project-p1"
         add_mock.assert_awaited_once_with("test content", dataset_name="project-p1")
-        cognify_mock.assert_awaited_once_with(datasets=["project-p1"])
+        cognify_kwargs = cognify_mock.await_args.kwargs
+        assert cognify_kwargs["datasets"] == ["project-p1"]
+        schema = cognify_kwargs["graph_model"].model_json_schema()
+        assert schema["additionalProperties"] is False
+        assert set(schema["required"]) == {"nodes", "edges"}
         memify_mock.assert_awaited_once_with(dataset="project-p1")
+
+    def test_strict_cognee_summary_schema_is_provider_compatible(self):
+        schema = cognee_service._StrictCogneeSummarizedContent.model_json_schema()
+
+        assert schema["additionalProperties"] is False
+        assert set(schema["required"]) == {"summary", "description"}
+
+    @pytest.mark.asyncio
+    async def test_add_and_cognify_rewrites_structured_schema_errors(self, monkeypatch: pytest.MonkeyPatch):
+        add_mock = AsyncMock()
+        cognify_mock = AsyncMock(
+            side_effect=RuntimeError(
+                "Invalid schema for response_format 'KnowledgeGraph': In context=(), 'additionalProperties' is required to be supplied and to be false."
+            )
+        )
+        memify_mock = AsyncMock()
+
+        class _CogneeModule:
+            add = add_mock
+            cognify = cognify_mock
+            memify = memify_mock
+
+        import sys
+
+        monkeypatch.setitem(sys.modules, "cognee", _CogneeModule())
+
+        with pytest.raises(RuntimeError, match="provider rejected Cognee structured JSON schema"):
+            await cognee_service.add_and_cognify("p1", "text")
+        memify_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_and_cognify_rewrites_provider_timeout_errors(self, monkeypatch: pytest.MonkeyPatch):
+        add_mock = AsyncMock()
+        cognify_mock = AsyncMock(
+            side_effect=RuntimeError(
+                "Timeout Error: OpenAIException - <!DOCTYPE html><title>504: Gateway time-out</title>"
+            )
+        )
+        memify_mock = AsyncMock()
+
+        class _CogneeModule:
+            add = add_mock
+            cognify = cognify_mock
+            memify = memify_mock
+
+        import sys
+
+        monkeypatch.setitem(sys.modules, "cognee", _CogneeModule())
+
+        with pytest.raises(RuntimeError, match="upstream model gateway timed out"):
+            await cognee_service.add_and_cognify("p1", "text")
+        memify_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_and_cognify_caps_graph_runtime_overrides(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MUSEGRAPH_LLM_REQUEST_TIMEOUT_SECONDS", "180")
+        monkeypatch.setenv("MUSEGRAPH_LLM_RETRY_COUNT", "4")
+        monkeypatch.setenv("MUSEGRAPH_GRAPH_BUILD_HEARTBEAT_SECONDS", "0")
+        monkeypatch.setattr(cognee_service, "_configure_cognee_llm", AsyncMock())
+
+        observed: dict[str, int] = {}
+
+        async def _fake_cognify(**_kwargs):
+            observed["timeout"] = cognee_service._runtime_litellm_timeout_seconds()
+            observed["retry_count"] = cognee_service._runtime_litellm_retry_count()
+
+        add_mock = AsyncMock()
+        memify_mock = AsyncMock()
+
+        class _CogneeModule:
+            add = add_mock
+            cognify = staticmethod(_fake_cognify)
+            memify = memify_mock
+
+        import sys
+
+        monkeypatch.setitem(sys.modules, "cognee", _CogneeModule())
+
+        dataset = await cognee_service.add_and_cognify("p1", "text")
+
+        assert dataset == "project-p1"
+        assert observed == {"timeout": 120, "retry_count": 1}
+        assert cognee_service._runtime_litellm_timeout_seconds() == 180
+        assert cognee_service._runtime_litellm_retry_count() == 4
+
+    @pytest.mark.asyncio
+    async def test_add_and_cognify_emits_heartbeat_for_long_cognify(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MUSEGRAPH_GRAPH_BUILD_HEARTBEAT_SECONDS", "0.01")
+        monkeypatch.setenv("MUSEGRAPH_LLM_RETRY_COUNT", "0")
+        monkeypatch.setattr(cognee_service, "_configure_cognee_llm", AsyncMock())
+
+        events: list[tuple[int, str]] = []
+
+        async def _fake_cognify(**_kwargs):
+            await asyncio.sleep(0.03)
+
+        add_mock = AsyncMock()
+        memify_mock = AsyncMock()
+
+        class _CogneeModule:
+            add = add_mock
+            cognify = staticmethod(_fake_cognify)
+            memify = memify_mock
+
+        import sys
+
+        monkeypatch.setitem(sys.modules, "cognee", _CogneeModule())
+
+        await cognee_service.add_and_cognify(
+            "p1",
+            "text",
+            progress_callback=lambda progress, message: events.append((progress, message)),
+        )
+
+        assert any("waiting for provider responses" in message.lower() for _, message in events)
+
 
 
 class TestGetGraphVisualization:

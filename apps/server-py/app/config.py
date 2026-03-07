@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     APP_URL: str = "http://localhost:3000"
     AUTO_SEED_DATA: bool = False
 
+    TELEMETRY_DISABLED: bool = True
     # Optional bootstrap for default provider/model/pricing
     AUTO_BOOTSTRAP_NEWAPI: bool = False
     NEWAPI_PROVIDER_NAME: str = "NewAPI"

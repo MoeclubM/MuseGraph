@@ -9,7 +9,7 @@ const props = defineProps<{
 
 const classes = computed(() =>
   cn(
-    'muse-surface rounded-2xl overflow-hidden',
+    'muse-surface rounded-[1.35rem] overflow-hidden',
     props.padding !== false && 'p-4 sm:p-5',
     props.stack !== false && 'card-stack'
   )
@@ -24,6 +24,6 @@ const classes = computed(() =>
 
 <style scoped>
 .card-stack > * + * {
-  margin-top: 0.875rem;
+  margin-top: 1rem;
 }
 </style>

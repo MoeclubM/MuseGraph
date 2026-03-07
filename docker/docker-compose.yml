@@ -42,7 +42,7 @@ services:
     volumes:
       - neo4j_data:/data
     healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "musegraph123", "RETURN 1"]
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p musegraph123 'RETURN 1'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -70,6 +70,7 @@ services:
       GRAPH_DATABASE_PASSWORD: musegraph123
       ENABLE_BACKEND_ACCESS_CONTROL: "false"
       APP_URL: http://localhost:3000
+      TELEMETRY_DISABLED: "true"
       AUTO_SEED_DATA: ${AUTO_SEED_DATA:-true}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@example.com}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-Admin123!Pass}

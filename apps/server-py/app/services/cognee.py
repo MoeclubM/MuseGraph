@@ -1,5 +1,8 @@
 import asyncio
+import contextvars
+from contextlib import contextmanager, suppress
 from enum import Enum
+import importlib
 import json
 import logging
 import os
@@ -7,19 +10,21 @@ import re
 from typing import Any, Callable
 
 import asyncpg
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.config import AIProviderConfig
-from app.services.ai import DEFAULT_MODEL, _load_llm_runtime_config, call_llm, detect_provider
+from app.models.project import TextProject
+from app.services.ai import DEFAULT_MODEL, _load_llm_runtime_config, call_llm, detect_provider, resolve_component_model
 from app.services.llm_json import extract_json_object
 from app.services.provider_models import get_provider_chat_models, get_provider_embedding_models
 
 logger = logging.getLogger(__name__)
 
-# Lazy-loaded SearchType mapping — built once on first use.
+# Lazy-loaded SearchType mapping built once on first use.
 _SEARCH_TYPE_MAP: dict[str, Any] | None = None
 _DEFAULT_SEARCH_TYPE: Any | None = None
 _MAX_VISUALIZATION_NODES = 320
@@ -31,6 +36,130 @@ _MAX_ALIAS_DECISION_CACHE = 128
 _TIKTOKEN_PATCHED = False
 _LITELLM_AEMBEDDING_PATCHED = False
 _LITELLM_ACOMPLETION_PATCHED = False
+_LITELLM_TIMEOUT_SECONDS_OVERRIDE: contextvars.ContextVar[int | None] = contextvars.ContextVar("musegraph_litellm_timeout_seconds_override", default=None)
+_LITELLM_RETRY_COUNT_OVERRIDE: contextvars.ContextVar[int | None] = contextvars.ContextVar("musegraph_litellm_retry_count_override", default=None)
+_LITELLM_RETRY_INTERVAL_SECONDS_OVERRIDE: contextvars.ContextVar[float | None] = contextvars.ContextVar("musegraph_litellm_retry_interval_seconds_override", default=None)
+
+_COGNEE_RUNTIME_CACHE_TARGETS: tuple[tuple[str, str], ...] = (
+    ("cognee.infrastructure.llm.config", "get_llm_config"),
+    ("cognee.modules.cognify.config", "get_cognify_config"),
+    ("cognee.infrastructure.databases.vector.config", "get_vectordb_config"),
+    ("cognee.infrastructure.databases.vector.embeddings.config", "get_embedding_config"),
+    ("cognee.infrastructure.databases.vector.embeddings.get_embedding_engine", "create_embedding_engine"),
+    ("cognee.infrastructure.databases.vector.create_vector_engine", "_create_vector_engine"),
+)
+
+class _StrictCogneeNode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    type: str
+    description: str
+
+
+class _StrictCogneeEdge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_node_id: str
+    target_node_id: str
+    relationship_name: str
+
+
+class _StrictCogneeKnowledgeGraph(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nodes: list[_StrictCogneeNode]
+    edges: list[_StrictCogneeEdge]
+
+
+class _StrictCogneeSummarizedContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    description: str
+
+
+def _strict_cognee_get_cognify_config(original_getter: Callable[[], Any]) -> Callable[[], Any]:
+    def _patched() -> Any:
+        cfg = original_getter()
+        try:
+            cfg.summarization_model = _StrictCogneeSummarizedContent
+        except Exception:
+            pass
+        return cfg
+
+    setattr(_patched, "_musegraph_strict_cognify", True)
+    return _patched
+
+
+def _patch_cognee_graph_models() -> type[BaseModel]:
+    graph_model = _StrictCogneeKnowledgeGraph
+    patches: dict[str, dict[str, Any]] = {
+        "cognee.shared.data_models": {
+            "Node": _StrictCogneeNode,
+            "Edge": _StrictCogneeEdge,
+            "KnowledgeGraph": graph_model,
+            "SummarizedContent": _StrictCogneeSummarizedContent,
+        },
+        "cognee.api.v1.cognify.cognify": {
+            "KnowledgeGraph": graph_model,
+        },
+        "cognee.tasks.graph.extract_graph_from_data": {
+            "KnowledgeGraph": graph_model,
+        },
+        "cognee.modules.cognify.config": {
+            "SummarizedContent": _StrictCogneeSummarizedContent,
+        },
+    }
+    config_getter = None
+    for module_name, attrs in patches.items():
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        for attr_name, attr_value in attrs.items():
+            try:
+                setattr(module, attr_name, attr_value)
+            except Exception:
+                continue
+        if module_name == "cognee.modules.cognify.config":
+            original_getter = getattr(module, "get_cognify_config", None)
+            if callable(original_getter):
+                if getattr(original_getter, "_musegraph_strict_cognify", False):
+                    config_getter = original_getter
+                else:
+                    config_getter = _strict_cognee_get_cognify_config(original_getter)
+                    setattr(module, "get_cognify_config", config_getter)
+    if callable(config_getter):
+        for module_name in (
+            "cognee.api.v1.cognify.cognify",
+            "cognee.tasks.summarization.summarize_text",
+        ):
+            try:
+                module = importlib.import_module(module_name)
+                setattr(module, "get_cognify_config", config_getter)
+            except Exception:
+                continue
+    _clear_cognee_runtime_caches()
+    if callable(config_getter):
+        try:
+            config_getter()
+        except Exception:
+            pass
+    return graph_model
+
+
+def _is_cognee_structured_schema_error(exc: Exception) -> bool:
+    text = str(exc or "")
+    lowered = text.lower()
+    if "invalid schema for response_format" not in lowered:
+        return False
+    return (
+        "additionalproperties" in lowered
+        or "'required' is required" in lowered
+        or "required to be supplied" in lowered
+    )
 
 _NODE_TYPE_ALIASES: dict[str, str] = {
     "textsummary": "TextSummary",
@@ -67,25 +196,96 @@ _STRUCTURAL_NODE_NAMES: set[str] = {
 _ALIAS_DECISION_CACHE: dict[str, dict[tuple[str, str], bool]] = {}
 
 
-def _runtime_litellm_timeout_seconds() -> int:
+def _normalize_runtime_timeout_seconds(value: Any, default: int) -> int:
     try:
-        return max(5, min(1800, int(os.getenv("MUSEGRAPH_LLM_REQUEST_TIMEOUT_SECONDS", "180"))))
+        return max(5, min(1800, int(value)))
     except Exception:
-        return 180
+        return default
+
+
+def _normalize_runtime_retry_count(value: Any, default: int) -> int:
+    try:
+        return max(0, min(10, int(value)))
+    except Exception:
+        return default
+
+
+def _normalize_runtime_retry_interval_seconds(value: Any, default: float) -> float:
+    try:
+        return max(0.0, min(60.0, float(value)))
+    except Exception:
+        return default
+
+
+def _runtime_litellm_timeout_seconds() -> int:
+    override = _LITELLM_TIMEOUT_SECONDS_OVERRIDE.get()
+    if override is not None:
+        return _normalize_runtime_timeout_seconds(override, 180)
+    return _normalize_runtime_timeout_seconds(os.getenv("MUSEGRAPH_LLM_REQUEST_TIMEOUT_SECONDS", "180"), 180)
 
 
 def _runtime_litellm_retry_count() -> int:
-    try:
-        return max(0, min(10, int(os.getenv("MUSEGRAPH_LLM_RETRY_COUNT", "4"))))
-    except Exception:
-        return 4
+    override = _LITELLM_RETRY_COUNT_OVERRIDE.get()
+    if override is not None:
+        return _normalize_runtime_retry_count(override, 4)
+    return _normalize_runtime_retry_count(os.getenv("MUSEGRAPH_LLM_RETRY_COUNT", "4"), 4)
 
 
 def _runtime_litellm_retry_interval_seconds() -> float:
+    override = _LITELLM_RETRY_INTERVAL_SECONDS_OVERRIDE.get()
+    if override is not None:
+        return _normalize_runtime_retry_interval_seconds(override, 2.0)
+    return _normalize_runtime_retry_interval_seconds(os.getenv("MUSEGRAPH_LLM_RETRY_INTERVAL_SECONDS", "2"), 2.0)
+
+
+@contextmanager
+def _override_litellm_runtime(
+    *,
+    timeout_seconds: int | None = None,
+    retry_count: int | None = None,
+    retry_interval_seconds: float | None = None,
+):
+    tokens: list[tuple[contextvars.ContextVar[Any], contextvars.Token[Any]]] = []
     try:
-        return max(0.0, min(60.0, float(os.getenv("MUSEGRAPH_LLM_RETRY_INTERVAL_SECONDS", "2"))))
-    except Exception:
-        return 2.0
+        if timeout_seconds is not None:
+            tokens.append(
+                (
+                    _LITELLM_TIMEOUT_SECONDS_OVERRIDE,
+                    _LITELLM_TIMEOUT_SECONDS_OVERRIDE.set(_normalize_runtime_timeout_seconds(timeout_seconds, 180)),
+                )
+            )
+        if retry_count is not None:
+            tokens.append(
+                (
+                    _LITELLM_RETRY_COUNT_OVERRIDE,
+                    _LITELLM_RETRY_COUNT_OVERRIDE.set(_normalize_runtime_retry_count(retry_count, 4)),
+                )
+            )
+        if retry_interval_seconds is not None:
+            tokens.append(
+                (
+                    _LITELLM_RETRY_INTERVAL_SECONDS_OVERRIDE,
+                    _LITELLM_RETRY_INTERVAL_SECONDS_OVERRIDE.set(
+                        _normalize_runtime_retry_interval_seconds(retry_interval_seconds, 2.0)
+                    ),
+                )
+            )
+        yield
+    finally:
+        for var, token in reversed(tokens):
+            var.reset(token)
+
+
+def _runtime_graph_build_request_timeout_seconds() -> int:
+    return max(30, min(120, _runtime_litellm_timeout_seconds()))
+
+
+def _runtime_graph_build_retry_count() -> int:
+    return max(0, min(1, _runtime_litellm_retry_count()))
+
+
+def _runtime_graph_build_heartbeat_interval_seconds() -> float:
+    return _normalize_runtime_retry_interval_seconds(os.getenv("MUSEGRAPH_GRAPH_BUILD_HEARTBEAT_SECONDS", "15"), 15.0)
 
 
 def _is_retryable_litellm_error(exc: Exception) -> bool:
@@ -102,6 +302,23 @@ def _is_retryable_litellm_error(exc: Exception) -> bool:
     text = str(exc or "").lower()
     retryable_markers = ("timeout", "timed out", "gateway", "temporary", "rate limit", "connection")
     return any(marker in text for marker in retryable_markers)
+
+
+def _is_provider_gateway_timeout_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int) and status_code in {408, 504}:
+        return True
+
+    text = str(exc or "").lower()
+    timeout_markers = (
+        "504: gateway time-out",
+        "504 gateway time-out",
+        "gateway time-out",
+        "gateway timeout",
+        "timeout error",
+        "timed out",
+    )
+    return any(marker in text for marker in timeout_markers)
 
 
 async def _run_litellm_with_retry(request_factory: Callable[[], Any]) -> Any:
@@ -127,7 +344,7 @@ def _normalize_entity_alias_key(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    normalized = re.sub(r"[\s·•・'\"`’‘“”\-\._:：,，;；/\\\(\)\[\]\{\}<>《》【】!！?？]+", "", text)
+    normalized = re.sub(r"[\\s\u00b7\u2022\u30fb'\\\"`\u2019\u2018\u201c\u201d\\-\\._:\uff1a,\uff0c;\uff1b/\\\\\\(\\)\\[\\]\\{\\}<>\u300a\u300b\u3010\u3011!\uff01?\uff1f]+", "", text)
     return normalized.lower()
 
 
@@ -367,13 +584,13 @@ async def _resolve_alias_merge_decisions_with_llm(
 
     selected_model = (model or "").strip() or DEFAULT_MODEL
     prompt = (
-        "你是知识图谱实体对齐器。请判断每对名称是否指向同一个实体。\n"
-        "严格规则：\n"
-        "1) 人物名 vs 事件短语（如“贾母”与“贾母去世/贾母丧事”）= false。\n"
-        "2) 人物名 vs 场景地点短语（如“贾母屋/贾母正室”）= false。\n"
-        "3) 人物全名与简称/别称（如“林黛玉”与“黛玉”）= true。\n"
-        "4) 不确定时返回 false。\n"
-        "只输出 JSON，不要解释。格式：\n"
+        "You are a knowledge-graph entity aligner. Decide whether each pair refers to the same entity.\\n"
+        "Strict rules:\\n"
+        "1) Person name vs event phrase (for example, Jia Mu vs Death of Jia Mu) = false.\\n"
+        "2) Person name vs scene or location phrase (for example, Jia Mu room) = false.\\n"
+        "3) Full person name vs short name or alias (for example, Lin Daiyu vs Daiyu) = true.\\n"
+        "4) If uncertain, return false.\\n"
+        "Output JSON only, with no explanation. Format:\\n"
         '{"decisions":[{"left":"...","right":"...","same_entity":true,"confidence":0.0}]}\n\n'
         f"Pairs:\n{json.dumps([{'left': item['left'], 'right': item['right']} for item in pairs], ensure_ascii=False)}"
     )
@@ -828,15 +1045,15 @@ def _patch_cognee_runtime_compatibility() -> None:
     if not _LITELLM_AEMBEDDING_PATCHED:
         try:
             import litellm
-            original = litellm.aembedding
-            if getattr(original, "__musegraph_patched__", False):
+            embedding_original = litellm.aembedding
+            if getattr(embedding_original, "__musegraph_patched__", False):
                 _LITELLM_AEMBEDDING_PATCHED = True
             else:
-                async def _patched_aembedding(*args, **kwargs):
+                async def _patched_aembedding(*args, _embedding_original=embedding_original, **kwargs):
                     kwargs.pop("dimensions", None)
                     kwargs.setdefault("timeout", _runtime_litellm_timeout_seconds())
                     kwargs.setdefault("num_retries", 0)
-                    return await _run_litellm_with_retry(lambda: original(*args, **kwargs))
+                    return await _run_litellm_with_retry(lambda: _embedding_original(*args, **kwargs))
 
                 setattr(_patched_aembedding, "__musegraph_patched__", True)
                 litellm.aembedding = _patched_aembedding
@@ -871,6 +1088,7 @@ async def setup_cognee():
         # Startup should not hard-fail on provider connectivity before WebUI runtime
         # configuration is loaded for each graph task.
         os.environ.setdefault("COGNEE_SKIP_CONNECTION_TEST", "true")
+        _set_runtime_env("TELEMETRY_DISABLED", "true" if settings.TELEMETRY_DISABLED else "")
         _patch_cognee_runtime_compatibility()
         import cognee
 
@@ -908,8 +1126,53 @@ def _with_model_prefix(model: str, provider: str) -> str:
         return normalized
     if "/" in normalized:
         return normalized
-    prefix = "anthropic" if provider == "anthropic_compatible" else "openai"
+    provider_key = str(provider or "").strip().lower()
+    if provider_key in {"anthropic", "anthropic_compatible"}:
+        prefix = "anthropic"
+    elif provider_key in {"gemini", "mistral", "bedrock", "ollama", "llama_cpp"}:
+        prefix = provider_key
+    else:
+        prefix = "openai"
     return f"{prefix}/{normalized}"
+
+
+def _set_runtime_env(key: str, value: str | None) -> None:
+    normalized = str(value or "").strip()
+    if normalized:
+        os.environ[key] = normalized
+        return
+    os.environ.pop(key, None)
+
+
+def _resolve_cognee_runtime_provider(provider: str, *, endpoint: str | None, purpose: str) -> str:
+    normalized = str(provider or "").strip().lower()
+    if normalized == "openai_compatible":
+        # Cognee's current CUSTOM LLM adapter drops llm_endpoint when building the client.
+        # Keep OpenAI-compatible gateways on the openai provider and pass api_base separately.
+        return "openai"
+    if normalized == "anthropic_compatible":
+        if purpose == "embedding":
+            raise RuntimeError(
+                "Cognee embedding does not support anthropic-compatible providers. "
+                "Please configure an OpenAI-compatible embedding provider in WebUI."
+            )
+        return "anthropic"
+    return normalized or "openai"
+
+
+def _clear_cognee_runtime_caches() -> None:
+    for module_name, attr_name in _COGNEE_RUNTIME_CACHE_TARGETS:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        target = getattr(module, attr_name, None)
+        cache_clear = getattr(target, "cache_clear", None)
+        if callable(cache_clear):
+            try:
+                cache_clear()
+            except Exception:
+                continue
 
 
 def _strip_model_provider_prefix(model: Any) -> str:
@@ -981,7 +1244,8 @@ def _apply_cognee_embedding_config(
         return
     selected_api_key = (api_key or "").strip()
     selected_endpoint = (endpoint or "").strip()
-    model_with_prefix = _with_model_prefix(selected_model, provider)
+    cognee_provider = _resolve_cognee_runtime_provider(provider, endpoint=selected_endpoint, purpose="embedding")
+    model_with_prefix = _with_model_prefix(selected_model, cognee_provider)
 
     payload: dict[str, Any] = {"embedding_model": model_with_prefix}
     if selected_api_key:
@@ -999,12 +1263,10 @@ def _apply_cognee_embedding_config(
                 except Exception:
                     continue
 
-    os.environ["EMBEDDING_MODEL"] = model_with_prefix
-    os.environ["EMBEDDING_PROVIDER"] = provider
-    if selected_api_key:
-        os.environ["EMBEDDING_API_KEY"] = selected_api_key
-    if selected_endpoint:
-        os.environ["EMBEDDING_ENDPOINT"] = selected_endpoint
+    _set_runtime_env("EMBEDDING_MODEL", model_with_prefix)
+    _set_runtime_env("EMBEDDING_PROVIDER", cognee_provider)
+    _set_runtime_env("EMBEDDING_API_KEY", selected_api_key)
+    _set_runtime_env("EMBEDDING_ENDPOINT", selected_endpoint)
 
 
 async def _configure_cognee_llm(
@@ -1014,8 +1276,8 @@ async def _configure_cognee_llm(
     db: AsyncSession | None = None,
 ) -> None:
     os.environ.setdefault("COGNEE_SKIP_CONNECTION_TEST", "true")
+    _set_runtime_env("TELEMETRY_DISABLED", "true" if settings.TELEMETRY_DISABLED else "")
     _patch_cognee_runtime_compatibility()
-    import cognee
     runtime_cfg = await _load_llm_runtime_config(db)
     os.environ["MUSEGRAPH_LLM_REQUEST_TIMEOUT_SECONDS"] = str(
         int(runtime_cfg.get("llm_request_timeout_seconds", 180))
@@ -1031,6 +1293,7 @@ async def _configure_cognee_llm(
 
     selected_model = (model or "").strip()
     selected_embedding_model = (embedding_model or "").strip()
+    config_obj: Any = None
     if db is None:
         # Compatibility fallback for tests/standalone calls.
         provider = detect_provider(_strip_model_provider_prefix(selected_model)) if selected_model else "openai_compatible"
@@ -1041,17 +1304,24 @@ async def _configure_cognee_llm(
         if not api_key:
             logger.debug("Skip Cognee runtime provider injection because db is None and no fallback key is configured.")
             return
-        llm_model_with_prefix = _with_model_prefix(selected_model, provider)
-        llm_config: dict[str, Any] = {"llm_api_key": api_key, "llm_model": llm_model_with_prefix}
+        llm_provider = _resolve_cognee_runtime_provider(provider, endpoint=base_url, purpose="llm")
+        llm_model_with_prefix = _with_model_prefix(selected_model, llm_provider)
+        llm_config: dict[str, Any] = {
+            "llm_api_key": api_key,
+            "llm_model": llm_model_with_prefix,
+            "llm_provider": llm_provider,
+        }
         if base_url:
             llm_config["llm_endpoint"] = base_url
+        import cognee
+
         config_obj = getattr(cognee, "config", None)
         if config_obj and hasattr(config_obj, "set_llm_config"):
             config_obj.set_llm_config(llm_config)
-        os.environ["LLM_MODEL"] = llm_model_with_prefix
-        os.environ["LLM_API_KEY"] = api_key
-        if base_url:
-            os.environ["LLM_ENDPOINT"] = base_url
+        _set_runtime_env("LLM_PROVIDER", llm_provider)
+        _set_runtime_env("LLM_MODEL", llm_model_with_prefix)
+        _set_runtime_env("LLM_API_KEY", api_key)
+        _set_runtime_env("LLM_ENDPOINT", base_url)
         _apply_cognee_embedding_config(
             config_obj=config_obj,
             model=selected_embedding_model or os.getenv("EMBEDDING_MODEL", "").strip() or None,
@@ -1059,6 +1329,7 @@ async def _configure_cognee_llm(
             endpoint=(os.getenv("EMBEDDING_ENDPOINT", "").strip() or base_url),
             provider=os.getenv("EMBEDDING_PROVIDER", "").strip() or provider,
         )
+        _clear_cognee_runtime_caches()
         return
 
     result = await db.execute(
@@ -1145,24 +1416,33 @@ async def _configure_cognee_llm(
         str(embedding_provider_cfg.provider or "openai_compatible").strip() or "openai_compatible"
     )
     embedding_base_url = str(getattr(embedding_provider_cfg, "base_url", "") or "").strip() or None
+    cognee_llm_provider = _resolve_cognee_runtime_provider(llm_provider_type, endpoint=llm_base_url, purpose="llm")
+    cognee_embedding_provider = _resolve_cognee_runtime_provider(
+        embedding_provider_type,
+        endpoint=embedding_base_url,
+        purpose="embedding",
+    )
 
     llm_config: dict[str, Any] = {
         "llm_api_key": llm_api_key,
-        "llm_model": _with_model_prefix(resolved_model, llm_provider_type),
+        "llm_model": _with_model_prefix(resolved_model, cognee_llm_provider),
+        "llm_provider": cognee_llm_provider,
     }
     if llm_base_url:
         llm_config["llm_endpoint"] = llm_base_url
+    import cognee
+
     config_obj = getattr(cognee, "config", None)
     if config_obj and hasattr(config_obj, "set_llm_config"):
         config_obj.set_llm_config(llm_config)
 
-    os.environ["LLM_MODEL"] = str(llm_config["llm_model"])
-    os.environ["LLM_API_KEY"] = llm_api_key
-    os.environ["COGNEE_LLM_MODEL"] = str(llm_config["llm_model"])
-    os.environ["COGNEE_LLM_API_KEY"] = llm_api_key
-    if llm_base_url:
-        os.environ["LLM_ENDPOINT"] = llm_base_url
-        os.environ["COGNEE_LLM_BASE_URL"] = llm_base_url
+    _set_runtime_env("LLM_PROVIDER", cognee_llm_provider)
+    _set_runtime_env("LLM_MODEL", str(llm_config["llm_model"]))
+    _set_runtime_env("LLM_API_KEY", llm_api_key)
+    _set_runtime_env("COGNEE_LLM_MODEL", str(llm_config["llm_model"]))
+    _set_runtime_env("COGNEE_LLM_API_KEY", llm_api_key)
+    _set_runtime_env("LLM_ENDPOINT", llm_base_url)
+    _set_runtime_env("COGNEE_LLM_BASE_URL", llm_base_url)
 
     _apply_cognee_embedding_config(
         config_obj=config_obj,
@@ -1171,12 +1451,15 @@ async def _configure_cognee_llm(
         endpoint=embedding_base_url,
         provider=embedding_provider_type,
     )
+    _clear_cognee_runtime_caches()
     logger.info(
-        "Configured Cognee runtime provider settings (llm_provider=%s, llm_model=%s, embedding_provider=%s, embedding_model=%s)",
-        str(getattr(llm_provider, "name", "") or llm_provider.provider),
-        _with_model_prefix(resolved_model, llm_provider_type),
-        str(getattr(embedding_provider_cfg, "name", "") or embedding_provider_cfg.provider),
-        _with_model_prefix(resolved_embedding_model, embedding_provider_type),
+        "Configured Cognee runtime provider settings (llm_provider=%s, llm_model=%s, llm_endpoint=%s, embedding_provider=%s, embedding_model=%s, embedding_endpoint=%s)",
+        cognee_llm_provider,
+        _with_model_prefix(resolved_model, cognee_llm_provider),
+        llm_base_url or "",
+        cognee_embedding_provider,
+        _with_model_prefix(resolved_embedding_model, cognee_embedding_provider),
+        embedding_base_url or "",
     )
 
 
@@ -1241,8 +1524,51 @@ async def add_and_cognify(
         upload_progress = 5 + int((idx / total_chunks) * 55)
         _emit_progress(upload_progress, f"Uploading chunks {idx}/{total_chunks}...")
 
+    strict_graph_model = _patch_cognee_graph_models()
+
+    async def _heartbeat_graph_extraction() -> None:
+        interval_seconds = _runtime_graph_build_heartbeat_interval_seconds()
+        if interval_seconds <= 0:
+            return
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        while True:
+            await asyncio.sleep(interval_seconds)
+            elapsed_seconds = max(1, int(loop.time() - started_at))
+            _emit_progress(
+                70,
+                f"Extracting entities and relations... waiting for provider responses ({elapsed_seconds}s elapsed)",
+            )
+
     _emit_progress(70, "Extracting entities and relations...")
-    await cognee.cognify(datasets=[dataset_name])
+    graph_request_timeout_seconds = _runtime_graph_build_request_timeout_seconds()
+    graph_retry_count = _runtime_graph_build_retry_count()
+    heartbeat_task: asyncio.Task[Any] | None = None
+    try:
+        with _override_litellm_runtime(
+            timeout_seconds=graph_request_timeout_seconds,
+            retry_count=graph_retry_count,
+        ):
+            heartbeat_task = asyncio.create_task(_heartbeat_graph_extraction())
+            await cognee.cognify(datasets=[dataset_name], graph_model=strict_graph_model)
+    except Exception as exc:
+        if _is_cognee_structured_schema_error(exc):
+            raise RuntimeError(
+                "Graph extraction failed because the provider rejected Cognee structured JSON schema. "
+                "The selected graph-build model must support strict OpenAI-compatible json_schema outputs."
+            ) from exc
+        if _is_provider_gateway_timeout_error(exc):
+            raise RuntimeError(
+                "Graph extraction failed because the upstream model gateway timed out. "
+                "The provider may have received the request but did not return a result in time. "
+                "Check provider stability or reduce graph input size before retrying."
+            ) from exc
+        raise
+    finally:
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
     # Ensure enrichment is applied to the same dataset, not main_dataset.
     _emit_progress(88, "Applying memory enrichment...")
     memify_timeout_seconds = 180
@@ -1467,6 +1793,20 @@ async def _rerank_search_results_with_llm(
     return [row[2] for row in scored_rows[:limit]]
 
 
+async def prepare_cognee_search_runtime(project_id: str, db: AsyncSession) -> None:
+    """Configure Cognee runtime before graph search requests."""
+    result = await db.execute(select(TextProject).where(TextProject.id == project_id))
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise RuntimeError(f"Project {project_id} not found for Cognee search runtime configuration.")
+
+    await _configure_cognee_llm(
+        model=resolve_component_model(project, "graph_build"),
+        embedding_model=resolve_component_model(project, "graph_embedding"),
+        db=db,
+    )
+
+
 async def search_graph(
     project_id: str,
     query: str,
@@ -1479,6 +1819,9 @@ async def search_graph(
     reranker_top_n: int | None = None,
 ) -> list[dict[str, Any]]:
     """Search the knowledge graph using Cognee's native search."""
+    if db is not None:
+        await prepare_cognee_search_runtime(project_id, db)
+
     import cognee
 
     global _DEFAULT_SEARCH_TYPE

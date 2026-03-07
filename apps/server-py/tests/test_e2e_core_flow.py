@@ -28,6 +28,42 @@ def _get_endpoint_globals(app, endpoint_name: str) -> dict:
     raise RuntimeError(f"Endpoint {endpoint_name!r} not found")
 
 
+def _prepared_package(g: dict, provenance: dict, *, profile_name: str = "Agent1") -> dict:
+    return g["_inject_provenance"](
+        {
+            "profiles": [
+                {
+                    "name": profile_name,
+                    "role": "participant",
+                    "persona": "Tracks narrative shifts",
+                    "stance": "neutral",
+                    "likely_actions": ["Post updates"],
+                }
+            ],
+            "simulation_config": {
+                "active_platforms": ["twitter"],
+                "time_config": {
+                    "total_hours": 24,
+                    "minutes_per_round": 60,
+                    "peak_hours": [19, 20],
+                    "off_peak_hours": [1, 2],
+                },
+                "events": [{"title": "Kickoff", "trigger_hour": 1, "description": "Start"}],
+                "agent_activity": [
+                    {
+                        "name": profile_name,
+                        "activity_level": 0.6,
+                        "posts_per_hour": 1.0,
+                        "response_delay_minutes": 30,
+                        "stance": "neutral",
+                    }
+                ],
+            },
+        },
+        provenance,
+    )
+
+
 def _chapter(chapter_id: str, content: str):
     now = datetime.now(timezone.utc)
     return SimpleNamespace(
@@ -175,7 +211,7 @@ class TestE2ESimulationFlow:
         )
         g = _get_endpoint_globals(app, "start_simulation")
         expected_provenance = g["_build_provenance"](source_chapter_ids=[], text="Some content")
-        package = g["_inject_provenance"]({}, expected_provenance)
+        package = _prepared_package(g, expected_provenance)
         mock_refresh = AsyncMock(return_value={"latest_package": package})
         mock_build = AsyncMock(
             return_value=(

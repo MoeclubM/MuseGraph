@@ -32,12 +32,12 @@ const emit = defineEmits<{
 }>()
 
 const inputVariants = cva(
-  'h-9 w-full rounded-xl border border-stone-300/90 bg-stone-100/92 px-3 text-sm text-stone-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] outline-none transition-all duration-200 placeholder:text-stone-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800/88 dark:text-zinc-100 dark:placeholder:text-zinc-500',
+  'muse-field-base muse-focus-ring h-11 w-full rounded-md px-3.5 text-sm outline-none',
   {
     variants: {
       state: {
-        default: 'focus-visible:border-amber-500 focus-visible:ring-[3px] focus-visible:ring-amber-500/35',
-        error: 'border-red-500/90 focus-visible:border-red-500 focus-visible:ring-[3px] focus-visible:ring-red-500/30',
+        default: '',
+        error: 'muse-field-error',
       },
     },
     defaultVariants: {
@@ -74,7 +74,7 @@ function onInput(e: Event) {
 
 <template>
   <div class="space-y-1.5">
-    <label v-if="label" class="block text-sm font-medium text-stone-700 dark:text-stone-300">
+    <label v-if="label" class="block text-sm font-medium text-[color:var(--muse-text-muted)]">
       {{ label }}
     </label>
     <input
@@ -90,6 +90,6 @@ function onInput(e: Event) {
       :class="inputClasses"
       @input="onInput"
     />
-    <p v-if="error" class="text-xs text-red-600 dark:text-red-300">{{ error }}</p>
+    <p v-if="error" class="text-xs text-[color:var(--muse-danger)]">{{ error }}</p>
   </div>
 </template>

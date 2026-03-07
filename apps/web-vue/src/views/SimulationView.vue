@@ -52,6 +52,7 @@ const viewMode = ref<ViewMode>('split')
 const logsExpanded = ref(true)
 const logs = ref<LogEntry[]>([])
 const selectedAgent = ref<string | null>(null)
+const autoPrepareRequestedFor = ref<string | null>(null)
 let timer: ReturnType<typeof setInterval> | null = null
 
 const sourceChapterIds = computed<string[]>(() => {
@@ -71,6 +72,25 @@ const profiles = computed<OasisAgentProfile[]>(() => {
   }))
 })
 
+const simulationStatus = computed(() => String(simulation.value?.status || '').toLowerCase())
+const simulationIsRunning = computed(() => Boolean(runStatus.value?.is_running) || runStatus.value?.status === 'running')
+const hasPreparedRuntime = computed(() => ['ready', 'completed', 'stopped'].includes(simulationStatus.value))
+const canPrepare = computed(() => !!simulation.value && !preparing.value && !running.value && !simulationIsRunning.value)
+const canStart = computed(() => !!simulation.value && hasPreparedRuntime.value && !preparing.value && !running.value && !simulationIsRunning.value)
+const canStop = computed(() => !!simulation.value && !running.value && simulationIsRunning.value)
+const statusHint = computed(() => {
+  if (simulationStatus.value === 'created') {
+    return 'Preparing the simulation runtime automatically. Start becomes available after profiles and config are ready.'
+  }
+  if (simulationStatus.value === 'preparing') {
+    return 'Simulation runtime is preparing. If it stays in this state, use Prepare again to retry with the latest runtime.'
+  }
+  if (simulationIsRunning.value) {
+    return 'Simulation is currently running.'
+  }
+  return ''
+})
+
 const currentStep = computed(() => {
   if (!simulation.value) return 2
   if (simulation.value.status === 'created') return 2
@@ -86,7 +106,7 @@ const currentStep = computed(() => {
 const completedSteps = computed(() => {
   const completed: number[] = [1] // Assume graph is complete since we're here
 
-  if (simulation.value?.status === 'ready' || simulation.value?.status === 'completed') {
+  if (['ready', 'completed', 'stopped'].includes(simulationStatus.value)) {
     completed.push(2)
   }
   if (runStatus.value?.current_round > 0 && !runStatus.value?.is_running) {
@@ -114,6 +134,7 @@ function addLog(level: LogEntry['level'], message: string, source?: string) {
 
 async function loadData() {
   if (!simulationId.value) return
+  let shouldAutoPrepare = false
   loading.value = true
   try {
     simulation.value = await getSimulation(simulationId.value)
@@ -122,7 +143,6 @@ async function loadData() {
     actions.value = actionsData as SimulationAction[]
     reportState.value = await checkReportStatus(simulationId.value)
 
-    // Load interview history
     try {
       interviewHistory.value = await getInterviewHistory({
         simulation_id: simulationId.value,
@@ -132,67 +152,94 @@ async function loadData() {
       interviewHistory.value = []
     }
 
-    addLog('success', '数据刷新完成')
+    shouldAutoPrepare = simulation.value?.status === 'created' && autoPrepareRequestedFor.value !== simulationId.value
+    addLog('success', 'Data refreshed')
   } catch (error: any) {
-    addLog('error', `加载失败：${error.message}`)
+    addLog('error', `Load failed: ${error.message}`)
   } finally {
     loading.value = false
   }
+  if (shouldAutoPrepare) {
+    void handlePrepare({ auto: true })
+  }
 }
 
-async function handlePrepare() {
+async function handlePrepare(options: { auto?: boolean } = {}) {
+  if (!simulationId.value || preparing.value) return
+  if (!options.auto && !canPrepare.value) return
+  if (options.auto) {
+    autoPrepareRequestedFor.value = simulationId.value
+    addLog('info', 'Created simulation detected. Starting automatic prepare...')
+  } else {
+    addLog('info', 'Preparing simulation runtime...')
+  }
   preparing.value = true
-  addLog('info', '正在准备环境...')
   try {
     const result = await prepareSimulation({
       simulation_id: simulationId.value,
       chapter_ids: sourceChapterIds.value.length ? sourceChapterIds.value : undefined,
     })
     if (result.already_prepared) {
-      addLog('success', '环境已准备完成')
-      toast.success('Simulation 已准备完成')
+      addLog('success', 'Simulation runtime is already prepared')
+      if (!options.auto) {
+        toast.success('Simulation is already prepared')
+      }
     } else {
-      addLog('success', '准备任务已启动')
-      toast.success('准备任务已启动')
+      addLog('success', 'Prepare task started')
+      if (!options.auto) {
+        toast.success('Prepare task started')
+      }
     }
     await loadData()
   } catch (error: any) {
-    addLog('error', `准备失败：${error.message}`)
-    toast.error('准备失败')
+    addLog('error', `Prepare failed: ${error.message}`)
+    toast.error(options.auto ? 'Automatic simulation prepare failed' : 'Prepare failed')
   } finally {
     preparing.value = false
   }
 }
 
 async function handleStart() {
+  if (!canStart.value) {
+    const message = statusHint.value || 'Prepare the simulation before starting.'
+    addLog('warning', message)
+    toast.error(message)
+    return
+  }
   running.value = true
-  addLog('info', '正在启动模拟...')
+  addLog('info', 'Starting simulation...')
   try {
     await startSimulation({
       simulation_id: simulationId.value,
       chapter_ids: sourceChapterIds.value.length ? sourceChapterIds.value : undefined,
     })
-    addLog('success', '模拟运行完成')
-    toast.success('Simulation 运行完成')
+    addLog('success', 'Simulation run completed')
+    toast.success('Simulation run completed')
     await loadData()
   } catch (error: any) {
-    addLog('error', `运行失败：${error.message}`)
-    toast.error('运行失败')
+    addLog('error', `Run failed: ${error.message}`)
+    toast.error('Run failed')
   } finally {
     running.value = false
   }
 }
 
 async function handleStop() {
+  if (!canStop.value) {
+    const message = 'No active simulation run to stop.'
+    addLog('warning', message)
+    toast.error(message)
+    return
+  }
   running.value = true
-  addLog('warning', '正在停止模拟...')
+  addLog('warning', 'Stopping simulation...')
   try {
     await stopSimulation({ simulation_id: simulationId.value })
-    addLog('success', '模拟已停止')
-    toast.success('Simulation 已停止')
+    addLog('success', 'Simulation stopped')
+    toast.success('Simulation stopped')
     await loadData()
   } catch (error: any) {
-    addLog('error', `停止失败：${error.message}`)
+    addLog('error', `Stop failed: ${error.message}`)
   } finally {
     running.value = false
   }
@@ -200,50 +247,50 @@ async function handleStop() {
 
 async function handleGenerateReport() {
   generating.value = true
-  addLog('info', '正在生成报告...')
+  addLog('info', 'Generating report...')
   try {
     const result = await generateReport({
       simulation_id: simulationId.value,
       chapter_ids: sourceChapterIds.value.length ? sourceChapterIds.value : undefined,
     })
-    addLog('success', '报告生成任务已启动')
-    toast.success('报告任务已启动')
+    addLog('success', 'Report generated')
+    toast.success('Report generated')
     if (result.report_id) {
       await router.push(`/report/${result.report_id}`)
       return
     }
     await loadData()
   } catch (error: any) {
-    addLog('error', `生成失败：${error.message}`)
-    toast.error('生成报告失败')
+    addLog('error', `Report generation failed: ${error.message}`)
+    toast.error('Report generation failed')
   } finally {
     generating.value = false
   }
 }
 
 async function handleCloseEnv() {
-  addLog('info', '正在关闭环境...')
+  addLog('info', 'Closing simulation environment...')
   try {
     await closeSimulationEnv({ simulation_id: simulationId.value })
-    addLog('success', '环境已关闭')
-    toast.success('环境已关闭')
+    addLog('success', 'Simulation environment closed')
+    toast.success('Simulation environment closed')
     await loadData()
   } catch (error: any) {
-    addLog('error', `关闭失败：${error.message}`)
+    addLog('error', `Close environment failed: ${error.message}`)
   }
 }
 
 function handleAgentSelect(agent: OasisAgentProfile) {
   selectedAgent.value = agent.name
-  addLog('info', `已选择 Agent: ${agent.name}`, 'interaction')
+  addLog('info', `宸查€夋嫨 Agent: ${agent.name}`, 'interaction')
 }
 
 onMounted(() => {
-  addLog('info', '页面加载中...')
+  addLog('info', '椤甸潰鍔犺浇涓?..')
   void loadData()
   timer = setInterval(() => {
     void loadData()
-  }, 2000) // 2秒轮询
+  }, 2000) // 2绉掕疆璇?
 })
 
 onUnmounted(() => {
@@ -267,7 +314,7 @@ onUnmounted(() => {
                 Status: <span class="capitalize font-medium">{{ simulation?.status || '-' }}</span>
               </p>
               <p class="text-xs text-stone-500 dark:text-zinc-500">
-                Run: {{ runStatus?.status || '-' }} · Round {{ runStatus?.current_round || 0 }}/{{ runStatus?.total_rounds || 0 }}
+                Run: {{ runStatus?.status || '-' }} 路 Round {{ runStatus?.current_round || 0 }}/{{ runStatus?.total_rounds || 0 }}
               </p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
@@ -277,25 +324,28 @@ onUnmounted(() => {
                   path: `/projects/${simulation?.project_id}`,
                 })"
               >
-                返回项目
+                杩斿洖椤圭洰
               </Button>
-              <Button variant="secondary" :loading="preparing" @click="handlePrepare">
+              <Button variant="secondary" :loading="preparing" :disabled="!canPrepare" @click="handlePrepare()">
                 <Settings class="w-4 h-4" />
-                准备环境
+                Prepare
               </Button>
-              <Button :loading="running" @click="handleStart">
+              <Button :loading="running" :disabled="!canStart" @click="handleStart">
                 <Play class="w-4 h-4" />
-                开始模拟
+                Start
               </Button>
-              <Button variant="danger" :loading="running" @click="handleStop">
+              <Button variant="danger" :loading="running" :disabled="!canStop" @click="handleStop">
                 <Square class="w-4 h-4" />
-                停止
+                Stop
               </Button>
               <Button variant="ghost" @click="router.push(`/simulation/${simulationId}/start`)">
-                运行视图
+                Open Run View
               </Button>
             </div>
           </div>
+          <p v-if="statusHint" class="text-xs text-stone-500 dark:text-zinc-400">
+            {{ statusHint }}
+          </p>
 
           <!-- Step Progress -->
           <div class="pt-4 border-t border-stone-300/80 dark:border-zinc-700/50">
@@ -351,11 +401,11 @@ onUnmounted(() => {
       <!-- Reports Card -->
       <Card>
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 class="text-sm font-medium text-stone-600 dark:text-zinc-300 uppercase tracking-wider">报告 & 互动</h2>
+          <h2 class="text-sm font-medium text-stone-600 dark:text-zinc-300 uppercase tracking-wider">鎶ュ憡 & 浜掑姩</h2>
           <div class="flex flex-wrap justify-end gap-2">
             <Button variant="secondary" size="sm" :loading="generating" @click="handleGenerateReport">
               <FileText class="w-3 h-3" />
-              生成报告
+              鐢熸垚鎶ュ憡
             </Button>
             <Button
               v-if="reportState?.report_id"
@@ -363,7 +413,7 @@ onUnmounted(() => {
               size="sm"
               @click="router.push(`/report/${reportState.report_id}`)"
             >
-              打开报告
+              鎵撳紑鎶ュ憡
             </Button>
             <Button
               v-if="reportState?.report_id"
@@ -372,23 +422,23 @@ onUnmounted(() => {
               @click="router.push(`/interaction/${reportState.report_id}`)"
             >
               <MessageCircle class="w-3 h-3" />
-              深度互动
+              娣卞害浜掑姩
             </Button>
           </div>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
           <div class="p-3 rounded-lg bg-stone-100/70 dark:bg-zinc-800/50 border border-stone-300/80 dark:border-zinc-700/50">
-            <div class="text-stone-500 dark:text-zinc-400 text-xs mb-1">报告状态</div>
-            <div class="text-stone-800 dark:text-zinc-100 font-medium">{{ reportState?.status || '未生成' }}</div>
+            <div class="text-stone-500 dark:text-zinc-400 text-xs mb-1">Report Status</div>
+            <div class="text-stone-800 dark:text-zinc-100 font-medium">{{ reportState?.status || 'Not generated' }}</div>
           </div>
           <div class="p-3 rounded-lg bg-stone-100/70 dark:bg-zinc-800/50 border border-stone-300/80 dark:border-zinc-700/50">
-            <div class="text-stone-500 dark:text-zinc-400 text-xs mb-1">访谈记录</div>
-            <div class="text-stone-800 dark:text-zinc-100 font-medium">{{ interviewHistory.length }} 条</div>
+            <div class="text-stone-500 dark:text-zinc-400 text-xs mb-1">璁胯皥璁板綍</div>
+            <div class="text-stone-800 dark:text-zinc-100 font-medium">{{ interviewHistory.length }} entries</div>
           </div>
           <div class="p-3 rounded-lg bg-stone-100/70 dark:bg-zinc-800/50 border border-stone-300/80 dark:border-zinc-700/50">
-            <div class="text-stone-500 dark:text-zinc-400 text-xs mb-1">环境状态</div>
-            <div class="text-stone-800 dark:text-zinc-100 font-medium capitalize">{{ simulation?.env_status?.status || '未知' }}</div>
+            <div class="text-stone-500 dark:text-zinc-400 text-xs mb-1">Environment Status</div>
+            <div class="text-stone-800 dark:text-zinc-100 font-medium capitalize">{{ simulation?.env_status?.status || '鏈煡' }}</div>
           </div>
         </div>
       </Card>
