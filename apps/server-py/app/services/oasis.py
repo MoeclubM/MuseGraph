@@ -32,9 +32,8 @@ DEFAULT_OASIS_CONFIG: dict[str, Any] = {
     "max_total_hours": 336,
     "min_minutes_per_round": 10,
     "max_minutes_per_round": 240,
-    "max_posts_per_hour": 20.0,
+    "max_actions_per_hour": 20.0,
     "max_response_delay_minutes": 720,
-    "allowed_platforms": ["twitter", "reddit"],
     "llm_request_timeout_seconds": 180,
     "llm_retry_count": 4,
     "llm_retry_interval_seconds": 2.0,
@@ -118,7 +117,7 @@ def normalize_oasis_config(raw: Any) -> dict[str, Any]:
         payload["min_minutes_per_round"], payload["max_minutes_per_round"] = payload["max_minutes_per_round"], payload["min_minutes_per_round"]
 
     try:
-        payload["max_posts_per_hour"] = max(0.2, min(100.0, float(cfg.get("max_posts_per_hour", payload["max_posts_per_hour"]))))
+        payload["max_actions_per_hour"] = max(0.2, min(100.0, float(cfg.get("max_actions_per_hour", payload["max_actions_per_hour"]))))
     except (TypeError, ValueError):
         pass
     try:
@@ -171,16 +170,6 @@ def normalize_oasis_config(raw: Any) -> dict[str, Any]:
     payload["llm_model_concurrency_overrides"] = _normalize_model_concurrency_overrides(
         cfg.get("llm_model_concurrency_overrides")
     )
-
-    platforms_raw = cfg.get("allowed_platforms")
-    if isinstance(platforms_raw, list):
-        allowed_platforms: list[str] = []
-        for item in platforms_raw:
-            value = str(item or "").strip().lower()
-            if value in {"twitter", "reddit"} and value not in allowed_platforms:
-                allowed_platforms.append(value)
-        if allowed_platforms:
-            payload["allowed_platforms"] = allowed_platforms
     return payload
 
 
@@ -293,7 +282,6 @@ def _salvage_oasis_analysis_payload(raw_content: str) -> dict[str, Any] | None:
 
 def _salvage_oasis_simulation_config_payload(raw_content: str) -> dict[str, Any] | None:
     payload = {
-        "active_platforms": _extract_named_json_value(raw_content, "active_platforms"),
         "time_config": _extract_named_json_value(raw_content, "time_config"),
         "events": _extract_named_json_value(raw_content, "events"),
         "agent_activity": _extract_named_json_value(raw_content, "agent_activity"),
@@ -417,7 +405,7 @@ def _safe_agent_activity(
     value: Any,
     max_items: int = 32,
     *,
-    max_posts_per_hour: float = 20.0,
+    max_actions_per_hour: float = 20.0,
     max_response_delay_minutes: int = 720,
     strict: bool = False,
 ) -> list[dict[str, Any]]:
@@ -430,20 +418,20 @@ def _safe_agent_activity(
         name = str(item.get("name") or "").strip()
         stance = str(item.get("stance") or "").strip()
         activity_raw = item.get("activity_level")
-        posts_raw = item.get("posts_per_hour")
+        actions_raw = item.get("actions_per_hour")
         delay_raw = item.get("response_delay_minutes")
         if not name:
             continue
         if strict and (
             not stance
             or activity_raw is None
-            or posts_raw is None
+            or actions_raw is None
             or delay_raw is None
         ):
             continue
         try:
             activity_level = float(0.5 if activity_raw is None else activity_raw)
-            posts_per_hour = float(1.0 if posts_raw is None else posts_raw)
+            actions_per_hour = float(1.0 if actions_raw is None else actions_raw)
             response_delay_minutes = int(45 if delay_raw is None else delay_raw)
         except (TypeError, ValueError):
             continue
@@ -451,7 +439,7 @@ def _safe_agent_activity(
             {
                 "name": name,
                 "activity_level": max(0.0, min(1.0, activity_level)),
-                "posts_per_hour": max(0.0, min(max_posts_per_hour, posts_per_hour)),
+                "actions_per_hour": max(0.0, min(max_actions_per_hour, actions_per_hour)),
                 "response_delay_minutes": max(1, min(max_response_delay_minutes, response_delay_minutes)),
                 "stance": (stance or "neutral").strip().lower(),
             }
@@ -467,12 +455,11 @@ def sanitize_oasis_simulation_config(
     *,
     max_events: int = 16,
     max_agent_activity: int = 48,
-    allowed_platforms: list[str] | None = None,
     min_total_hours: int = 6,
     max_total_hours: int = 336,
     min_minutes_per_round: int = 10,
     max_minutes_per_round: int = 240,
-    max_posts_per_hour: float = 20.0,
+    max_actions_per_hour: float = 20.0,
     max_response_delay_minutes: int = 720,
     strict: bool = False,
 ) -> dict[str, Any]:
@@ -488,24 +475,6 @@ def sanitize_oasis_simulation_config(
     )
     if strict and not normalized_profiles:
         raise ValueError("simulation_profiles_empty")
-
-    allowed = [str(x).strip().lower() for x in (allowed_platforms or ["twitter", "reddit"]) if str(x).strip()]
-    if not allowed:
-        allowed = ["twitter", "reddit"]
-    allowed_set = set(allowed)
-
-    active_platforms_raw = data.get("active_platforms")
-    if strict and not isinstance(active_platforms_raw, list):
-        raise ValueError("simulation_platforms_missing")
-    active_platforms = [
-        str(x).strip().lower()
-        for x in (active_platforms_raw if isinstance(active_platforms_raw, list) else [])
-        if str(x).strip().lower() in allowed_set
-    ][: max(1, len(allowed))]
-    if not active_platforms:
-        if strict:
-            raise ValueError("simulation_platforms_invalid")
-        active_platforms = allowed[: max(1, len(allowed))]
 
     raw_time_cfg = data.get("time_config")
     if strict and not isinstance(raw_time_cfg, dict):
@@ -568,7 +537,7 @@ def sanitize_oasis_simulation_config(
     agent_activity = _safe_agent_activity(
         data.get("agent_activity"),
         max(1, min(128, int(max_agent_activity or 48))),
-        max_posts_per_hour=max(0.2, float(max_posts_per_hour or 20.0)),
+        max_actions_per_hour=max(0.2, float(max_actions_per_hour or 20.0)),
         max_response_delay_minutes=max(1, int(max_response_delay_minutes or 720)),
         strict=strict,
     )
@@ -579,7 +548,7 @@ def sanitize_oasis_simulation_config(
             {
                 "name": str(profile.get("name") or "").strip(),
                 "activity_level": 0.6,
-                "posts_per_hour": max(0.2, min(max_posts_per_hour, 1.2)),
+                "actions_per_hour": max(0.2, min(max_actions_per_hour, 1.2)),
                 "response_delay_minutes": max(1, min(max_response_delay_minutes, 45)),
                 "stance": str(profile.get("stance") or "neutral").strip().lower() or "neutral",
             }
@@ -598,7 +567,6 @@ def sanitize_oasis_simulation_config(
         bounded_min_minutes, bounded_max_minutes = bounded_max_minutes, bounded_min_minutes
 
     return {
-        "active_platforms": active_platforms,
         "time_config": {
             "total_hours": max(bounded_min_total_hours, min(bounded_max_total_hours, total_hours)),
             "minutes_per_round": max(bounded_min_minutes, min(bounded_max_minutes, minutes_per_round)),
@@ -733,29 +701,41 @@ async def enrich_simulation_config(
     selected_model = (model or "").strip() or DEFAULT_MODEL
     cfg = normalize_oasis_config(oasis_config)
     prompt_prefix = str(cfg.get("simulation_prompt_prefix") or "").strip()
-    prefix_block = f"Additional constraints:\n{prompt_prefix}\n\n" if prompt_prefix else ""
+    prefix_block = ["Additional constraints:", prompt_prefix, ""] if prompt_prefix else []
     profiles = analysis.get("agent_profiles") if isinstance(analysis, dict) else []
     guidance = analysis.get("continuation_guidance") if isinstance(analysis, dict) else {}
     if not isinstance(profiles, list) or not profiles:
         raise ValueError("oasis_simulation_profiles_missing")
-    allowed_platforms = cfg.get("allowed_platforms") if isinstance(cfg.get("allowed_platforms"), list) else ["twitter", "reddit"]
-    platform_example = ",".join(f"\"{p}\"" for p in allowed_platforms)
-    sim_prompt = (
-        "You are an OASIS simulation config planner. Return JSON only.\n"
-        "Schema:\n"
-        "{\n"
-        f'  "active_platforms": [{platform_example}],\n'
-        '  "time_config": {"total_hours":72, "minutes_per_round":60, "peak_hours":[19,20,21,22], "off_peak_hours":[1,2,3,4,5]},\n'
-        '  "events": [{"title":"...", "trigger_hour":12, "description":"..."}],\n'
-        '  "agent_activity": [{"name":"...", "activity_level":0.6, "posts_per_hour":1.2, "response_delay_minutes":45, "stance":"..."}]\n'
-        "}\n"
-        "Keep event and agent lists concise and realistic.\n\n"
-        f"{prefix_block}"
-        f"Requirement:\n{(requirement or '').strip()}\n\n"
-        f"Focus:\n{(prompt or '').strip()}\n\n"
-        f"Summary:\n{str((analysis or {}).get('scenario_summary') or '')}\n\n"
-        f"Guidance:\n{json.dumps(guidance or {}, ensure_ascii=False)}\n\n"
-        f"Agent Profiles:\n{json.dumps(profiles or [], ensure_ascii=False)[:7000]}"
+    sim_prompt = "\n".join(
+        [
+            "You are an OASIS simulation config planner for generic text analysis and scenario forecasting.",
+            "Return JSON only with this schema:",
+            "{",
+            '  "time_config": {"total_hours":72, "minutes_per_round":60, "peak_hours":[19,20,21,22], "off_peak_hours":[1,2,3,4,5]},',
+            '  "events": [{"title":"...", "trigger_hour":12, "description":"..."}],',
+            '  "agent_activity": [{"name":"...", "activity_level":0.6, "actions_per_hour":1.2, "response_delay_minutes":45, "stance":"..."}]',
+            "}",
+            "Rules:",
+            "- This is not a social-media simulation.",
+            "- Do not introduce platforms, posts, comments, hashtags, channels, or feed mechanics.",
+            "- Keep event and agent lists concise and realistic.",
+            "- Use only the provided agent roster.",
+            *prefix_block,
+            "Requirement:",
+            (requirement or "").strip(),
+            "",
+            "Focus:",
+            (prompt or "").strip(),
+            "",
+            "Summary:",
+            str((analysis or {}).get("scenario_summary") or ""),
+            "",
+            "Guidance:",
+            json.dumps(guidance or {}, ensure_ascii=False),
+            "",
+            "Agent Profiles:",
+            json.dumps(profiles or [], ensure_ascii=False)[:7000],
+        ]
     )
 
     return await _call_llm_json_with_validation(
@@ -768,12 +748,11 @@ async def enrich_simulation_config(
             profiles if isinstance(profiles, list) else [],
             max_events=int(cfg.get("max_events") or 16),
             max_agent_activity=int(cfg.get("max_agent_activity") or 48),
-            allowed_platforms=allowed_platforms,
             min_total_hours=int(cfg.get("min_total_hours") or 6),
             max_total_hours=int(cfg.get("max_total_hours") or 336),
             min_minutes_per_round=int(cfg.get("min_minutes_per_round") or 10),
             max_minutes_per_round=int(cfg.get("max_minutes_per_round") or 240),
-            max_posts_per_hour=float(cfg.get("max_posts_per_hour") or 20.0),
+            max_actions_per_hour=float(cfg.get("max_actions_per_hour") or 20.0),
             max_response_delay_minutes=int(cfg.get("max_response_delay_minutes") or 720),
             strict=True,
         ),
@@ -882,12 +861,11 @@ def build_oasis_package(
         profiles,
         max_events=int(cfg.get("max_events") or 16),
         max_agent_activity=int(cfg.get("max_agent_activity") or 48),
-        allowed_platforms=cfg.get("allowed_platforms") if isinstance(cfg.get("allowed_platforms"), list) else ["twitter", "reddit"],
         min_total_hours=int(cfg.get("min_total_hours") or 6),
         max_total_hours=int(cfg.get("max_total_hours") or 336),
         min_minutes_per_round=int(cfg.get("min_minutes_per_round") or 10),
         max_minutes_per_round=int(cfg.get("max_minutes_per_round") or 240),
-        max_posts_per_hour=float(cfg.get("max_posts_per_hour") or 20.0),
+        max_actions_per_hour=float(cfg.get("max_actions_per_hour") or 20.0),
         max_response_delay_minutes=int(cfg.get("max_response_delay_minutes") or 720),
         strict=True,
     )
@@ -932,12 +910,12 @@ def build_oasis_run_result(
     total_rounds = max(1, (total_hours * 60) // minutes_per_round)
     active_agents = len(agent_activity) if agent_activity else len(profiles)
 
-    total_posts_per_hour = sum(
-        max(0.0, min(20.0, _to_float(item.get("posts_per_hour"), 0.0)))
+    total_actions_per_hour = sum(
+        max(0.0, min(20.0, _to_float(item.get("actions_per_hour"), 0.0)))
         for item in agent_activity
         if isinstance(item, dict)
     )
-    estimated_posts = int(round(total_posts_per_hour * total_hours)) if total_posts_per_hour > 0 else active_agents * total_hours
+    estimated_actions = int(round(total_actions_per_hour * total_hours)) if total_actions_per_hour > 0 else active_agents * total_hours
 
     normalized_events: list[dict[str, Any]] = []
     for event in events:
@@ -964,7 +942,7 @@ def build_oasis_run_result(
             "minutes_per_round": minutes_per_round,
             "total_rounds": total_rounds,
             "active_agents": active_agents,
-            "estimated_posts": estimated_posts,
+            "estimated_actions": estimated_actions,
             "event_count": len(normalized_events),
         },
     }

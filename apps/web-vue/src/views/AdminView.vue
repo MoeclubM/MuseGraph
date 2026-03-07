@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch, type Component } from 'vue'
 import {
   BarChart3,
@@ -124,9 +124,8 @@ const oasisConfig = ref<OasisConfig>({
   max_total_hours: 336,
   min_minutes_per_round: 10,
   max_minutes_per_round: 240,
-  max_posts_per_hour: 20,
+  max_actions_per_hour: 20,
   max_response_delay_minutes: 720,
-  allowed_platforms: [],
   llm_request_timeout_seconds: 180,
   llm_retry_count: 4,
   llm_retry_interval_seconds: 2,
@@ -230,15 +229,6 @@ const knownModels = computed(() =>
   ).sort()
 )
 const totalKnownModels = computed(() => knownModels.value.length)
-const oasisAllowedPlatformsInput = computed({
-  get: () => oasisConfig.value.allowed_platforms.join(', '),
-  set: (value: string) => {
-    oasisConfig.value.allowed_platforms = value
-      .split(',')
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0)
-  },
-})
 
 function formatModelConcurrencyOverrides(overrides: Record<string, number>): string {
   const normalized: Record<string, number> = {}
@@ -709,9 +699,8 @@ function applyOasisAdvancedFields(next: OasisConfig) {
   oasisConfig.value.max_total_hours = next.max_total_hours
   oasisConfig.value.min_minutes_per_round = next.min_minutes_per_round
   oasisConfig.value.max_minutes_per_round = next.max_minutes_per_round
-  oasisConfig.value.max_posts_per_hour = next.max_posts_per_hour
+  oasisConfig.value.max_actions_per_hour = next.max_actions_per_hour
   oasisConfig.value.max_response_delay_minutes = next.max_response_delay_minutes
-  oasisConfig.value.allowed_platforms = [...next.allowed_platforms]
 }
 
 async function saveLlmRequestConfig() {
@@ -763,14 +752,13 @@ async function saveOasisAdvancedConfig() {
       max_total_hours: Number(oasisConfig.value.max_total_hours || 0),
       min_minutes_per_round: Number(oasisConfig.value.min_minutes_per_round || 0),
       max_minutes_per_round: Number(oasisConfig.value.max_minutes_per_round || 0),
-      max_posts_per_hour: Number(oasisConfig.value.max_posts_per_hour || 0),
+      max_actions_per_hour: Number(oasisConfig.value.max_actions_per_hour || 0),
       max_response_delay_minutes: Number(oasisConfig.value.max_response_delay_minutes || 0),
-      allowed_platforms: oasisConfig.value.allowed_platforms,
     })
     applyOasisAdvancedFields(updated)
-    oasisAdvancedConfigMessage.value = 'OASIS config updated'
+    oasisAdvancedConfigMessage.value = 'Scenario reasoning config updated'
   } catch (error: unknown) {
-    oasisAdvancedConfigError.value = getErrorMessage(error, 'Save OASIS config failed')
+    oasisAdvancedConfigError.value = getErrorMessage(error, 'Save scenario reasoning config failed')
   }
 }
 
@@ -780,9 +768,9 @@ async function reloadOasisAdvancedConfig() {
   try {
     const latest = await getOasisConfig()
     applyOasisAdvancedFields(latest)
-    oasisAdvancedConfigMessage.value = 'OASIS config refreshed'
+    oasisAdvancedConfigMessage.value = 'Scenario reasoning config refreshed'
   } catch (error: unknown) {
-    oasisAdvancedConfigError.value = getErrorMessage(error, 'Load OASIS config failed')
+    oasisAdvancedConfigError.value = getErrorMessage(error, 'Load scenario reasoning config failed')
   }
 }
 
@@ -1104,13 +1092,11 @@ onMounted(loadAll)
               :llm-request-config-message="llmRequestConfigMessage"
               :oasis-advanced-config-error="oasisAdvancedConfigError"
               :oasis-advanced-config-message="oasisAdvancedConfigMessage"
-              :oasis-allowed-platforms-input="oasisAllowedPlatformsInput"
               @reload-llm-request-config="reloadLlmRequestConfig"
               @save-llm-request-config="saveLlmRequestConfig"
               @reload-oasis-advanced-config="reloadOasisAdvancedConfig"
               @save-oasis-advanced-config="saveOasisAdvancedConfig"
               @update:llm-model-concurrency-overrides-input="llmModelConcurrencyOverridesInput = $event"
-              @update:oasis-allowed-platforms-input="oasisAllowedPlatformsInput = $event"
             />
           </TabsContent>
 
@@ -1143,3 +1129,5 @@ onMounted(loadAll)
     </div>
   </AdminLayout>
 </template>
+
+

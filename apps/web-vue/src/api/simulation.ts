@@ -1,11 +1,52 @@
 import api from './index'
-import type { SimulationRuntime } from '@/types'
+import type { SimulationAction, SimulationRuntime } from '@/types'
+
+type RawTimelineEntry = Record<string, any>
+
+function normalizeActionKind(rawType: string): SimulationAction['action_kind'] {
+  const value = rawType.toLowerCase()
+
+  if (/comment|reply|response|respond/.test(value)) return 'response'
+  if (/react|like|vote|signal|feedback/.test(value)) return 'signal'
+  if (/share|forward|repost|boost|amplif/.test(value)) return 'amplification'
+  if (/post|create|publish|seed|start|init/.test(value)) return 'seed'
+
+  return 'update'
+}
+
+function normalizeActionLabel(kind: SimulationAction['action_kind']): string {
+  switch (kind) {
+    case 'seed':
+      return 'Initial Move'
+    case 'response':
+      return 'Follow-up'
+    case 'signal':
+      return 'Signal Update'
+    case 'amplification':
+      return 'Spread'
+    default:
+      return 'State Update'
+  }
+}
+
+function normalizeSimulationAction(entry: RawTimelineEntry): SimulationAction {
+  const rawActionType = String(entry.action_type || entry.type || entry.action || '').trim()
+  const actionKind = normalizeActionKind(rawActionType)
+
+  return {
+    action_id: String(entry.action_id || entry.id || `${entry.round_num || 0}-${entry.created_at || entry.timestamp || Date.now()}`),
+    round_num: Number(entry.round_num || entry.round || 0),
+    agent: String(entry.agent || entry.agent_name || entry.actor || entry.name || 'Unknown Actor'),
+    action_kind: actionKind,
+    action_label: normalizeActionLabel(actionKind),
+    summary: String(entry.summary || entry.result || entry.content || entry.description || ''),
+    created_at: String(entry.created_at || entry.timestamp || new Date().toISOString()),
+  }
+}
 
 export async function createSimulation(payload: {
   project_id: string
   graph_id?: string
-  enable_twitter?: boolean
-  enable_reddit?: boolean
   chapter_ids?: string[]
 }): Promise<{ simulation_id: string; project_id: string; graph_id: string; status: string }> {
   const { data } = await api.post<{ status: string; data: { simulation_id: string; project_id: string; graph_id: string; status: string } }>(
@@ -43,7 +84,6 @@ export async function listSimulations(projectId?: string): Promise<SimulationRun
 
 export async function startSimulation(payload: {
   simulation_id: string
-  platform?: string
   max_rounds?: number
   enable_graph_memory_update?: boolean
   force_restart?: boolean
@@ -78,115 +118,14 @@ export async function getRunStatusDetail(simulationId: string): Promise<Record<s
   return data.data
 }
 
-export async function getSimulationPosts(
-  simulationId: string,
-  params: { platform?: string; limit?: number; offset?: number } = {}
-): Promise<Record<string, any>[]> {
-  const { data } = await api.get<{ status: string; data: Record<string, any>[] }>(
-    `/api/simulation/${simulationId}/posts`,
-    { params }
-  )
-  return data.data
-}
-
-export async function getSimulationComments(
-  simulationId: string,
-  params: { platform?: string; limit?: number; offset?: number } = {}
-): Promise<Record<string, any>[]> {
-  const { data } = await api.get<{ status: string; data: Record<string, any>[] }>(
-    `/api/simulation/${simulationId}/comments`,
-    { params }
-  )
-  return data.data
-}
-
-export async function getSimulationTimeline(
-  simulationId: string,
-  params: { start_round?: number; end_round?: number } = {}
-): Promise<Record<string, any>[]> {
-  const { data } = await api.get<{ status: string; data: Record<string, any>[] }>(
-    `/api/simulation/${simulationId}/timeline`,
-    { params }
-  )
-  return data.data
-}
-
-export async function getSimulationActions(
+export async function getSimulationTimelineEntries(
   simulationId: string,
   params: { limit?: number; offset?: number } = {}
-): Promise<Record<string, any>[]> {
-  const { data } = await api.get<{ status: string; data: Record<string, any>[] }>(
+): Promise<SimulationAction[]> {
+  const { data } = await api.get<{ status: string; data: RawTimelineEntry[] }>(
     `/api/simulation/${simulationId}/actions`,
     { params }
   )
-  return data.data
+  return Array.isArray(data.data) ? data.data.map(normalizeSimulationAction) : []
 }
 
-export async function getAgentStats(simulationId: string): Promise<Record<string, any>[]> {
-  const { data } = await api.get<{ status: string; data: Record<string, any>[] }>(
-    `/api/simulation/${simulationId}/agent-stats`
-  )
-  return data.data
-}
-
-export async function interviewAgent(payload: {
-  simulation_id: string
-  prompt: string
-  agent_id?: string | number
-}): Promise<Record<string, any>> {
-  const { data } = await api.post<{ status: string; data: Record<string, any> }>(
-    '/api/simulation/interview',
-    payload
-  )
-  return data.data
-}
-
-export async function interviewAgents(payload: {
-  simulation_id: string
-  interviews: Array<{ prompt: string; agent_id?: string | number }>
-}): Promise<Record<string, any>[]> {
-  const { data } = await api.post<{ status: string; data: Record<string, any>[] }>(
-    '/api/simulation/interview/batch',
-    payload
-  )
-  return data.data
-}
-
-export async function interviewAllAgents(payload: {
-  simulation_id: string
-  prompt: string
-}): Promise<Record<string, any>[]> {
-  const { data } = await api.post<{ status: string; data: Record<string, any>[] }>(
-    '/api/simulation/interview/all',
-    payload
-  )
-  return data.data
-}
-
-export async function getInterviewHistory(payload: {
-  simulation_id: string
-  limit?: number
-  offset?: number
-}): Promise<Record<string, any>[]> {
-  const { data } = await api.post<{ status: string; data: Record<string, any>[] }>(
-    '/api/simulation/interview/history',
-    payload
-  )
-  return data.data
-}
-
-export async function getEnvStatus(payload: { simulation_id: string }): Promise<Record<string, any>> {
-  const { data } = await api.post<{ status: string; data: Record<string, any> }>(
-    '/api/simulation/env-status',
-    payload
-  )
-  return data.data
-}
-
-export async function closeSimulationEnv(payload: { simulation_id: string }): Promise<Record<string, any>> {
-  const { data } = await api.post<{ status: string; data: Record<string, any> }>(
-    '/api/simulation/close-env',
-    payload
-  )
-  return data.data
-}

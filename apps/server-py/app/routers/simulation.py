@@ -1,10 +1,10 @@
-import asyncio
+﻿import asyncio
 import hashlib
 import json
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -34,8 +34,6 @@ SIMULATION_RUN_MAX_TOKENS_CEILING = 16384
 class SimulationCreateRequest(BaseModel):
     project_id: str
     graph_id: str | None = None
-    enable_twitter: bool = True
-    enable_reddit: bool = True
     chapter_ids: list[str] | None = None
 
 
@@ -54,37 +52,13 @@ class SimulationPrepareStatusRequest(BaseModel):
 
 class SimulationStartRequest(BaseModel):
     simulation_id: str
-    platform: str | None = None
     max_rounds: int | None = Field(default=None, ge=1, le=10000)
-    enable_graph_memory_update: bool = False
     force_restart: bool = False
     chapter_ids: list[str] | None = None
 
 
 class SimulationStopRequest(BaseModel):
     simulation_id: str
-
-
-class InterviewRequest(BaseModel):
-    simulation_id: str
-    agent_id: str | int | None = None
-    prompt: str = Field(min_length=1)
-
-
-class InterviewBatchItem(BaseModel):
-    agent_id: str | int | None = None
-    prompt: str = Field(min_length=1)
-
-
-class InterviewBatchRequest(BaseModel):
-    simulation_id: str
-    interviews: list[InterviewBatchItem]
-
-
-class InterviewHistoryRequest(BaseModel):
-    simulation_id: str
-    limit: int = Field(default=50, ge=1, le=500)
-    offset: int = Field(default=0, ge=0)
 
 
 class EnvRequest(BaseModel):
@@ -103,13 +77,17 @@ def _ensure_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _split_timeline(posts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    round_map: dict[int, dict[str, Any]] = {}
-    for item in posts:
-        round_num = int(item.get("round_num") or 0)
-        bucket = round_map.setdefault(round_num, {"round_num": round_num, "posts": []})
-        bucket["posts"].append(item)
-    return [round_map[key] for key in sorted(round_map.keys())]
+def _safe_list(value: Any, max_items: int = 12) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text:
+            items.append(text)
+        if len(items) >= max_items:
+            break
+    return items
 
 
 def _normalize_chapter_ids(chapter_ids: list[str] | None) -> list[str]:
@@ -428,13 +406,6 @@ async def _get_simulation_for_user(simulation_id: str, user: User, db: AsyncSess
     return sim
 
 
-def _normalize_platform(platform: str | None) -> str | None:
-    value = str(platform or "").strip().lower()
-    if value in {"twitter", "reddit"}:
-        return value
-    return None
-
-
 def _build_simulation_retry_prompt(base_prompt: str, reason: str, raw_content: str) -> str:
     preview = str(raw_content or "").strip()[:1200]
     retry_note = (
@@ -492,7 +463,7 @@ async def _build_run_artifacts_with_llm(
     run_result: dict[str, Any],
     max_rounds: int | None,
     db: AsyncSession,
-) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     metrics = _ensure_dict(run_result.get("metrics"))
     total_rounds = int(metrics.get("total_rounds") or 0)
     if max_rounds:
@@ -508,48 +479,57 @@ async def _build_run_artifacts_with_llm(
     time_cfg = _ensure_dict(config.get("time_config"))
     events = [e for e in _ensure_list(config.get("events")) if isinstance(e, dict)]
     activity = [a for a in _ensure_list(config.get("agent_activity")) if isinstance(a, dict)]
-    platforms = [
-        str(x).strip().lower()
-        for x in _ensure_list(config.get("active_platforms"))
-        if str(x).strip().lower() in {"twitter", "reddit"}
-    ]
-    if not platforms:
-        raise ValueError("simulation_platforms_missing")
 
     analysis = _ensure_dict(project.oasis_analysis)
     guidance = _ensure_dict(analysis.get("continuation_guidance"))
     model = resolve_component_model(project, "oasis_simulation")
 
-    prompt = (
-        "You are generating realistic multi-round social simulation content.\n"
-        "Return JSON only with this schema:\n"
-        "{\n"
-        '  "rounds": [\n'
-        "    {\n"
-        '      "round": 1,\n'
-        '      "posts": [{"agent":"...", "platform":"twitter|reddit", "content":"..."}],\n'
-        '      "comments": [{"agent":"...", "platform":"twitter|reddit", "content":"..."}],\n'
-        '      "actions": [{"agent":"...", "action_type":"post|comment|react|share", "summary":"..."}]\n'
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        "Rules:\n"
-        f"- Generate exactly {total_rounds} rounds with coherent progression.\n"
-        "- Keep content concise and grounded in the configured simulation setup.\n"
-        "- Respect role consistency for each agent.\n"
-        "- Reflect configured events near their trigger hour.\n"
-        "- Avoid generic filler text.\n"
-        "- Keep each round compact while preserving coherence.\n\n"
-        f"Simulation requirement:\n{(project.simulation_requirement or '').strip()}\n\n"
-        f"Scenario summary:\n{str(analysis.get('scenario_summary') or '').strip()}\n\n"
-        f"Continuation guidance:\n{json.dumps(guidance, ensure_ascii=False)[:3000]}\n\n"
-        f"Time config:\n{json.dumps(time_cfg, ensure_ascii=False)}\n\n"
-        f"Events:\n{json.dumps(events[:16], ensure_ascii=False)}\n\n"
-        f"Platforms:\n{json.dumps(platforms, ensure_ascii=False)}\n\n"
-        f"Agent profiles:\n{json.dumps(profiles[:20], ensure_ascii=False)[:9000]}\n\n"
-        f"Agent activity:\n{json.dumps(activity[:30], ensure_ascii=False)[:6000]}"
+    prompt = "\n".join(
+        [
+            "You are generating a multi-round scenario simulation for text analysis and forecasting.",
+            "Return JSON only with this schema:",
+            "{",
+            '  "rounds": [',
+            "    {",
+            '      "round": 1,',
+            '      "situation": "...",',
+            '      "developments": ["..."],',
+            '      "agent_updates": [{"agent":"...", "decision":"...", "rationale":"...", "impact":"..."}],',
+            '      "signals": [{"type":"risk|opportunity|shift", "summary":"..."}]',
+            "    }",
+            "  ]",
+            "}",
+            "Rules:",
+            f"- Generate exactly {total_rounds} rounds with coherent progression.",
+            "- This is a generic scenario simulation, not a social-media platform simulation.",
+            "- Do not mention Twitter, Reddit, posts, comments, likes, reposts, hashtags, or platform mechanics.",
+            "- Respect role consistency for each agent.",
+            "- Reflect configured events near their trigger hour.",
+            "- Keep each round concise, concrete, and decision-oriented.",
+            "- Make signals useful for downstream prediction/report generation.",
+            "",
+            "Simulation requirement:",
+            (project.simulation_requirement or "").strip(),
+            "",
+            "Scenario summary:",
+            str(analysis.get("scenario_summary") or "").strip(),
+            "",
+            "Continuation guidance:",
+            json.dumps(guidance, ensure_ascii=False)[:3000],
+            "",
+            "Time config:",
+            json.dumps(time_cfg, ensure_ascii=False),
+            "",
+            "Events:",
+            json.dumps(events[:16], ensure_ascii=False),
+            "",
+            "Agent profiles:",
+            json.dumps(profiles[:20], ensure_ascii=False)[:9000],
+            "",
+            "Agent activity:",
+            json.dumps(activity[:30], ensure_ascii=False)[:6000],
+        ]
     )
-
     parsed: dict[str, Any] | None = None
     retry_prompt = prompt
     last_error: ValueError | None = None
@@ -588,151 +568,149 @@ async def _build_run_artifacts_with_llm(
                         attempt + 1,
                     )
                 break
-            last_error = ValueError("simulation_run_rounds_missing")
         if parsed is not None:
             break
+
+        last_error = ValueError("simulation_run_rounds_missing")
         logger.warning(
-            "Simulation run JSON validation failed on attempt %s: %s",
+            "Simulation run validation failed on attempt %s: rounds missing or empty",
             attempt + 1,
-            last_error,
         )
         retry_prompt = _build_simulation_retry_prompt(prompt, str(last_error), raw_content)
 
-    if not isinstance(parsed, dict):
+    if parsed is None:
         raise last_error or ValueError("simulation_run_llm_response_not_json_or_invalid_schema")
 
-    rounds = parsed.get("rounds")
-    if not isinstance(rounds, list) or not rounds:
+    rows = parsed.get("rounds") if isinstance(parsed.get("rounds"), list) else []
+    if not rows:
         raise ValueError("simulation_run_rounds_missing")
 
-    posts: list[dict[str, Any]] = []
-    comments: list[dict[str, Any]] = []
+    profile_names = {str(item.get("name") or "").strip() for item in profiles if str(item.get("name") or "").strip()}
+    base_time = datetime.now(timezone.utc)
+    minutes_per_round = max(1, int(time_cfg.get("minutes_per_round") or 60))
+    normalized_rounds: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
-    start_ts = _now_iso()
-    profile_names = [str(p.get("name") or "").strip() for p in profiles if str(p.get("name") or "").strip()]
-    if not profile_names:
-        raise ValueError("simulation_profile_names_missing")
 
-    round_rows: list[tuple[int, dict[str, Any]]] = []
-    for idx, item in enumerate(rounds):
-        if not isinstance(item, dict):
+    for idx, row in enumerate(rows[:total_rounds], start=1):
+        if not isinstance(row, dict):
             continue
-        try:
-            round_num = int(item.get("round") or item.get("round_num") or (idx + 1))
-        except Exception:
-            round_num = idx + 1
-        round_rows.append((max(1, min(total_rounds, round_num)), item))
+        round_num = max(1, int(row.get("round") or idx))
+        round_started_at = (base_time + timedelta(minutes=minutes_per_round * (round_num - 1))).isoformat()
+        situation = str(row.get("situation") or "").strip()
+        developments = _safe_list(row.get("developments"), 6)
 
-    round_rows.sort(key=lambda x: x[0])
-    if not round_rows:
-        raise ValueError("simulation_round_rows_empty")
+        normalized_agent_updates: list[dict[str, Any]] = []
+        for update in _ensure_list(row.get("agent_updates"))[:10]:
+            if not isinstance(update, dict):
+                continue
+            agent = str(update.get("agent") or "").strip()
+            decision = str(update.get("decision") or "").strip()
+            rationale = str(update.get("rationale") or "").strip()
+            impact = str(update.get("impact") or "").strip()
+            if not agent or agent not in profile_names or not decision:
+                continue
+            normalized_agent_updates.append(
+                {
+                    "agent": agent,
+                    "decision": decision,
+                    "rationale": rationale,
+                    "impact": impact,
+                }
+            )
 
-    for round_num, row in round_rows[:total_rounds]:
-        default_platform = platforms[(round_num - 1) % len(platforms)]
+        normalized_signals: list[dict[str, Any]] = []
+        for signal in _ensure_list(row.get("signals"))[:8]:
+            if not isinstance(signal, dict):
+                continue
+            signal_type = str(signal.get("type") or "").strip().lower() or "shift"
+            if signal_type not in {"risk", "opportunity", "shift"}:
+                signal_type = "shift"
+            summary = str(signal.get("summary") or "").strip()
+            if not summary:
+                continue
+            normalized_signals.append({"type": signal_type, "summary": summary})
 
-        row_posts = row.get("posts") if isinstance(row.get("posts"), list) else []
-        if not row_posts:
+        if not situation and not developments and not normalized_agent_updates and not normalized_signals:
             continue
 
-        for p_idx, post_item in enumerate(row_posts[:6]):
-            if not isinstance(post_item, dict):
-                continue
-            agent = str(post_item.get("agent") or "").strip()
-            if not agent or agent not in profile_names:
-                continue
-            platform = _normalize_platform(str(post_item.get("platform") or ""))
-            if not platform:
-                platform = default_platform
-            content = str(post_item.get("content") or "").strip()
-            if not content:
-                continue
-            post_id = f"post_{sim.simulation_id}_{round_num}_{p_idx + 1}"
-            posts.append(
-                {
-                    "id": post_id,
-                    "round_num": round_num,
-                    "agent": agent,
-                    "platform": platform,
-                    "content": content,
-                    "created_at": start_ts,
-                }
-            )
+        normalized_rounds.append(
+            {
+                "round": round_num,
+                "situation": situation,
+                "developments": developments,
+                "agent_updates": normalized_agent_updates,
+                "signals": normalized_signals,
+                "started_at": round_started_at,
+            }
+        )
+
+        if situation:
             actions.append(
                 {
-                    "action_id": f"act_post_{sim.simulation_id}_{round_num}_{p_idx + 1}",
+                    "action_id": f"act_situation_{sim.simulation_id}_{round_num}",
                     "round_num": round_num,
-                    "agent": agent,
-                    "action_type": "post",
-                    "summary": content[:240],
-                    "created_at": start_ts,
+                    "agent": "System",
+                    "action_type": "situation",
+                    "summary": situation[:240],
+                    "details": situation,
+                    "created_at": round_started_at,
                 }
             )
 
-        row_comments = row.get("comments") if isinstance(row.get("comments"), list) else []
-        for c_idx, comment_item in enumerate(row_comments[:6]):
-            if not isinstance(comment_item, dict):
-                continue
-            agent = str(comment_item.get("agent") or "").strip()
-            if not agent or agent not in profile_names:
-                continue
-            platform = _normalize_platform(str(comment_item.get("platform") or ""))
-            if not platform:
-                platform = default_platform
-            content = str(comment_item.get("content") or "").strip()
-            if not content:
-                continue
-            comments.append(
-                {
-                    "id": f"comment_{sim.simulation_id}_{round_num}_{c_idx + 1}",
-                    "round_num": round_num,
-                    "agent": agent,
-                    "platform": platform,
-                    "content": content,
-                    "created_at": start_ts,
-                }
-            )
+        for dev_idx, development in enumerate(developments, start=1):
             actions.append(
                 {
-                    "action_id": f"act_comment_{sim.simulation_id}_{round_num}_{c_idx + 1}",
+                    "action_id": f"act_development_{sim.simulation_id}_{round_num}_{dev_idx}",
                     "round_num": round_num,
-                    "agent": agent,
-                    "action_type": "comment",
-                    "summary": content[:240],
-                    "created_at": start_ts,
+                    "agent": "System",
+                    "action_type": "development",
+                    "summary": development[:240],
+                    "details": development,
+                    "created_at": round_started_at,
                 }
             )
 
-        row_actions = row.get("actions") if isinstance(row.get("actions"), list) else []
-        for a_idx, action_item in enumerate(row_actions[:10]):
-            if not isinstance(action_item, dict):
-                continue
-            action_type = str(action_item.get("action_type") or "").strip().lower()
-            summary = str(action_item.get("summary") or "").strip()
-            if action_type in {"post", "comment"} or not summary:
-                continue
-            agent = str(action_item.get("agent") or "").strip()
-            if not agent or agent not in profile_names:
-                continue
+        for upd_idx, update in enumerate(normalized_agent_updates, start=1):
+            details_parts = []
+            if update.get("rationale"):
+                details_parts.append(f"Rationale: {update['rationale']}")
+            if update.get("impact"):
+                details_parts.append(f"Impact: {update['impact']}")
             actions.append(
                 {
-                    "action_id": f"act_extra_{sim.simulation_id}_{round_num}_{a_idx + 1}",
+                    "action_id": f"act_decision_{sim.simulation_id}_{round_num}_{upd_idx}",
                     "round_num": round_num,
-                    "agent": agent,
-                    "action_type": action_type if action_type else "react",
-                    "summary": summary[:240],
-                    "created_at": start_ts,
+                    "agent": update["agent"],
+                    "action_type": "decision",
+                    "summary": update["decision"][:240],
+                    "details": "\n".join(details_parts).strip(),
+                    "created_at": round_started_at,
                 }
             )
 
-    if not posts:
-        raise ValueError("simulation_posts_empty_after_llm_generation")
+        for sig_idx, signal in enumerate(normalized_signals, start=1):
+            actions.append(
+                {
+                    "action_id": f"act_signal_{sim.simulation_id}_{round_num}_{sig_idx}",
+                    "round_num": round_num,
+                    "agent": "System",
+                    "action_type": f"{signal['type']}_signal",
+                    "summary": signal["summary"][:240],
+                    "details": signal["summary"],
+                    "created_at": round_started_at,
+                }
+            )
 
-    metrics["total_rounds"] = total_rounds
-    metrics["estimated_posts"] = len(posts)
+    if not normalized_rounds or not actions:
+        raise ValueError("simulation_actions_empty_after_llm_generation")
+
+    metrics["total_rounds"] = len(normalized_rounds)
+    metrics["estimated_actions"] = len(actions)
     metrics["generated_mode"] = "llm"
     metrics["generated_model"] = model
     run_result["metrics"] = metrics
-    return run_result, posts, comments, actions
+    run_result["rounds"] = normalized_rounds
+    return run_result, actions
 
 
 async def _run_prepare_task(
@@ -827,59 +805,6 @@ async def _run_prepare_task(
             task_manager.fail_task(task_id, str(exc), "Simulation prepare failed")
 
 
-async def _interview_single(
-    db: AsyncSession,
-    sim: SimulationRuntime,
-    prompt: str,
-    agent_id: str | int | None,
-) -> dict[str, Any]:
-    project_result = await db.execute(select(TextProject).where(TextProject.id == sim.project_id))
-    project = project_result.scalar_one_or_none()
-    profiles = [p for p in _ensure_list(sim.profiles) if isinstance(p, dict)]
-    index = 0
-    if isinstance(agent_id, int):
-        index = max(0, min(agent_id, max(0, len(profiles) - 1)))
-    elif isinstance(agent_id, str):
-        for i, profile in enumerate(profiles):
-            if str(profile.get("name") or "") == agent_id:
-                index = i
-                break
-    if not profiles:
-        raise RuntimeError("simulation_profiles_missing")
-    profile = profiles[index]
-    model = resolve_component_model(project, "oasis_report") if project else DEFAULT_MODEL
-
-    llm_prompt = (
-        "You are role-playing as a simulation agent. Keep answer concise and scenario-consistent.\n\n"
-        f"Agent profile: {profile}\n"
-        f"Simulation requirement: {project.simulation_requirement if project else ''}\n\n"
-        f"User prompt: {prompt}"
-    )
-    content = ""
-    with llm_billing_scope(
-        user_id=sim.user_id,
-        project_id=sim.project_id,
-    ):
-        llm_result = await call_llm(model=model, prompt=llm_prompt, db=db)
-    content = str(llm_result.get("content") or "").strip()
-
-    if not content:
-        raise RuntimeError("simulation_interview_llm_empty_response")
-
-    row = {
-        "simulation_id": sim.simulation_id,
-        "agent": str(profile.get("name") or "agent"),
-        "agent_role": str(profile.get("role") or ""),
-        "prompt": prompt,
-        "response": content,
-        "created_at": _now_iso(),
-    }
-    history = _ensure_list(sim.interview_history)
-    history.append(row)
-    sim.interview_history = history[-500:]
-    return row
-
-
 @router.post("/create")
 async def create_simulation(
     body: SimulationCreateRequest,
@@ -921,8 +846,6 @@ async def create_simulation(
         env_status={"alive": False, "status": "created", "updated_at": _now_iso()},
         metadata_={
             "graph_id": body.graph_id or project.cognee_dataset_id,
-            "enable_twitter": body.enable_twitter,
-            "enable_reddit": body.enable_reddit,
             "source_chapter_ids": list(provenance.get("source_chapter_ids") or []),
             "content_hash": str(provenance.get("content_hash") or ""),
             "generated_at": str(provenance.get("generated_at") or _now_iso()),
@@ -1126,7 +1049,7 @@ async def start_simulation(
         analysis["latest_package"] = package
         analysis["latest_run"] = run_result
         project.oasis_analysis = analysis
-        run_result, posts, comments, actions = await _build_run_artifacts_with_llm(
+        run_result, actions = await _build_run_artifacts_with_llm(
             sim=sim,
             project=project,
             run_result=run_result,
@@ -1135,15 +1058,15 @@ async def start_simulation(
         )
 
         sim.status = "completed"
-        sim.posts = posts
-        sim.comments = comments
+        sim.posts = []
+        sim.comments = []
         sim.actions = actions
+        sim.interview_history = []
         sim.run_state = {
             "status": "completed",
             "is_running": False,
             "current_round": _ensure_dict(run_result.get("metrics")).get("total_rounds", 0),
             "total_rounds": _ensure_dict(run_result.get("metrics")).get("total_rounds", 0),
-            "platform": body.platform or "multi",
             "source_chapter_ids": provenance.get("source_chapter_ids", []),
             "content_hash": provenance.get("content_hash", ""),
             "generated_at": provenance.get("generated_at", _now_iso()),
@@ -1249,87 +1172,6 @@ async def get_actions(
     return {"status": "ok", "data": sliced, "count": len(actions)}
 
 
-@router.get("/{simulation_id}/timeline")
-async def get_timeline(
-    simulation_id: str,
-    start_round: int = Query(default=0, ge=0),
-    end_round: int | None = Query(default=None, ge=0),
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    sim = await _get_simulation_for_user(simulation_id, user, db)
-    timeline = _split_timeline(_ensure_list(sim.posts))
-    if start_round:
-        timeline = [item for item in timeline if int(item.get("round_num") or 0) >= start_round]
-    if end_round is not None:
-        timeline = [item for item in timeline if int(item.get("round_num") or 0) <= end_round]
-    return {"status": "ok", "data": timeline, "count": len(timeline)}
-
-
-@router.get("/{simulation_id}/agent-stats")
-async def get_agent_stats(
-    simulation_id: str,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    sim = await _get_simulation_for_user(simulation_id, user, db)
-    profiles = [p for p in _ensure_list(sim.profiles) if isinstance(p, dict)]
-    posts = _ensure_list(sim.posts)
-    comments = _ensure_list(sim.comments)
-
-    stats: dict[str, dict[str, Any]] = {}
-    for profile in profiles:
-        name = str(profile.get("name") or "")
-        if not name:
-            continue
-        stats[name] = {"agent": name, "posts": 0, "comments": 0}
-    for post in posts:
-        agent = str(post.get("agent") or "")
-        if agent:
-            stats.setdefault(agent, {"agent": agent, "posts": 0, "comments": 0})
-            stats[agent]["posts"] += 1
-    for comment in comments:
-        agent = str(comment.get("agent") or "")
-        if agent:
-            stats.setdefault(agent, {"agent": agent, "posts": 0, "comments": 0})
-            stats[agent]["comments"] += 1
-    return {"status": "ok", "data": list(stats.values()), "count": len(stats)}
-
-
-@router.get("/{simulation_id}/posts")
-async def get_posts(
-    simulation_id: str,
-    platform: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    sim = await _get_simulation_for_user(simulation_id, user, db)
-    posts = _ensure_list(sim.posts)
-    if platform:
-        posts = [p for p in posts if str(p.get("platform") or "").lower() == platform.lower()]
-    sliced = posts[offset : offset + limit]
-    return {"status": "ok", "data": sliced, "count": len(posts)}
-
-
-@router.get("/{simulation_id}/comments")
-async def get_comments(
-    simulation_id: str,
-    platform: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    sim = await _get_simulation_for_user(simulation_id, user, db)
-    comments = _ensure_list(sim.comments)
-    if platform:
-        comments = [p for p in comments if str(p.get("platform") or "").lower() == platform.lower()]
-    sliced = comments[offset : offset + limit]
-    return {"status": "ok", "data": sliced, "count": len(comments)}
-
-
 @router.get("/{simulation_id}/profiles")
 async def get_profiles(
     simulation_id: str,
@@ -1349,74 +1191,6 @@ async def get_simulation_config(
 ):
     sim = await _get_simulation_for_user(simulation_id, user, db)
     return {"status": "ok", "data": _ensure_dict(sim.simulation_config)}
-
-
-@router.post("/interview")
-async def interview_one(
-    body: InterviewRequest,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    try:
-        sim = await _get_simulation_for_user(body.simulation_id, user, db)
-        row = await _interview_single(db, sim, body.prompt, body.agent_id)
-        await db.flush()
-        return {"status": "ok", "data": row}
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
-
-
-@router.post("/interview/batch")
-async def interview_batch(
-    body: InterviewBatchRequest,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    try:
-        sim = await _get_simulation_for_user(body.simulation_id, user, db)
-        rows: list[dict[str, Any]] = []
-        for item in body.interviews[:100]:
-            rows.append(await _interview_single(db, sim, item.prompt, item.agent_id))
-        await db.flush()
-        return {"status": "ok", "data": rows, "count": len(rows)}
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
-
-
-@router.post("/interview/all")
-async def interview_all(
-    body: InterviewRequest,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    try:
-        sim = await _get_simulation_for_user(body.simulation_id, user, db)
-        profiles = [p for p in _ensure_list(sim.profiles) if isinstance(p, dict)]
-        rows: list[dict[str, Any]] = []
-        for idx, _ in enumerate(profiles[:64]):
-            rows.append(await _interview_single(db, sim, body.prompt, idx))
-        await db.flush()
-        return {"status": "ok", "data": rows, "count": len(rows)}
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
-
-
-@router.post("/interview/history")
-async def get_interview_history(
-    body: InterviewHistoryRequest,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    sim = await _get_simulation_for_user(body.simulation_id, user, db)
-    rows = _ensure_list(sim.interview_history)
-    sliced = rows[body.offset : body.offset + body.limit]
-    return {"status": "ok", "data": sliced, "count": len(rows)}
 
 
 @router.post("/env-status")

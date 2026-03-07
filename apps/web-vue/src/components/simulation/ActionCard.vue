@@ -1,53 +1,56 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed } from 'vue'
-import { MessageSquare, Reply, Heart, Share2 } from 'lucide-vue-next'
+import { Activity, ArrowRightCircle, Sparkles, Waypoints } from 'lucide-vue-next'
 import type { SimulationAction } from '@/types'
 
 const props = defineProps<{
   action: SimulationAction
-  platform?: 'twitter' | 'reddit'
 }>()
 
-const platformColor = computed(() => {
-  if (props.platform === 'twitter' || props.action.platform === 'twitter') {
-    return {
-      border: 'border-stone-600',
+const actionStyle = computed(() => {
+  const styles: Record<string, { border: string; bg: string; text: string }> = {
+    seed: {
+      border: 'border-stone-500',
       bg: 'bg-stone-100/70 dark:bg-zinc-800/50',
       text: 'text-stone-700 dark:text-zinc-200',
-    }
+    },
+    response: {
+      border: 'border-amber-500',
+      bg: 'bg-amber-100/60 dark:bg-amber-900/20',
+      text: 'text-amber-700 dark:text-amber-200',
+    },
+    signal: {
+      border: 'border-rose-500',
+      bg: 'bg-rose-100/60 dark:bg-rose-900/20',
+      text: 'text-rose-700 dark:text-rose-200',
+    },
+    amplification: {
+      border: 'border-sky-500',
+      bg: 'bg-sky-100/60 dark:bg-sky-900/20',
+      text: 'text-sky-700 dark:text-sky-200',
+    },
+    update: {
+      border: 'border-emerald-500',
+      bg: 'bg-emerald-100/60 dark:bg-emerald-900/20',
+      text: 'text-emerald-700 dark:text-emerald-200',
+    },
   }
-  if (props.platform === 'reddit' || props.action.platform === 'reddit') {
-    return {
-      border: 'border-[#FF4500]',
-      bg: 'bg-[#FF4500]/10',
-      text: 'text-[#FF4500]',
-    }
-  }
-  return {
-    border: 'border-stone-300 dark:border-zinc-700',
-    bg: 'bg-stone-100/70 dark:bg-zinc-800/50',
-    text: 'text-stone-700 dark:text-zinc-300',
-  }
+  return styles[props.action.action_kind] || styles.update
 })
 
 const actionIcon = computed(() => {
   const icons: Record<string, any> = {
-    post: MessageSquare,
-    comment: Reply,
-    react: Heart,
-    share: Share2,
+    seed: Sparkles,
+    response: ArrowRightCircle,
+    signal: Activity,
+    amplification: Waypoints,
+    update: Activity,
   }
-  return icons[props.action.action_type] || MessageSquare
+  return icons[props.action.action_kind] || Activity
 })
 
 const actionLabel = computed(() => {
-  const labels: Record<string, string> = {
-    post: '发布',
-    comment: '评论',
-    react: '反应',
-    share: '转发',
-  }
-  return labels[props.action.action_type] || props.action.action_type
+  return props.action.action_label || 'State Update'
 })
 
 function formatTime(timestamp: string) {
@@ -68,64 +71,44 @@ function getInitials(name: string) {
   <div
     :class="[
       'rounded-lg border-l-4 p-3 transition-all hover:bg-stone-200/60 dark:hover:bg-zinc-800/40',
-      platformColor.border,
-      platformColor.bg
+      actionStyle.border,
+      actionStyle.bg,
     ]"
   >
     <div class="flex items-start gap-3">
-      <!-- Agent Avatar -->
       <div
         :class="[
-          'w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0',
-          platformColor.bg,
-          platformColor.text
+          'h-8 w-8 shrink-0 rounded-full flex items-center justify-center text-xs font-bold',
+          actionStyle.bg,
+          actionStyle.text,
         ]"
       >
         {{ getInitials(action.agent) }}
       </div>
 
-      <div class="flex-1 min-w-0">
-        <!-- Header: Agent + Action Type + Time -->
-        <div class="flex items-center gap-2 mb-1">
-          <span class="font-medium text-sm text-stone-800 dark:text-zinc-100">{{ action.agent }}</span>
+      <div class="min-w-0 flex-1">
+        <div class="mb-1 flex items-center gap-2">
+          <span class="text-sm font-medium text-stone-800 dark:text-zinc-100">{{ action.agent }}</span>
 
           <span
             :class="[
-              'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium',
-              platformColor.bg,
-              platformColor.text
+              'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium',
+              actionStyle.bg,
+              actionStyle.text,
             ]"
           >
-            <component :is="actionIcon" class="w-3 h-3" />
+            <component :is="actionIcon" class="h-3 w-3" />
             {{ actionLabel }}
           </span>
 
-          <span class="text-xs text-stone-500 dark:text-zinc-500 ml-auto shrink-0">
+          <span class="ml-auto shrink-0 text-xs text-stone-500 dark:text-zinc-500">
             R{{ action.round_num }} · {{ formatTime(action.created_at) }}
           </span>
         </div>
 
-        <!-- Summary Content -->
-        <p class="text-sm text-stone-700 dark:text-zinc-300 line-clamp-3">
+        <p class="line-clamp-3 text-sm text-stone-700 dark:text-zinc-300">
           {{ action.summary }}
         </p>
-
-        <!-- Platform Badge -->
-        <div
-          v-if="action.platform"
-          class="mt-2"
-        >
-          <span
-            :class="[
-              'text-[10px] px-1.5 py-0.5 rounded',
-              action.platform === 'twitter'
-                ? 'bg-stone-200 text-stone-700 dark:bg-zinc-700 dark:text-zinc-200'
-                : 'bg-[#FF4500]/20 text-[#FF4500]'
-            ]"
-          >
-            {{ action.platform === 'twitter' ? 'Twitter' : 'Reddit' }}
-          </span>
-        </div>
       </div>
     </div>
   </div>

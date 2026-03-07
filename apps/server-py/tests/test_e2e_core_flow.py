@@ -37,11 +37,10 @@ def _prepared_package(g: dict, provenance: dict, *, profile_name: str = "Agent1"
                     "role": "participant",
                     "persona": "Tracks narrative shifts",
                     "stance": "neutral",
-                    "likely_actions": ["Post updates"],
+                    "likely_actions": ["Track developments"],
                 }
             ],
             "simulation_config": {
-                "active_platforms": ["twitter"],
                 "time_config": {
                     "total_hours": 24,
                     "minutes_per_round": 60,
@@ -53,7 +52,7 @@ def _prepared_package(g: dict, provenance: dict, *, profile_name: str = "Agent1"
                     {
                         "name": profile_name,
                         "activity_level": 0.6,
-                        "posts_per_hour": 1.0,
+                        "actions_per_hour": 1.0,
                         "response_delay_minutes": 30,
                         "stance": "neutral",
                     }
@@ -216,8 +215,6 @@ class TestE2ESimulationFlow:
         mock_build = AsyncMock(
             return_value=(
                 {"metrics": {"total_rounds": 3}},
-                [{"id": "post1"}],
-                [],
                 [{"action_id": "a1"}],
             )
         )

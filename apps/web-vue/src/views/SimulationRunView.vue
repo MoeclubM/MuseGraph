@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -6,7 +6,7 @@ import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import ActionTimeline from '@/components/simulation/ActionTimeline.vue'
 import SystemLogs from '@/components/simulation/SystemLogs.vue'
-import { getRunStatusDetail, getSimulationActions, stopSimulation } from '@/api/simulation'
+import { getRunStatusDetail, getSimulationTimelineEntries, stopSimulation } from '@/api/simulation'
 import type { LogEntry, SimulationAction } from '@/types'
 import {
   Square,
@@ -47,7 +47,6 @@ function addLog(level: LogEntry['level'], message: string, source?: string) {
     message,
     source,
   })
-  // Keep only last 100 logs
   if (logs.value.length > 100) {
     logs.value = logs.value.slice(-100)
   }
@@ -58,33 +57,33 @@ async function loadData() {
   loading.value = true
   try {
     detail.value = await getRunStatusDetail(simulationId)
-    const actionsData = await getSimulationActions(simulationId, { limit: 200, offset: 0 })
+    const actionsData = await getSimulationTimelineEntries(simulationId, { limit: 200, offset: 0 })
     actions.value = actionsData as SimulationAction[]
 
     if (isRunning.value && !isPaused.value) {
-      addLog('info', `Round ${currentRound.value}/${totalRounds.value} 进行中...`)
+      addLog('info', `Iteration ${currentRound.value}/${totalRounds.value} in progress...`)
     }
   } catch (error: any) {
-    addLog('error', `加载失败：${error.message}`)
+    addLog('error', `Load failed: ${error.message}`)
   } finally {
     loading.value = false
   }
 }
 
 async function handleStop() {
-  addLog('warning', '正在停止模拟...')
+  addLog('warning', 'Stopping scenario run...')
   try {
     await stopSimulation({ simulation_id: simulationId })
-    addLog('success', '模拟已停止')
+    addLog('success', 'Scenario run stopped')
     await loadData()
   } catch (error: any) {
-    addLog('error', `停止失败：${error.message}`)
+    addLog('error', `Stop failed: ${error.message}`)
   }
 }
 
 function handlePause() {
   isPaused.value = !isPaused.value
-  addLog('info', isPaused.value ? '已暂停刷新' : '已恢复刷新')
+  addLog('info', isPaused.value ? 'Auto refresh paused' : 'Auto refresh resumed')
 }
 
 function handleExport(format: 'json' | 'csv') {
@@ -94,34 +93,33 @@ function handleExport(format: 'json' | 'csv') {
 
   if (format === 'json') {
     content = JSON.stringify(data, null, 2)
-    filename = `simulation-${simulationId.slice(0, 8)}-actions.json`
+    filename = `scenario-run-${simulationId.slice(0, 8)}-timeline.json`
   } else {
-    // CSV format
-    const headers = ['action_id', 'round_num', 'agent', 'action_type', 'summary', 'platform', 'created_at']
-    const rows = data.map(a => headers.map(h => `"${String((a as any)[h] || '').replace(/"/g, '""')}"`).join(','))
+    const headers = ['action_id', 'round_num', 'agent', 'action_kind', 'action_label', 'summary', 'created_at']
+    const rows = data.map((action) => headers.map((header) => `"${String((action as any)[header] || '').replace(/"/g, '""')}"`).join(','))
     content = [headers.join(','), ...rows].join('\n')
-    filename = `simulation-${simulationId.slice(0, 8)}-actions.csv`
+    filename = `scenario-run-${simulationId.slice(0, 8)}-timeline.csv`
   }
 
   const blob = new Blob([content], { type: format === 'json' ? 'application/json' : 'text/csv' })
   const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
   URL.revokeObjectURL(url)
 
-  addLog('success', `已导出 ${format.toUpperCase()} 文件`)
+  addLog('success', `Exported ${format.toUpperCase()} timeline file`)
 }
 
 onMounted(() => {
-  addLog('info', '运行监控已启动')
+  addLog('info', 'Scenario run monitor started')
   void loadData()
   timer = setInterval(() => {
     if (!isPaused.value) {
       void loadData()
     }
-  }, 2000) // 2秒轮询
+  }, 2000)
 })
 
 onUnmounted(() => {
@@ -132,22 +130,20 @@ onUnmounted(() => {
 <template>
   <AppLayout>
     <div class="space-y-5">
-      <!-- Header Card -->
       <Card>
         <div class="flex items-start justify-between gap-4">
           <div class="flex-1">
-            <h1 class="text-xl font-semibold text-stone-800 dark:text-zinc-100">Simulation Run Monitor</h1>
-            <p class="text-sm text-stone-500 dark:text-zinc-400 font-mono">{{ simulationId }}</p>
+            <h1 class="text-xl font-semibold text-stone-800 dark:text-zinc-100">Scenario Execution Monitor</h1>
+            <p class="font-mono text-sm text-stone-500 dark:text-zinc-400">{{ simulationId }}</p>
 
-            <!-- Round Progress -->
             <div class="mt-4">
-              <div class="flex items-center justify-between mb-2">
+              <div class="mb-2 flex items-center justify-between">
                 <span class="text-sm text-stone-700 dark:text-zinc-300">
-                  Round {{ currentRound }} / {{ totalRounds }}
+                  Iteration {{ currentRound }} / {{ totalRounds }}
                 </span>
                 <span class="text-xs text-stone-500 dark:text-zinc-500">{{ Math.round(roundProgress) }}%</span>
               </div>
-              <div class="h-2 bg-stone-300 dark:bg-zinc-700 rounded-full overflow-hidden">
+              <div class="h-2 overflow-hidden rounded-full bg-stone-300 dark:bg-zinc-700">
                 <div
                   class="h-full bg-gradient-to-r from-[#FF5722] to-orange-400 transition-all duration-500"
                   :style="{ width: `${roundProgress}%` }"
@@ -155,65 +151,60 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Status indicators -->
             <div class="mt-3 flex items-center gap-4 text-xs">
               <span
                 :class="[
-                  'inline-flex items-center gap-1.5 px-2 py-1 rounded',
+                  'inline-flex items-center gap-1.5 rounded px-2 py-1',
                   isRunning
                     ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300'
-                    : 'bg-stone-200 text-stone-600 dark:bg-zinc-700 dark:text-zinc-400'
+                    : 'bg-stone-200 text-stone-600 dark:bg-zinc-700 dark:text-zinc-400',
                 ]"
               >
                 <span
                   :class="[
-                    'w-2 h-2 rounded-full',
-                    isRunning ? 'bg-emerald-400 animate-pulse' : 'bg-stone-500 dark:bg-zinc-500'
+                    'h-2 w-2 rounded-full',
+                    isRunning ? 'bg-emerald-400 animate-pulse' : 'bg-stone-500 dark:bg-zinc-500',
                   ]"
                 />
                 {{ isRunning ? 'Running' : 'Stopped' }}
               </span>
               <span class="text-stone-500 dark:text-zinc-500">
-                {{ actions.length }} actions
+                {{ actions.length }} timeline entries
               </span>
             </div>
           </div>
 
           <div class="flex flex-wrap items-center justify-end gap-2">
             <Button variant="ghost" @click="router.push(`/simulation/${simulationId}`)">
-              返回 Simulation
+              Back to Overview
             </Button>
-            <Button
-              variant="secondary"
-              @click="handlePause"
-            >
-              <component :is="isPaused ? Play : Pause" class="w-4 h-4" />
-              {{ isPaused ? '恢复' : '暂停' }}
+            <Button variant="secondary" @click="handlePause">
+              <component :is="isPaused ? Play : Pause" class="h-4 w-4" />
+              {{ isPaused ? 'Resume' : 'Pause' }}
             </Button>
             <Button variant="danger" @click="handleStop">
-              <Square class="w-4 h-4" />
-              停止
+              <Square class="h-4 w-4" />
+              Stop Run
             </Button>
             <Button variant="ghost" :loading="loading" @click="loadData">
-              <RefreshCw class="w-4 h-4" />
+              <RefreshCw class="h-4 w-4" />
             </Button>
           </div>
         </div>
       </Card>
 
-      <!-- Dual Platform Timeline -->
       <Card>
         <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <h2 class="text-sm font-medium text-stone-600 dark:text-zinc-300 uppercase tracking-wider">
-            Live Action Feed
+          <h2 class="text-sm font-medium uppercase tracking-wider text-stone-600 dark:text-zinc-300">
+            Analysis Timeline
           </h2>
           <div class="flex flex-wrap items-center justify-end gap-2">
             <Button variant="ghost" size="sm" @click="handleExport('json')">
-              <Download class="w-3 h-3" />
+              <Download class="h-3 w-3" />
               JSON
             </Button>
             <Button variant="ghost" size="sm" @click="handleExport('csv')">
-              <Download class="w-3 h-3" />
+              <Download class="h-3 w-3" />
               CSV
             </Button>
           </div>
@@ -221,23 +212,21 @@ onUnmounted(() => {
 
         <ActionTimeline
           :actions="actions"
-          platform="all"
           :group-by-round="true"
           max-height="500px"
         />
       </Card>
 
-      <!-- System Logs (Collapsible) -->
       <Card>
         <Button
           variant="ghost"
           class="h-auto w-full justify-between px-2 py-1.5"
           @click="logsExpanded = !logsExpanded"
         >
-          <h2 class="text-sm font-medium text-stone-600 dark:text-zinc-300 uppercase tracking-wider">
+          <h2 class="text-sm font-medium uppercase tracking-wider text-stone-600 dark:text-zinc-300">
             System Logs ({{ logs.length }})
           </h2>
-          <component :is="logsExpanded ? ChevronUp : ChevronDown" class="w-4 h-4 text-stone-500 dark:text-zinc-400" />
+          <component :is="logsExpanded ? ChevronUp : ChevronDown" class="h-4 w-4 text-stone-500 dark:text-zinc-400" />
         </Button>
         <div v-if="logsExpanded" class="mt-3">
           <SystemLogs :logs="logs" max-height="200px" />

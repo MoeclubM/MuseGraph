@@ -12,6 +12,8 @@ import type {
   PaymentOrderListResponse,
 } from '@/types'
 
+type RawOasisConfig = Partial<OasisConfig>
+
 interface ProviderMutationPayload {
   name: string
   provider: string
@@ -256,9 +258,8 @@ const DEFAULT_OASIS_CONFIG: OasisConfig = {
   max_total_hours: 336,
   min_minutes_per_round: 10,
   max_minutes_per_round: 240,
-  max_posts_per_hour: 20,
+  max_actions_per_hour: 20,
   max_response_delay_minutes: 720,
-  allowed_platforms: ['twitter', 'reddit'],
   llm_request_timeout_seconds: 180,
   llm_retry_count: 4,
   llm_retry_interval_seconds: 2,
@@ -281,7 +282,7 @@ function normalizeModelConcurrencyOverrides(raw: unknown): Record<string, number
   return normalized
 }
 
-function normalizeOasisConfig(payload: Partial<OasisConfig> | null | undefined): OasisConfig {
+function normalizeOasisConfig(payload: RawOasisConfig | null | undefined): OasisConfig {
   return {
     analysis_prompt_prefix: String(payload?.analysis_prompt_prefix || ''),
     simulation_prompt_prefix: String(payload?.simulation_prompt_prefix || ''),
@@ -293,7 +294,7 @@ function normalizeOasisConfig(payload: Partial<OasisConfig> | null | undefined):
     max_total_hours: Number(payload?.max_total_hours ?? DEFAULT_OASIS_CONFIG.max_total_hours),
     min_minutes_per_round: Number(payload?.min_minutes_per_round ?? DEFAULT_OASIS_CONFIG.min_minutes_per_round),
     max_minutes_per_round: Number(payload?.max_minutes_per_round ?? DEFAULT_OASIS_CONFIG.max_minutes_per_round),
-    max_posts_per_hour: Number(payload?.max_posts_per_hour ?? DEFAULT_OASIS_CONFIG.max_posts_per_hour),
+    max_actions_per_hour: Number(payload?.max_actions_per_hour ?? DEFAULT_OASIS_CONFIG.max_actions_per_hour),
     max_response_delay_minutes: Number(payload?.max_response_delay_minutes ?? DEFAULT_OASIS_CONFIG.max_response_delay_minutes),
     llm_request_timeout_seconds: Number(
       payload?.llm_request_timeout_seconds ?? DEFAULT_OASIS_CONFIG.llm_request_timeout_seconds
@@ -319,19 +320,16 @@ function normalizeOasisConfig(payload: Partial<OasisConfig> | null | undefined):
     llm_model_concurrency_overrides: normalizeModelConcurrencyOverrides(
       payload?.llm_model_concurrency_overrides
     ),
-    allowed_platforms: Array.isArray(payload?.allowed_platforms)
-      ? payload!.allowed_platforms.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-      : [...DEFAULT_OASIS_CONFIG.allowed_platforms],
   }
 }
 
 export async function getOasisConfig(): Promise<OasisConfig> {
-  const { data } = await api.get<Partial<OasisConfig>>('/api/admin/oasis-config')
+  const { data } = await api.get<RawOasisConfig>('/api/admin/oasis-config')
   return normalizeOasisConfig(data)
 }
 
 export async function updateOasisConfig(payload: Partial<OasisConfig>): Promise<OasisConfig> {
-  const { data } = await api.put<Partial<OasisConfig>>('/api/admin/oasis-config', payload)
+  const { data } = await api.put<RawOasisConfig>('/api/admin/oasis-config', payload)
   return normalizeOasisConfig(data)
 }
 
@@ -345,3 +343,4 @@ export async function getUserOrders(
   })
   return data
 }
+

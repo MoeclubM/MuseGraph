@@ -1,4 +1,4 @@
-"""Tests for OASIS simulation service functions."""
+﻿"""Tests for OASIS simulation service functions."""
 
 from __future__ import annotations
 
@@ -101,14 +101,14 @@ class TestHelperFunctions:
     def test_safe_agent_activity_valid(self):
         """Test _safe_agent_activity with valid data."""
         activities = [
-            {"name": "Agent1", "activity_level": 0.8, "posts_per_hour": 2.5, "response_delay_minutes": 30},
-            {"name": "Agent2", "activity_level": 1.5, "posts_per_hour": 25, "response_delay_minutes": 1000},
+            {"name": "Agent1", "activity_level": 0.8, "actions_per_hour": 2.5, "response_delay_minutes": 30},
+            {"name": "Agent2", "activity_level": 1.5, "actions_per_hour": 25, "response_delay_minutes": 1000},
         ]
         result = _safe_agent_activity(activities)
         assert len(result) == 2
         # Check clamping
         assert result[1]["activity_level"] == 1.0  # max 1.0
-        assert result[1]["posts_per_hour"] == 20.0  # max 20.0
+        assert result[1]["actions_per_hour"] == 20.0  # max 20.0
         assert result[1]["response_delay_minutes"] == 720  # max 720
 
     def test_safe_agent_activity_missing_name(self):
@@ -144,12 +144,11 @@ class TestHelperFunctions:
             '"active_platforms":["twitter"],'
             '"time_config":{"total_hours":48,"minutes_per_round":60,"peak_hours":[19,20],"off_peak_hours":[1,2]},'
             '"events":[{"title":"Kickoff","trigger_hour":1,"description":"Start"}],'
-            '"agent_activity":[{"name":"Agent1","activity_level":0.6,"posts_per_hour":1.0,"response_delay_minutes":30,"stance":"neutral"}]'
+            '"agent_activity":[{"name":"Agent1","activity_level":0.6,"actions_per_hour":1.0,"response_delay_minutes":30,"stance":"neutral"}]'
             '}'
         )
         result = _salvage_oasis_simulation_config_payload(raw)
         assert result is not None
-        assert result["active_platforms"] == ["twitter"]
         assert result["time_config"]["total_hours"] == 48
         assert result["agent_activity"][0]["name"] == "Agent1"
 
@@ -203,7 +202,6 @@ class TestSanitizeOasisSimulationConfig:
     def test_sanitize_with_valid_data(self):
         """Test sanitize with valid configuration."""
         data = {
-            "active_platforms": ["twitter", "reddit"],
             "time_config": {
                 "total_hours": 48,
                 "minutes_per_round": 30,
@@ -214,13 +212,12 @@ class TestSanitizeOasisSimulationConfig:
                 {"title": "Event1", "trigger_hour": 12, "description": "Test event"}
             ],
             "agent_activity": [
-                {"name": "Agent1", "activity_level": 0.5, "posts_per_hour": 1.0, "response_delay_minutes": 60}
+                {"name": "Agent1", "activity_level": 0.5, "actions_per_hour": 1.0, "response_delay_minutes": 60}
             ],
         }
         profiles = [{"name": "Agent1"}]
         result = sanitize_oasis_simulation_config(data, profiles)
 
-        assert result["active_platforms"] == ["twitter", "reddit"]
         assert result["time_config"]["total_hours"] == 48
         assert result["time_config"]["minutes_per_round"] == 30
         assert len(result["events"]) == 1
@@ -241,12 +238,6 @@ class TestSanitizeOasisSimulationConfig:
         assert result["time_config"]["total_hours"] == 336
         assert result["time_config"]["minutes_per_round"] == 10
         assert result["events"][0]["trigger_hour"] == 168
-
-    def test_sanitize_defaults_platforms(self):
-        """Test sanitize defaults platforms when empty."""
-        data = {"active_platforms": []}
-        result = sanitize_oasis_simulation_config(data, [])
-        assert result["active_platforms"] == ["twitter", "reddit"]
 
     def test_sanitize_generates_agent_activity(self):
         """Test sanitize generates agent_activity from profiles when missing."""
@@ -314,7 +305,6 @@ class TestBuildOasisPackage:
                 }
             ],
             "simulation_config": {
-                "active_platforms": ["twitter"],
                 "time_config": {
                     "total_hours": 48,
                     "minutes_per_round": 60,
@@ -326,7 +316,7 @@ class TestBuildOasisPackage:
                     {
                         "name": "Agent1",
                         "activity_level": 0.6,
-                        "posts_per_hour": 1.0,
+                        "actions_per_hour": 1.0,
                         "response_delay_minutes": 30,
                         "stance": "neutral",
                     }
@@ -345,8 +335,7 @@ class TestBuildOasisPackage:
         assert result["project_id"] == "proj-1"
         assert result["simulation_requirement"] == "Test requirement"
         assert len(result["profiles"]) == 1
-        assert result["simulation_config"]["active_platforms"] == ["twitter"]
-
+        
     def test_build_package_without_profiles_raises(self):
         """Test build package requires analysis-generated profiles."""
         ontology = {
@@ -381,7 +370,7 @@ class TestBuildOasisRunResult:
                     {"title": "Event1", "trigger_hour": 5, "description": "Test"}
                 ],
                 "agent_activity": [
-                    {"name": "Agent1", "posts_per_hour": 2.0}
+                    {"name": "Agent1", "actions_per_hour": 2.0}
                 ],
             },
             "profiles": [{"name": "Agent1"}],
@@ -692,7 +681,6 @@ class TestAsyncOasisFunctions:
              patch("app.services.oasis.extract_json_object") as mock_extract:
             mock_llm.return_value = {"content": "response"}
             mock_extract.return_value = {
-                "active_platforms": ["twitter"],
                 "time_config": {
                     "total_hours": 48,
                     "minutes_per_round": 60,
@@ -704,7 +692,7 @@ class TestAsyncOasisFunctions:
                     {
                         "name": "Agent1",
                         "activity_level": 0.6,
-                        "posts_per_hour": 1.0,
+                        "actions_per_hour": 1.0,
                         "response_delay_minutes": 30,
                         "stance": "neutral",
                     }
@@ -719,7 +707,7 @@ class TestAsyncOasisFunctions:
                 db=mock_db,
             )
 
-            assert "twitter" in result["active_platforms"]
+            assert result["agent_activity"][0]["actions_per_hour"] == 1.0
             assert mock_llm.await_args.kwargs["max_tokens"] == 2048
 
     @pytest.mark.asyncio
