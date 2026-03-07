@@ -30,24 +30,6 @@ services:
       timeout: 5s
       retries: 5
 
-  neo4j:
-    image: neo4j:5-community
-    container_name: musegraph-neo4j
-    environment:
-      NEO4J_AUTH: neo4j/musegraph123
-      NEO4J_PLUGINS: '["apoc"]'
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    volumes:
-      - neo4j_data:/data
-    healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "musegraph123", "RETURN 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
 volumes:
   postgres_data:
   redis_data:
-  neo4j_data:

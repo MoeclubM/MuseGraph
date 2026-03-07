@@ -2,20 +2,20 @@
 
 ## 项目简介
 
-MuseGraph 是一个商业级 AI 文本创作/分析/续写系统，使用 Cognee + Neo4j 知识图谱构建实体关系。
+MuseGraph 是一个商业级 AI 文本创作/分析/续写系统，当前默认使用 Zep Cloud 图谱后端构建实体关系。
 
 ## 技术栈
 
 - 前端: Vue 3 + Vite + Tailwind
 - 后端: Python / FastAPI
-- 知识图谱: Cognee + Neo4j
+- 知识图谱: Zep Cloud（过渡期默认）
 - 数据库: PostgreSQL + Redis (Docker 本地部署)
 - 存储: 本地持久化文件存储（Docker 卷）
 - 包管理: uv (Python), pnpm (前端)
 
 ## Docker 开发环境
 
-### 启动基础设施服务 (PostgreSQL, Redis, Neo4j)
+### 启动基础设施服务 (PostgreSQL, Redis)
 
 ```bash
 cd docker
@@ -35,7 +35,6 @@ docker-compose up -d
 |------|------|
 | PostgreSQL | 5432 |
 | Redis | 6379 |
-| Neo4j | 7474 (HTTP), 7687 (Bolt) |
 | 后端 API | 4000 |
 | 前端 Web | 3000 |
 
@@ -64,7 +63,6 @@ docker-compose up -d
 docker-compose logs -f server
 docker-compose logs -f web
 docker-compose logs -f postgres
-docker-compose logs -f neo4j
 ```
 
 ### 停止服务
@@ -132,13 +130,11 @@ User: musegraph
 Password: musegraph123
 ```
 
-### Neo4j 连接
+### Zep Cloud 配置
 
-```
-HTTP: http://localhost:7474
-Bolt: bolt://localhost:7687
-User: neo4j
-Password: musegraph123
+```env
+GRAPH_BACKEND=zep
+ZEP_API_KEY=<your-zep-api-key>
 ```
 
 ## 环境变量
@@ -152,9 +148,8 @@ JWT_SECRET=your-super-secret-jwt-key
 JWT_ALGORITHM=HS256
 JWT_EXPIRES_HOURS=168
 FILE_STORAGE_ROOT=.musegraph/storage
-NEO4J_URL=bolt://localhost:7687
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=musegraph123
+GRAPH_BACKEND=zep
+ZEP_API_KEY=<your-zep-api-key>
 OPENAI_API_KEY=sk-xxx
 ANTHROPIC_API_KEY=sk-ant-xxx
 APP_URL=http://localhost:3000
@@ -173,7 +168,7 @@ VITE_API_URL=http://localhost:4000
 3. **配额管理**: 每日/每月请求限制
 4. **模型权限**: 不同等级用户可使用不同AI模型
 5. **AI文本**: 创作/续写/分析/重写/摘要
-6. **知识图谱**: Cognee 驱动的实体提取/关系构建/可视化 (Neo4j 存储)
+6. **知识图谱**: Zep Cloud 驱动的实体提取/关系构建/可视化
 7. **计费系统**: 易支付集成/套餐订阅/余额充值
 8. **导出功能**: 支持多种格式导出
 
@@ -205,7 +200,7 @@ VITE_API_URL=http://localhost:4000
 - `POST /api/projects/:id/operation` - 执行AI操作
 - `GET /api/ai/models` - 获取可用模型
 
-### 知识图谱 (Cognee)
+### 知识图谱 (Zep Cloud)
 - `GET /api/projects/:id/graphs` - 图谱状态
 - `POST /api/projects/:id/graphs` - 添加文本到图谱
 - `POST /api/projects/:id/graphs/search` - 搜索图谱

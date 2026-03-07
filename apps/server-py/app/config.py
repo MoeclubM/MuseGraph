@@ -28,16 +28,18 @@ class Settings(BaseSettings):
     COGNEE_LLM_BASE_URL: str = ""
     COGNEE_LLM_MODEL: str = ""
 
-    # Cognee / Neo4j
-    NEO4J_URL: str = "bolt://localhost:7687"
-    NEO4J_USERNAME: str = "neo4j"
-    NEO4J_PASSWORD: str = "musegraph123"
+    # Optional legacy Cognee / Neo4j backend
+    NEO4J_URL: str = ""
+    NEO4J_USERNAME: str = ""
+    NEO4J_PASSWORD: str = ""
 
     # App
     APP_URL: str = "http://localhost:3000"
     AUTO_SEED_DATA: bool = False
 
     TELEMETRY_DISABLED: bool = True
+    GRAPH_BACKEND: str = "zep"
+    ZEP_API_KEY: str = ""
     # Optional bootstrap for default provider/model/pricing
     AUTO_BOOTSTRAP_NEWAPI: bool = False
     NEWAPI_PROVIDER_NAME: str = "NewAPI"

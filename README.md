@@ -1,12 +1,12 @@
 # MuseGraph
 
-AI 文本创作/分析系统，使用 Cognee + Neo4j 知识图谱构建实体关系。
+AI 文本创作/分析系统，当前默认使用 Zep Cloud 图谱后端构建实体关系。
 
 ## 技术栈
 
 - **后端**: Python / FastAPI
 - **前端**: Vue 3 + Vite + Tailwind
-- **知识图谱**: Cognee + Neo4j
+- **知识图谱**: Zep Cloud（过渡期默认）
 - **数据库**: PostgreSQL (pgvector) + Redis
 - **存储**: 本地持久化文件存储（Docker 卷）
 - **包管理**: uv (Python), pnpm (前端)
@@ -47,7 +47,7 @@ docker compose up -d --build
 |------|------|
 | 前端 | http://localhost:3000 |
 | 后端 API | http://localhost:4080 |
-| Neo4j Browser | http://localhost:17474 |
+| 图谱后端 | Zep Cloud（无需本地 Neo4j） |
 
 说明：任务系统状态与上传文件会持久化到 Docker 卷 `task_state_data`
 （`/app/.musegraph/task_state.sqlite3` 与 `/app/.musegraph/storage`），
@@ -70,7 +70,7 @@ python seed.py
 
 ## 本地开发
 
-仅启动基础设施（PostgreSQL, Redis, Neo4j）：
+仅启动基础设施（PostgreSQL, Redis）：
 
 ```bash
 cd docker

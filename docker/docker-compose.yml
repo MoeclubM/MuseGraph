@@ -30,23 +30,6 @@ services:
       timeout: 5s
       retries: 5
 
-  neo4j:
-    image: neo4j:5-community
-    container_name: musegraph-neo4j
-    environment:
-      NEO4J_AUTH: neo4j/musegraph123
-      NEO4J_PLUGINS: '["apoc"]'
-    ports:
-      - "17474:7474"
-      - "17687:7687"
-    volumes:
-      - neo4j_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u neo4j -p musegraph123 'RETURN 1'"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   server:
     build:
       context: ..
@@ -59,18 +42,13 @@ services:
       TASK_STATE_SQLITE_PATH: ""
       SESSION_EXPIRES_HOURS: 168
       FILE_STORAGE_ROOT: /app/.musegraph/storage
-      NEO4J_URL: bolt://neo4j:7687
-      NEO4J_USERNAME: neo4j
-      NEO4J_PASSWORD: musegraph123
       EMBEDDING_DIMENSIONS: "1024"
       LITELLM_DROP_PARAMS: "true"
-      GRAPH_DATABASE_PROVIDER: neo4j
-      GRAPH_DATABASE_URL: bolt://neo4j:7687
-      GRAPH_DATABASE_USERNAME: neo4j
-      GRAPH_DATABASE_PASSWORD: musegraph123
       ENABLE_BACKEND_ACCESS_CONTROL: "false"
       APP_URL: http://localhost:3000
       TELEMETRY_DISABLED: "true"
+      GRAPH_BACKEND: ${GRAPH_BACKEND:-zep}
+      ZEP_API_KEY: ${ZEP_API_KEY:-}
       AUTO_SEED_DATA: ${AUTO_SEED_DATA:-true}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@example.com}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-Admin123!Pass}
@@ -81,8 +59,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      neo4j:
         condition: service_healthy
     volumes:
       - task_state_data:/app/.musegraph
@@ -104,7 +80,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  neo4j_data:
   task_state_data:
   cognee_data:
   cognee_storage:
