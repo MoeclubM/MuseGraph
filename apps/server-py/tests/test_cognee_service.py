@@ -11,6 +11,12 @@ import pytest
 from app.services import cognee as cognee_service
 
 
+@pytest.fixture(autouse=True)
+def _force_cognee_backend(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(cognee_service.settings, "GRAPH_BACKEND", "cognee", raising=False)
+    yield
+
+
 class _FakeSearchType(Enum):
     NATURAL_LANGUAGE = "nl"
     SUMMARIES = "sum"
@@ -81,23 +87,23 @@ class TestCogneeHelpers:
     def test_merge_alias_entities_avoids_prefix_event_expansion(self):
         """Prefix-expanded phrases should not be treated as person aliases."""
         nodes = [
-            {"id": "n1", "type": "Entity", "name": "贾母", "label": "贾母"},
-            {"id": "n2", "type": "Entity", "name": "贾母去世", "label": "贾母去世"},
-            {"id": "n3", "type": "Entity", "name": "贾母丧事", "label": "贾母丧事"},
-            {"id": "n4", "type": "Entity", "name": "贾母寿宴", "label": "贾母寿宴"},
+            {"id": "n1", "type": "Entity", "name": "璐炬瘝", "label": "璐炬瘝"},
+            {"id": "n2", "type": "Entity", "name": "璐炬瘝鍘讳笘", "label": "璐炬瘝鍘讳笘"},
+            {"id": "n3", "type": "Entity", "name": "璐炬瘝涓т簨", "label": "璐炬瘝涓т簨"},
+            {"id": "n4", "type": "Entity", "name": "璐炬瘝瀵垮", "label": "璐炬瘝瀵垮"},
         ]
 
         merged_nodes, _ = cognee_service._merge_alias_entities(nodes, [])
         assert len(merged_nodes) == 4
-        assert {node["name"] for node in merged_nodes} == {"贾母", "贾母去世", "贾母丧事", "贾母寿宴"}
+        assert {node["name"] for node in merged_nodes} == {"璐炬瘝", "璐炬瘝鍘讳笘", "璐炬瘝涓т簨", "璐炬瘝瀵垮"}
 
     def test_merge_alias_entities_supports_llm_decision_override(self):
         """LLM decisions can explicitly force merge/non-merge for ambiguous pairs."""
         nodes = [
-            {"id": "n1", "type": "Entity", "name": "贾母", "label": "贾母"},
-            {"id": "n2", "type": "Entity", "name": "贾母太君", "label": "贾母太君"},
+            {"id": "n1", "type": "Entity", "name": "璐炬瘝", "label": "璐炬瘝"},
+            {"id": "n2", "type": "Entity", "name": "璐炬瘝澶悰", "label": "璐炬瘝澶悰"},
         ]
-        pair_key = cognee_service._alias_pair_key("贾母", "贾母太君")
+        pair_key = cognee_service._alias_pair_key("璐炬瘝", "璐炬瘝澶悰")
         merged_default, _ = cognee_service._merge_alias_entities(nodes, [])
         assert len(merged_default) == 2
 

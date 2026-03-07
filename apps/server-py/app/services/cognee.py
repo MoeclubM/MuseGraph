@@ -40,6 +40,13 @@ _LITELLM_TIMEOUT_SECONDS_OVERRIDE: contextvars.ContextVar[int | None] = contextv
 _LITELLM_RETRY_COUNT_OVERRIDE: contextvars.ContextVar[int | None] = contextvars.ContextVar("musegraph_litellm_retry_count_override", default=None)
 _LITELLM_RETRY_INTERVAL_SECONDS_OVERRIDE: contextvars.ContextVar[float | None] = contextvars.ContextVar("musegraph_litellm_retry_interval_seconds_override", default=None)
 
+def _graph_backend_name() -> str:
+    return str(getattr(settings, "GRAPH_BACKEND", "zep") or "zep").strip().lower() or "zep"
+
+
+def _use_zep_graph_backend() -> bool:
+    return _graph_backend_name() == "zep"
+
 _COGNEE_RUNTIME_CACHE_TARGETS: tuple[tuple[str, str], ...] = (
     ("cognee.infrastructure.llm.config", "get_llm_config"),
     ("cognee.modules.cognify.config", "get_cognify_config"),
@@ -1081,7 +1088,10 @@ def _patch_cognee_runtime_compatibility() -> None:
 
 
 async def setup_cognee():
-    """Configure Cognee infrastructure. Runtime LLM/embedding settings are injected per request."""
+    """Configure graph infrastructure for the active backend."""
+    if _use_zep_graph_backend():
+        logger.info("Using Zep Graphiti backend for graph operations")
+        return
     try:
         await _ensure_cognee_postgres_database_exists()
         _seed_cognee_relational_env()
@@ -1469,10 +1479,22 @@ async def add_and_cognify(
     *,
     model: str | None = None,
     embedding_model: str | None = None,
+    ontology: dict[str, Any] | None = None,
     db: AsyncSession | None = None,
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> str:
     """Add text to a Cognee dataset, build knowledge graph, and enrich with memify."""
+    if _use_zep_graph_backend():
+        from app.services.zep_graph import build_graph as build_graph_with_zep
+
+        return await build_graph_with_zep(
+            project_id,
+            text,
+            ontology=ontology,
+            db=db,
+            progress_callback=progress_callback,
+        )
+
     import cognee
 
     def _emit_progress(progress: int, message: str) -> None:
@@ -1795,6 +1817,8 @@ async def _rerank_search_results_with_llm(
 
 async def prepare_cognee_search_runtime(project_id: str, db: AsyncSession) -> None:
     """Configure Cognee runtime before graph search requests."""
+    if _use_zep_graph_backend():
+        return
     result = await db.execute(select(TextProject).where(TextProject.id == project_id))
     project = result.scalar_one_or_none()
     if project is None:
@@ -1818,14 +1842,41 @@ async def search_graph(
     reranker_model: str | None = None,
     reranker_top_n: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Search the knowledge graph using Cognee's native search."""
+    """Search the knowledge graph using the active backend."""
+    normalized_search_type = str(search_type or "").strip().upper() or "INSIGHTS"
+    if _use_zep_graph_backend():
+        from app.services.zep_graph import search_graph as search_graph_with_zep
+
+        parsed = await search_graph_with_zep(
+            project_id,
+            query,
+            top_k=top_k,
+            search_type=normalized_search_type,
+            db=db,
+        )
+        if not use_reranker:
+            return parsed
+        limit = int(reranker_top_n or top_k or len(parsed) or 1)
+        limit = max(1, min(50, limit))
+        if db is not None and str(reranker_model or "").strip():
+            try:
+                return await _rerank_search_results_with_llm(
+                    query,
+                    parsed,
+                    db=db,
+                    model=str(reranker_model or "").strip(),
+                    top_n=limit,
+                )
+            except Exception:
+                pass
+        return _rerank_search_results_lexical(query, parsed, top_n=limit)
+
     if db is not None:
         await prepare_cognee_search_runtime(project_id, db)
 
     import cognee
 
     global _DEFAULT_SEARCH_TYPE
-    normalized_search_type = str(search_type or "").strip().upper() or "INSIGHTS"
     type_map = _get_search_type_map()
     cognee_type = type_map.get(normalized_search_type) or _DEFAULT_SEARCH_TYPE
     if cognee_type is None:
@@ -1875,7 +1926,12 @@ async def get_graph_visualization(
     db: AsyncSession | None = None,
     alias_model: str | None = None,
 ) -> dict[str, Any]:
-    """Get graph data for visualization via Cognee's graph engine."""
+    """Get graph data for visualization via the active backend."""
+    if _use_zep_graph_backend():
+        from app.services.zep_graph import get_graph_visualization as get_graph_visualization_with_zep
+
+        return await get_graph_visualization_with_zep(project_id, db=db)
+
     from cognee.modules.data.methods import get_authorized_existing_datasets, get_dataset_data
     from cognee.modules.users.methods import get_default_user
     from cognee.infrastructure.databases.graph import get_graph_engine
@@ -2023,7 +2079,12 @@ async def delete_dataset(
     embedding_model: str | None = None,
     db: AsyncSession | None = None,
 ) -> None:
-    """Delete a Cognee dataset (Cognee 0.5.3+ API)."""
+    """Delete graph data for the active backend."""
+    if _use_zep_graph_backend():
+        from app.services.zep_graph import delete_graph as delete_graph_with_zep
+
+        await delete_graph_with_zep(project_id, db=db)
+        return
     await _configure_cognee_llm(model=model, embedding_model=embedding_model, db=db)
     import cognee
 

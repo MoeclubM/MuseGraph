@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import async_session, get_db
 from app.dependencies import get_current_user
 from app.models.project import ProjectChapter, TextProject
@@ -1030,7 +1031,9 @@ async def _execute_graph_build(
             "reason": plan["skip_reason"],
         }
 
-    graph_input = build_graph_input_with_ontology(str(plan["build_text"]), project.ontology_schema)
+    build_text = str(plan["build_text"])
+    graph_input = build_graph_input_with_ontology(build_text, project.ontology_schema)
+    graph_source_text = build_text if str(getattr(settings, "GRAPH_BACKEND", "zep") or "zep").strip().lower() == "zep" else graph_input
     ontology_default_model = resolve_component_model(project, "ontology_generation")
     graph_model = resolve_component_model(project, "graph_build", fallback_model=ontology_default_model)
     graph_embedding_model = resolve_component_model(
@@ -1058,9 +1061,10 @@ async def _execute_graph_build(
 
     dataset_name = await add_and_cognify(
         project_id,
-        graph_input,
+        graph_source_text,
         model=graph_model,
         embedding_model=graph_embedding_model or None,
+        ontology=project.ontology_schema,
         db=db,
         progress_callback=progress_callback,
     )

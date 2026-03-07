@@ -25,6 +25,7 @@ RUN uv pip install --system --no-cache-dir \
     "python-multipart>=0.0.12" \
     "openai>=1.55.0" \
     "anthropic>=0.39.0" \
+    "zep-cloud==3.13.0" \
     "httpx>=0.28.0" \
     "sse-starlette>=2.1.0" \
     "python-docx>=1.1.0" \
@@ -33,9 +34,6 @@ RUN uv pip install --system --no-cache-dir \
 
 # Try installing cognee separately (large, may fail)
 RUN uv pip install --system --no-cache-dir "cognee>=0.1.0" || echo "Cognee install skipped"
-
-# Install neo4j driver for Cognee graph database backend
-RUN uv pip install --system --no-cache-dir "neo4j>=5.0.0" || echo "neo4j install skipped"
 
 # Copy full source
 COPY apps/server-py/ .
