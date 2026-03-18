@@ -1,8 +1,9 @@
-import asyncio
+﻿import asyncio
 import hashlib
 import inspect
 import json
 from datetime import datetime, timezone
+from uuid import UUID
 from typing import Any, Callable, Coroutine
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -59,6 +60,11 @@ _RERANKER_SEARCH_TYPES = {"RAG_COMPLETION", "GRAPH_COMPLETION", "GRAPH_SUMMARY_C
 
 
 async def _get_project(project_id: str, user: User, db: AsyncSession) -> TextProject:
+    try:
+        UUID(str(project_id))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Invalid project id") from None
+
     result = await db.execute(select(TextProject).where(TextProject.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
@@ -1033,7 +1039,7 @@ async def _execute_graph_build(
 
     build_text = str(plan["build_text"])
     graph_input = build_graph_input_with_ontology(build_text, project.ontology_schema)
-    graph_source_text = build_text if str(getattr(settings, "GRAPH_BACKEND", "zep") or "zep").strip().lower() == "zep" else graph_input
+    graph_source_text = graph_input
     ontology_default_model = resolve_component_model(project, "ontology_generation")
     graph_model = resolve_component_model(project, "graph_build", fallback_model=ontology_default_model)
     graph_embedding_model = resolve_component_model(

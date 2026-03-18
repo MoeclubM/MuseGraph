@@ -591,3 +591,4 @@ class TestOasisConfig:
         assert body["llm_task_concurrency"] == 3
         assert body["llm_model_default_concurrency"] == 6
         assert body["llm_model_concurrency_overrides"] == {"gpt-4o-mini": 4}
+

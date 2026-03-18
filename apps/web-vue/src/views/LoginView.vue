@@ -53,14 +53,20 @@ async function handleLogin() {
         <Input
           v-model="email"
           label="Email"
+          name="email"
           type="email"
+          autocomplete="username"
+          autocapitalize="off"
+          :spellcheck="false"
           placeholder="you@example.com"
         />
 
         <Input
           v-model="password"
           label="Password"
+          name="password"
           type="password"
+          autocomplete="current-password"
           placeholder="Enter your password"
         />
 

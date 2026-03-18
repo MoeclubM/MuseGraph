@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, useId } from 'vue'
 import { cva } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
 
@@ -16,6 +16,10 @@ const props = withDefaults(
     step?: string | number
     list?: string
     autocomplete?: string
+    id?: string
+    name?: string
+    autocapitalize?: string
+    spellcheck?: boolean
     inputClass?: string
     modelModifiers?: Record<string, boolean>
   }>(),
@@ -23,6 +27,7 @@ const props = withDefaults(
     type: 'text',
     disabled: false,
     modelValue: '',
+    spellcheck: false,
     modelModifiers: () => ({}),
   }
 )
@@ -30,6 +35,10 @@ const props = withDefaults(
 const emit = defineEmits<{
   'update:modelValue': [value: string | number]
 }>()
+
+const generatedId = useId()
+
+const inputId = computed(() => String(props.id || props.name || generatedId))
 
 const inputVariants = cva(
   'muse-field-base muse-focus-ring h-11 w-full rounded-md px-3.5 text-sm outline-none',
@@ -74,10 +83,12 @@ function onInput(e: Event) {
 
 <template>
   <div class="space-y-1.5">
-    <label v-if="label" class="block text-sm font-medium text-[color:var(--muse-text-muted)]">
+    <label v-if="label" :for="inputId" class="block text-sm font-medium text-[color:var(--muse-text-muted)]">
       {{ label }}
     </label>
     <input
+      :id="inputId"
+      :name="name"
       :type="type"
       :placeholder="placeholder"
       :value="modelValue"
@@ -87,6 +98,8 @@ function onInput(e: Event) {
       :step="step"
       :list="list"
       :autocomplete="autocomplete"
+      :autocapitalize="autocapitalize"
+      :spellcheck="spellcheck"
       :class="inputClasses"
       @input="onInput"
     />

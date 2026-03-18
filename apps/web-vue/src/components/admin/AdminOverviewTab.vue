@@ -66,7 +66,7 @@ defineProps<{
         <div class="border-b border-stone-300/80 px-3 py-3 sm:px-4 dark:border-zinc-700/60">
           <p class="text-sm font-medium text-stone-700 dark:text-zinc-200">Top Users By Cost</p>
         </div>
-        <div class="py-3 sm:py-4">
+        <div class="px-3 py-3 sm:px-4 sm:py-4">
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead class="bg-stone-100/80 dark:bg-zinc-800/60">

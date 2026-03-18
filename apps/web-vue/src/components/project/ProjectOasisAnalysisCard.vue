@@ -124,7 +124,7 @@ const estimatedActivityCount = computed(() => Number(
         v-model="oasisAnalysisModelValue"
         :disabled="props.modelsLoading"
       >
-        <option value="">Use backend default</option>
+        <option value="">Auto-select first configured model</option>
         <option v-for="m in props.models" :key="`oasis-analysis-${m.id}`" :value="m.id">{{ m.name }}</option>
       </Select>
     </div>
@@ -136,7 +136,7 @@ const estimatedActivityCount = computed(() => Number(
         v-model="oasisSimulationModelValue"
         :disabled="props.modelsLoading"
       >
-        <option value="">Use backend default</option>
+        <option value="">Auto-select first configured model</option>
         <option v-for="m in props.models" :key="`oasis-sim-${m.id}`" :value="m.id">{{ m.name }}</option>
       </Select>
     </div>
@@ -148,7 +148,7 @@ const estimatedActivityCount = computed(() => Number(
         v-model="oasisReportModelValue"
         :disabled="props.modelsLoading"
       >
-        <option value="">Use backend default</option>
+        <option value="">Auto-select first configured model</option>
         <option v-for="m in props.models" :key="`oasis-report-${m.id}`" :value="m.id">{{ m.name }}</option>
       </Select>
     </div>

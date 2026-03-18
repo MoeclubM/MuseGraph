@@ -65,7 +65,7 @@ const emit = defineEmits<{
     <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-3">
       <div class="space-y-0.5">
         <h2 class="text-base font-semibold text-stone-800 dark:text-zinc-100">Users</h2>
-        <p class="text-xs text-stone-500 dark:text-zinc-400">当前总数 {{ usersData?.total ?? 0 }}</p>
+        <p class="text-xs text-stone-500 dark:text-zinc-400">Total users: {{ usersData?.total ?? 0 }}</p>
       </div>
       <Button size="sm" @click="emit('open-user-form')">New User</Button>
     </div>
@@ -114,7 +114,7 @@ const emit = defineEmits<{
     </Card>
 
     <Card :padding="false">
-      <div class="py-3 sm:py-4">
+      <div class="px-3 py-3 sm:px-4 sm:py-4">
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead class="bg-stone-100/80 dark:bg-zinc-800/60">
@@ -154,9 +154,9 @@ const emit = defineEmits<{
                         type="number"
                         step="0.01"
                         class="w-28"
-                        placeholder="+金额"
+                        placeholder="+Amount"
                       />
-                      <Button size="sm" variant="secondary" @click="emit('add-balance-for-user', u.id)">加余额</Button>
+                      <Button size="sm" variant="secondary" @click="emit('add-balance-for-user', u.id)">Add Balance</Button>
                     </div>
                   </td>
                   <td class="px-3 py-2">
@@ -184,7 +184,7 @@ const emit = defineEmits<{
                   <td colspan="8" class="px-3 py-3">
                     <div class="space-y-3">
                       <div class="flex items-center justify-between gap-2">
-                        <p class="text-sm font-medium text-stone-700 dark:text-zinc-200">充值订单 · {{ u.nickname || u.email }}</p>
+                        <p class="text-sm font-medium text-stone-700 dark:text-zinc-200">Recharge Orders · {{ u.nickname || u.email }}</p>
                         <Button size="sm" variant="secondary" @click="emit('load-user-orders', u.id)">Refresh</Button>
                       </div>
 

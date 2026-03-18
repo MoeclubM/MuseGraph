@@ -114,13 +114,13 @@ const graphBuildModeValue = computed({
         </h3>
         <div class="rounded-lg border border-amber-700/30 bg-amber-900/10 p-3 space-y-1.5">
           <p class="text-sm font-medium text-amber-800 dark:text-amber-200">
-            用途：先定义实体/关系本体，作为 RAG 检索与图谱入库的结构约束。
+            Purpose: define the entity and relation ontology first so graph ingestion and RAG retrieval use a stable schema.
           </p>
           <p class="text-xs text-amber-700 dark:text-amber-300/90">
-            未完成本体生成时，Step 2 图谱构建不可执行，AI 创作与 OASIS 模拟也会缺少可靠上下文。
+            Until ontology generation completes, Step 2 graph build stays disabled and downstream AI/OASIS steps will not have reliable context.
           </p>
           <p class="text-xs text-amber-700 dark:text-amber-300/80">
-            数据源始终来自左侧已选章节，当前文本长度：{{ props.workflowSourceTextLength.toLocaleString() }} characters
+            Source text always comes from the selected chapters on the left. Current text length: {{ props.workflowSourceTextLength.toLocaleString() }} characters
           </p>
         </div>
       </div>
@@ -148,7 +148,7 @@ const graphBuildModeValue = computed({
           v-model="ontologyModelValue"
           :disabled="props.modelsLoading"
         >
-          <option value="">Use backend default</option>
+          <option value="">Auto-select first configured model</option>
           <option v-for="m in props.models" :key="`ontology-${m.id}`" :value="m.id">{{ m.name }}</option>
         </Select>
       </div>
@@ -234,7 +234,7 @@ const graphBuildModeValue = computed({
             v-model="graphBuildModelValue"
             :disabled="props.modelsLoading"
           >
-            <option value="">Use backend default</option>
+            <option value="">Auto-select first configured model</option>
             <option v-for="m in props.models" :key="`graph-build-${m.id}`" :value="m.id">{{ m.name }}</option>
           </Select>
         </div>
@@ -246,7 +246,7 @@ const graphBuildModeValue = computed({
             v-model="graphEmbeddingModelValue"
             :disabled="props.modelsLoading"
           >
-            <option value="">Use backend auto select</option>
+            <option value="">Auto-select first configured embedding model</option>
             <option
               v-for="m in props.embeddingModels"
               :key="`graph-embed-${m.id}`"

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
@@ -65,7 +65,7 @@ async def test_create_mutations_are_recorded_as_project_sync_tasks(
     mock_db: AsyncMock,
     fake_user,
 ):
-    project_id = f"proj-sync-{uuid.uuid4().hex}"
+    project_id = str(uuid.uuid4())
     project = _build_project(project_id, fake_user.id)
 
     mock_db.add = MagicMock(side_effect=_with_timestamps)
@@ -81,19 +81,19 @@ async def test_create_mutations_are_recorded_as_project_sync_tasks(
 
     character_resp = await client.post(
         f"/api/projects/{project_id}/characters",
-        json={"name": "主角", "role": "lead", "profile": "profile", "notes": "notes"},
+        json={"name": "Lead", "role": "lead", "profile": "profile", "notes": "notes"},
     )
     assert character_resp.status_code == 201
 
     glossary_resp = await client.post(
         f"/api/projects/{project_id}/glossary-terms",
-        json={"term": "术语A", "definition": "定义A", "aliases": ["A"]},
+        json={"term": "Term A", "definition": "Definition A", "aliases": ["A"]},
     )
     assert glossary_resp.status_code == 201
 
     worldbook_resp = await client.post(
         f"/api/projects/{project_id}/worldbook-entries",
-        json={"title": "设定A", "content": "内容A", "tags": ["tag-a"]},
+        json={"title": "Setting A", "content": "Content A", "tags": ["tag-a"]},
     )
     assert worldbook_resp.status_code == 201
 
@@ -123,7 +123,7 @@ async def test_update_delete_mutations_are_recorded_as_project_sync_tasks(
     mock_db: AsyncMock,
     fake_user,
 ):
-    project_id = f"proj-sync-{uuid.uuid4().hex}"
+    project_id = str(uuid.uuid4())
     now = _now()
     chapter_1 = SimpleNamespace(
         id=f"ch-1-{uuid.uuid4().hex[:8]}",
@@ -138,7 +138,7 @@ async def test_update_delete_mutations_are_recorded_as_project_sync_tasks(
         id=f"ch-2-{uuid.uuid4().hex[:8]}",
         project_id=project_id,
         title="Chapter 2",
-        content="Another content",
+        content="Old content",
         order_index=1,
         created_at=now,
         updated_at=now,
@@ -146,7 +146,7 @@ async def test_update_delete_mutations_are_recorded_as_project_sync_tasks(
     character = SimpleNamespace(
         id=f"char-{uuid.uuid4().hex[:8]}",
         project_id=project_id,
-        name="配角",
+        name="Supporting Role",
         role="support",
         profile="profile",
         notes="notes",
@@ -157,8 +157,8 @@ async def test_update_delete_mutations_are_recorded_as_project_sync_tasks(
     glossary_term = SimpleNamespace(
         id=f"term-{uuid.uuid4().hex[:8]}",
         project_id=project_id,
-        term="术语B",
-        definition="旧定义",
+        term="Term B",
+        definition="Old definition",
         aliases=["B"],
         notes=None,
         order_index=0,
@@ -168,9 +168,9 @@ async def test_update_delete_mutations_are_recorded_as_project_sync_tasks(
     worldbook_entry = SimpleNamespace(
         id=f"wb-{uuid.uuid4().hex[:8]}",
         project_id=project_id,
-        title="世界观B",
+        title="Worldbook B",
         category=None,
-        content="旧内容",
+        content="Old content",
         tags=["tag-b"],
         notes=None,
         order_index=0,
@@ -214,7 +214,7 @@ async def test_update_delete_mutations_are_recorded_as_project_sync_tasks(
 
     update_term_resp = await client.put(
         f"/api/projects/{project_id}/glossary-terms/{glossary_term.id}",
-        json={"definition": "新定义"},
+        json={"definition": "New definition"},
     )
     assert update_term_resp.status_code == 200
 
@@ -251,3 +251,4 @@ async def test_update_delete_mutations_are_recorded_as_project_sync_tasks(
         and (item.get("metadata") or {}).get("action") == "delete"
         for item in project_tasks
     )
+

@@ -1073,6 +1073,11 @@ def _normalize_oasis_config(raw: Any) -> dict[str, Any]:
     return normalize_runtime_oasis_config(raw)
 
 
+def _serialize_oasis_config(raw: Any) -> dict[str, Any]:
+    cfg = raw if isinstance(raw, dict) else {}
+    return _normalize_oasis_config(cfg)
+
+
 @router.get("/oasis-config")
 async def get_oasis_config(
     admin: User = Depends(require_admin),
@@ -1081,7 +1086,7 @@ async def get_oasis_config(
     result = await db.execute(select(PaymentConfig).where(PaymentConfig.type == "oasis"))
     item = result.scalar_one_or_none()
     cfg = item.config if item and isinstance(item.config, dict) else None
-    return _normalize_oasis_config(cfg)
+    return _serialize_oasis_config(cfg)
 
 
 @router.put("/oasis-config")
@@ -1103,7 +1108,7 @@ async def upsert_oasis_config(
     item.is_active = True
     item.config = normalized
     await db.flush()
-    return normalized
+    return _serialize_oasis_config(item.config)
 
 
 def _epay_default_payload() -> dict[str, Any]:

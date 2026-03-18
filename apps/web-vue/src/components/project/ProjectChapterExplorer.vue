@@ -91,7 +91,7 @@ function isInlineRenamingChapter(chapterId: string): boolean {
       <Input
         v-model="chapterSearchQueryValue"
         class="mb-2"
-        placeholder="搜索章节 / Search chapters"
+        placeholder="Search chapters"
       />
 
       <p v-if="chapterImportMessage" class="mb-2 text-xs text-amber-700 dark:text-amber-300">
@@ -141,7 +141,7 @@ function isInlineRenamingChapter(chapterId: string): boolean {
           </div>
         </div>
         <p v-if="!filteredChapters.length" class="px-1 py-2 text-xs text-stone-500 dark:text-zinc-500">
-          没有匹配章节
+          No matching chapters
         </p>
       </div>
     </template>

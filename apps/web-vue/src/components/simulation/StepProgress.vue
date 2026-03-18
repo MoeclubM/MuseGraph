@@ -18,31 +18,31 @@ const props = withDefaults(
 const steps = computed(() => [
   {
     num: 1,
-    label: '图谱构建',
+    label: 'Graph Build',
     description: 'Knowledge Graph',
     isComplete: props.projectHasGraph || props.completedSteps.includes(1),
   },
   {
     num: 2,
-    label: '环境准备',
+    label: 'Prepare',
     description: 'Environment Setup',
     isComplete: props.simulationStatus === 'ready' || props.completedSteps.includes(2),
   },
   {
     num: 3,
-    label: '模拟执行',
+    label: 'Run',
     description: 'Simulation Run',
     isComplete: props.completedSteps.includes(3),
   },
   {
     num: 4,
-    label: '报告生成',
+    label: 'Report',
     description: 'Report Generation',
     isComplete: props.completedSteps.includes(4),
   },
   {
     num: 5,
-    label: '深度互动',
+    label: 'Interaction',
     description: 'Deep Interaction',
     isComplete: props.completedSteps.includes(5),
   },

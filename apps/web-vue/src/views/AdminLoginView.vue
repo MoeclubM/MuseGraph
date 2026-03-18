@@ -19,7 +19,7 @@ const loading = ref(false)
 
 async function handleLogin() {
   if (!email.value.trim() || !password.value.trim()) {
-    toast.warning('请输入管理员账号和密码')
+    toast.warning('Please enter the admin email and password')
     return
   }
 
@@ -28,7 +28,7 @@ async function handleLogin() {
     await authStore.login(email.value.trim(), password.value)
     if (!authStore.isAdmin) {
       await authStore.logout()
-      toast.error('当前账号无管理员权限')
+      toast.error('This account does not have admin access')
       return
     }
     const redirect = (route.query.redirect as string) || '/admin'
@@ -51,16 +51,32 @@ async function handleLogin() {
         <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-600">
           <Shield class="h-6 w-6 text-white" />
         </div>
-        <h1 class="text-xl font-semibold text-stone-900 dark:text-stone-100">管理员登录</h1>
-        <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">仅管理员账号可访问后台控制台</p>
+        <h1 class="text-xl font-semibold text-stone-900 dark:text-stone-100">Admin Sign In</h1>
+        <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Only administrator accounts can access the control panel.</p>
       </div>
 
       <form class="space-y-4" @submit.prevent="handleLogin">
-        <Input v-model="email" label="管理员邮箱" type="email" placeholder="admin@example.com" />
-        <Input v-model="password" label="密码" type="password" placeholder="输入密码" />
+        <Input
+          v-model="email"
+          label="Admin Email"
+          name="email"
+          type="email"
+          autocomplete="username"
+          autocapitalize="off"
+          :spellcheck="false"
+          placeholder="admin@example.com"
+        />
+        <Input
+          v-model="password"
+          label="Password"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          placeholder="Enter your password"
+        />
 
         <Button type="submit" variant="primary" class="w-full" :loading="loading">
-          登录后台
+          Sign In to Admin
         </Button>
       </form>
 
@@ -70,7 +86,7 @@ async function handleLogin() {
         class="mt-4 h-auto w-full py-1 text-xs text-stone-500 hover:text-stone-700 dark:text-stone-400 dark:hover:text-stone-200"
         @click="router.push('/login')"
       >
-        切换到普通用户登录
+        Switch to regular user sign-in
       </Button>
     </div>
   </div>

@@ -39,16 +39,16 @@ services:
       DATABASE_URL: postgresql+asyncpg://musegraph:musegraph123@postgres:5432/musegraph
       COGNEE_DATABASE_URL: postgresql+asyncpg://musegraph:musegraph123@postgres:5432/musegraph_cognee
       REDIS_URL: redis://redis:6379
+      GRAPHITI_DB_PATH: /app/.musegraph/graphiti/graphiti.kuzu
+      GRAPHITI_EMBEDDING_DIM: ${GRAPHITI_EMBEDDING_DIM:-1024}
       TASK_STATE_SQLITE_PATH: ""
       SESSION_EXPIRES_HOURS: 168
       FILE_STORAGE_ROOT: /app/.musegraph/storage
-      EMBEDDING_DIMENSIONS: "1024"
-      LITELLM_DROP_PARAMS: "true"
       ENABLE_BACKEND_ACCESS_CONTROL: "false"
       APP_URL: http://localhost:3000
       TELEMETRY_DISABLED: "true"
-      GRAPH_BACKEND: ${GRAPH_BACKEND:-zep}
-      ZEP_API_KEY: ${ZEP_API_KEY:-}
+      GRAPHITI_TELEMETRY_ENABLED: "false"
+      GRAPH_BACKEND: ${GRAPH_BACKEND:-graphiti}
       AUTO_SEED_DATA: ${AUTO_SEED_DATA:-true}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@example.com}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-Admin123!Pass}
@@ -62,8 +62,6 @@ services:
         condition: service_healthy
     volumes:
       - task_state_data:/app/.musegraph
-      - cognee_data:/usr/local/lib/python3.12/site-packages/cognee/.cognee_system
-      - cognee_storage:/usr/local/lib/python3.12/site-packages/cognee/.data_storage
     restart: unless-stopped
 
   web:
@@ -81,5 +79,3 @@ volumes:
   postgres_data:
   redis_data:
   task_state_data:
-  cognee_data:
-  cognee_storage:

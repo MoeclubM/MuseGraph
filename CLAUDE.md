@@ -2,14 +2,14 @@
 
 ## 项目简介
 
-MuseGraph 是一个商业级 AI 文本创作/分析/续写系统，当前默认使用 Zep Cloud 图谱后端构建实体关系。
+MuseGraph 是一个商业级 AI 文本创作/分析/续写系统，当前默认使用本地 Graphiti + Kuzu 图谱后端构建实体关系。
 
 ## 技术栈
 
 - 前端: Vue 3 + Vite + Tailwind
 - 后端: Python / FastAPI
-- 知识图谱: Zep Cloud（过渡期默认）
-- 数据库: PostgreSQL + Redis (Docker 本地部署)
+- 知识图谱: Graphiti (local) + Kuzu
+- 数据库: PostgreSQL + Redis + Kuzu (Docker 本地部署)
 - 存储: 本地持久化文件存储（Docker 卷）
 - 包管理: uv (Python), pnpm (前端)
 
@@ -130,11 +130,12 @@ User: musegraph
 Password: musegraph123
 ```
 
-### Zep Cloud 配置
+### Graphiti Local 配置
 
 ```env
-GRAPH_BACKEND=zep
-ZEP_API_KEY=<your-zep-api-key>
+GRAPH_BACKEND=graphiti
+GRAPHITI_DB_PATH=.musegraph/graphiti/graphiti.kuzu
+GRAPHITI_EMBEDDING_DIM=1024
 ```
 
 ## 环境变量
@@ -148,10 +149,8 @@ JWT_SECRET=your-super-secret-jwt-key
 JWT_ALGORITHM=HS256
 JWT_EXPIRES_HOURS=168
 FILE_STORAGE_ROOT=.musegraph/storage
-GRAPH_BACKEND=zep
-ZEP_API_KEY=<your-zep-api-key>
-OPENAI_API_KEY=sk-xxx
-ANTHROPIC_API_KEY=sk-ant-xxx
+GRAPH_BACKEND=graphiti
+GRAPHITI_DB_PATH=.musegraph/graphiti/graphiti.kuzu
 APP_URL=http://localhost:3000
 ```
 
@@ -168,7 +167,7 @@ VITE_API_URL=http://localhost:4000
 3. **配额管理**: 每日/每月请求限制
 4. **模型权限**: 不同等级用户可使用不同AI模型
 5. **AI文本**: 创作/续写/分析/重写/摘要
-6. **知识图谱**: Zep Cloud 驱动的实体提取/关系构建/可视化
+6. **知识图谱**: 本地 Graphiti 驱动的实体提取/关系构建/可视化
 7. **计费系统**: 易支付集成/套餐订阅/余额充值
 8. **导出功能**: 支持多种格式导出
 
@@ -200,7 +199,7 @@ VITE_API_URL=http://localhost:4000
 - `POST /api/projects/:id/operation` - 执行AI操作
 - `GET /api/ai/models` - 获取可用模型
 
-### 知识图谱 (Zep Cloud)
+### 知识图谱 (Graphiti Local)
 - `GET /api/projects/:id/graphs` - 图谱状态
 - `POST /api/projects/:id/graphs` - 添加文本到图谱
 - `POST /api/projects/:id/graphs/search` - 搜索图谱

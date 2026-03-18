@@ -31,7 +31,7 @@ const emit = defineEmits<{
         <Input
           :model-value="projectTitleDraft"
           class="w-full max-w-sm"
-          placeholder="项目名称"
+          placeholder="Project title"
           :disabled="projectTitleSaving"
           @update:modelValue="(value) => emit('update:projectTitleDraft', String(value || ''))"
           @keydown.enter.prevent="emit('submitTitle')"

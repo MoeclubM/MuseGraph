@@ -94,7 +94,7 @@ function isTaskCancelling(taskId: string): boolean {
   <div class="space-y-4">
     <div>
       <h2 class="text-base font-semibold text-stone-800 dark:text-zinc-100">Task Management</h2>
-      <p class="text-xs text-stone-500 dark:text-zinc-400">查看、筛选并终止运行中的系统任务</p>
+      <p class="text-xs text-stone-500 dark:text-zinc-400">Inspect, filter, and cancel active system tasks.</p>
     </div>
 
     <Card class="space-y-3">
@@ -123,75 +123,77 @@ function isTaskCancelling(taskId: string): boolean {
       <div class="px-4 py-3 text-xs text-stone-500 dark:text-zinc-400">
         Total: {{ total }}
       </div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead class="bg-stone-100/80 dark:bg-zinc-800/60">
-            <tr class="border-b border-stone-300 dark:border-zinc-700">
-              <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Task</th>
-              <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Status</th>
-              <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Progress</th>
-              <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Owner</th>
-              <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Message</th>
-              <th class="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="task in tasks"
-              :key="task.task_id"
-              class="border-b border-stone-200/80 transition-colors hover:bg-stone-100/70 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
-            >
-              <td class="px-3 py-2 align-top">
-                <p class="font-medium text-stone-800 dark:text-zinc-100">{{ task.task_type }}</p>
-                <p class="font-mono text-xs text-stone-500 dark:text-zinc-400">{{ task.task_id }}</p>
-                <p class="text-xs text-stone-500 dark:text-zinc-400">{{ formatDateTime(task.updated_at) }}</p>
-              </td>
-              <td class="px-3 py-2 align-top">
-                <span
-                  class="inline-flex rounded-full border px-2 py-0.5 text-xs capitalize"
-                  :class="taskStatusChipClass(task.status)"
-                >
-                  {{ task.status }}
-                </span>
-              </td>
-              <td class="px-3 py-2 align-top">
-                <div class="w-28 rounded-full bg-stone-200 dark:bg-zinc-700">
-                  <div
-                    class="h-1.5 rounded-full bg-amber-500 transition-all duration-300"
-                    :style="{ width: `${Math.max(0, Math.min(100, Number(task.progress || 0)))}%` }"
-                  />
-                </div>
-                <p class="mt-1 text-xs text-stone-500 dark:text-zinc-400">{{ Number(task.progress || 0) }}%</p>
-              </td>
-              <td class="px-3 py-2 align-top">
-                <p class="text-xs text-stone-600 dark:text-zinc-300">project: {{ task.metadata?.project_id || '-' }}</p>
-                <p class="text-xs text-stone-600 dark:text-zinc-300">user: {{ task.metadata?.user_id || '-' }}</p>
-              </td>
-              <td class="px-3 py-2 align-top">
-                <p class="max-w-[340px] text-xs text-stone-700 dark:text-zinc-200 line-clamp-3">{{ task.message || '-' }}</p>
-                <p v-if="task.error" class="max-w-[340px] text-xs text-red-700 dark:text-red-300 line-clamp-3">{{ task.error }}</p>
-              </td>
-              <td class="px-3 py-2 align-top text-right">
-                <Button
-                  v-if="isTaskCancellable(task)"
-                  size="sm"
-                  variant="danger"
-                  :loading="isTaskCancelling(task.task_id)"
-                  :disabled="isTaskCancelling(task.task_id)"
-                  @click="emit('cancel', task)"
-                >
-                  Cancel
-                </Button>
-                <span v-else class="text-xs text-stone-400 dark:text-zinc-500">-</span>
-              </td>
-            </tr>
-            <tr v-if="!tasks.length">
-              <td colspan="6" class="px-3 py-8 text-center text-sm text-stone-500 dark:text-zinc-400">
-                No tasks
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="px-3 pb-3 sm:px-4 sm:pb-4">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-stone-100/80 dark:bg-zinc-800/60">
+              <tr class="border-b border-stone-300 dark:border-zinc-700">
+                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Task</th>
+                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Status</th>
+                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Progress</th>
+                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Owner</th>
+                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Message</th>
+                <th class="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="task in tasks"
+                :key="task.task_id"
+                class="border-b border-stone-200/80 transition-colors hover:bg-stone-100/70 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+              >
+                <td class="px-3 py-2 align-top">
+                  <p class="font-medium text-stone-800 dark:text-zinc-100">{{ task.task_type }}</p>
+                  <p class="font-mono text-xs text-stone-500 dark:text-zinc-400">{{ task.task_id }}</p>
+                  <p class="text-xs text-stone-500 dark:text-zinc-400">{{ formatDateTime(task.updated_at) }}</p>
+                </td>
+                <td class="px-3 py-2 align-top">
+                  <span
+                    class="inline-flex rounded-full border px-2 py-0.5 text-xs capitalize"
+                    :class="taskStatusChipClass(task.status)"
+                  >
+                    {{ task.status }}
+                  </span>
+                </td>
+                <td class="px-3 py-2 align-top">
+                  <div class="w-28 rounded-full bg-stone-200 dark:bg-zinc-700">
+                    <div
+                      class="h-1.5 rounded-full bg-amber-500 transition-all duration-300"
+                      :style="{ width: `${Math.max(0, Math.min(100, Number(task.progress || 0)))}%` }"
+                    />
+                  </div>
+                  <p class="mt-1 text-xs text-stone-500 dark:text-zinc-400">{{ Number(task.progress || 0) }}%</p>
+                </td>
+                <td class="px-3 py-2 align-top">
+                  <p class="text-xs text-stone-600 dark:text-zinc-300">project: {{ task.metadata?.project_id || '-' }}</p>
+                  <p class="text-xs text-stone-600 dark:text-zinc-300">user: {{ task.metadata?.user_id || '-' }}</p>
+                </td>
+                <td class="px-3 py-2 align-top">
+                  <p class="max-w-[340px] text-xs text-stone-700 dark:text-zinc-200 line-clamp-3">{{ task.message || '-' }}</p>
+                  <p v-if="task.error" class="max-w-[340px] text-xs text-red-700 dark:text-red-300 line-clamp-3">{{ task.error }}</p>
+                </td>
+                <td class="px-3 py-2 align-top text-right">
+                  <Button
+                    v-if="isTaskCancellable(task)"
+                    size="sm"
+                    variant="danger"
+                    :loading="isTaskCancelling(task.task_id)"
+                    :disabled="isTaskCancelling(task.task_id)"
+                    @click="emit('cancel', task)"
+                  >
+                    Cancel
+                  </Button>
+                  <span v-else class="text-xs text-stone-400 dark:text-zinc-500">-</span>
+                </td>
+              </tr>
+              <tr v-if="!tasks.length">
+                <td colspan="6" class="px-3 py-8 text-center text-sm text-stone-500 dark:text-zinc-400">
+                  No tasks
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </Card>
   </div>

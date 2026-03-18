@@ -52,7 +52,7 @@ async function loadPricingPage() {
       authStore.setBalance(balance.value)
     }
   } catch (e: any) {
-    loadError.value = e?.response?.data?.detail || e?.message || '加载定价失败'
+    loadError.value = e?.response?.data?.detail || e?.message || 'Failed to load pricing'
   } finally {
     loading.value = false
   }
@@ -69,19 +69,19 @@ onMounted(() => {
       <div class="flex items-center justify-between gap-3">
         <div>
           <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Pricing</h1>
-          <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">按 Token 或按次计费，先充值后调用模型。</p>
+          <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">Models are billed per token or per request. Recharge before use.</p>
         </div>
-        <Button v-if="authStore.isAuthenticated" variant="secondary" @click="loadPricingPage">刷新</Button>
+        <Button v-if="authStore.isAuthenticated" variant="secondary" @click="loadPricingPage">Refresh</Button>
       </div>
 
       <div v-if="authStore.isAuthenticated" class="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Card class="border-amber-400/50">
           <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-sm text-stone-600 dark:text-zinc-400">当前余额</p>
+              <p class="text-sm text-stone-600 dark:text-zinc-400">Current Balance</p>
               <p class="mt-1 text-2xl font-bold text-stone-900 dark:text-stone-100">{{ formatUsd2(balance) }}</p>
               <p class="mt-2 text-xs text-stone-600 dark:text-zinc-400">
-                今日已用：{{ formatUsd2(dailyUsage) }} · 本月已用：{{ formatUsd2(monthlyUsage) }}
+                Today: {{ formatUsd2(dailyUsage) }} · This month: {{ formatUsd2(monthlyUsage) }}
               </p>
             </div>
             <div class="rounded-lg bg-amber-500/15 p-2 text-amber-700 dark:text-amber-300">
@@ -93,12 +93,12 @@ onMounted(() => {
         <Card>
           <div class="flex h-full items-center justify-between gap-4">
             <div>
-              <p class="text-sm font-medium text-stone-900 dark:text-stone-100">余额充值入口</p>
-              <p class="mt-1 text-xs text-stone-600 dark:text-zinc-400">余额不足可直接跳转充值页</p>
+              <p class="text-sm font-medium text-stone-900 dark:text-stone-100">Recharge Entry</p>
+              <p class="mt-1 text-xs text-stone-600 dark:text-zinc-400">Jump directly to recharge when balance is low.</p>
             </div>
             <Button variant="primary" @click="router.push('/recharge')">
               <ArrowUpRight class="h-4 w-4" />
-              去充值
+              Recharge
             </Button>
           </div>
         </Card>
@@ -113,7 +113,7 @@ onMounted(() => {
       </div>
 
       <div v-else-if="rules.length === 0" class="rounded-xl border border-stone-300/90 bg-stone-100/70 p-8 sm:p-10 text-center text-sm text-stone-600 dark:border-zinc-700 dark:bg-zinc-800/50 dark:text-zinc-400">
-        暂无可用定价规则。
+        No pricing rules are available yet.
       </div>
 
       <div v-else class="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -144,7 +144,7 @@ onMounted(() => {
           <div class="flex items-center justify-between text-xs text-stone-600 dark:text-zinc-400">
             <span class="inline-flex items-center gap-1">
               <Receipt class="h-3.5 w-3.5" />
-              {{ rule.billing_mode === 'TOKEN' ? '按输入/输出 Token 计费' : '每次请求固定计费' }}
+              {{ rule.billing_mode === 'TOKEN' ? 'Billed by input/output tokens' : 'Fixed price per request' }}
             </span>
             <span class="inline-flex items-center gap-1">
               <Coins class="h-3.5 w-3.5" />

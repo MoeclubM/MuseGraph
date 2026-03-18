@@ -1,13 +1,13 @@
 # MuseGraph
 
-AI 文本创作/分析系统，当前默认使用 Zep Cloud 图谱后端构建实体关系。
+AI 文本创作/分析系统，当前默认使用本地 Graphiti + Kuzu 图谱后端构建实体关系。
 
 ## 技术栈
 
 - **后端**: Python / FastAPI
 - **前端**: Vue 3 + Vite + Tailwind
-- **知识图谱**: Zep Cloud（过渡期默认）
-- **数据库**: PostgreSQL (pgvector) + Redis
+- **知识图谱**: Graphiti (local) + Kuzu
+- **数据库**: PostgreSQL (pgvector) + Redis + Kuzu
 - **存储**: 本地持久化文件存储（Docker 卷）
 - **包管理**: uv (Python), pnpm (前端)
 
@@ -27,12 +27,14 @@ cd MuseGraph
 
 ### 2. 配置环境变量
 
-在项目根目录创建 `.env` 文件（或在 `docker-compose.yml` 中直接修改）：
+在项目根目录创建 `.env` 文件（可选）：
 
 ```env
-OPENAI_API_KEY=sk-your-openai-key
-ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
+GRAPH_BACKEND=graphiti
+GRAPHITI_DB_PATH=.musegraph/graphiti/graphiti.kuzu
 ```
+
+Provider API keys and model lists are configured in `Admin -> Providers`.
 
 ### 3. 启动所有服务
 
@@ -47,7 +49,7 @@ docker compose up -d --build
 |------|------|
 | 前端 | http://localhost:3000 |
 | 后端 API | http://localhost:4080 |
-| 图谱后端 | Zep Cloud（无需本地 Neo4j） |
+| 图谱后端 | Local Graphiti |
 
 说明：任务系统状态与上传文件会持久化到 Docker 卷 `task_state_data`
 （`/app/.musegraph/task_state.sqlite3` 与 `/app/.musegraph/storage`），

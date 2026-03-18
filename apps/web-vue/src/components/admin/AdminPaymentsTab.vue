@@ -27,7 +27,7 @@ const paymentKeyInputValue = computed({
   <div class="space-y-4">
     <div>
       <h2 class="text-base font-semibold text-stone-800 dark:text-zinc-100">EPay Config</h2>
-      <p class="text-xs text-stone-500 dark:text-zinc-400">管理充值支付渠道参数</p>
+      <p class="text-xs text-stone-500 dark:text-zinc-400">Manage recharge gateway settings.</p>
     </div>
 
     <Card class="space-y-3">

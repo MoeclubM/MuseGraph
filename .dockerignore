@@ -4,6 +4,7 @@
 
 # JS/TS build artifacts
 node_modules
+packages/**/node_modules
 .pnpm-store
 .turbo
 .next
@@ -46,3 +47,4 @@ apps/server-py/.venv/
 apps/server-py/.musegraph/
 apps/web-vue/node_modules/
 .docker_tmp/
+apps/server-py/.env

@@ -23,17 +23,15 @@ RUN uv pip install --system --no-cache-dir \
     "passlib[bcrypt]>=1.7.4" \
     "python-jose[cryptography]>=3.3.0" \
     "python-multipart>=0.0.12" \
+    "graphiti-core==0.28.1" \
+    "kuzu>=0.11.3" \
     "openai>=1.55.0" \
     "anthropic>=0.39.0" \
-    "zep-cloud==3.13.0" \
     "httpx>=0.28.0" \
     "sse-starlette>=2.1.0" \
     "python-docx>=1.1.0" \
     "PyPDF2>=3.0.0" \
     || echo "Some deps failed, continuing..."
-
-# Try installing cognee separately (large, may fail)
-RUN uv pip install --system --no-cache-dir "cognee>=0.1.0" || echo "Cognee install skipped"
 
 # Copy full source
 COPY apps/server-py/ .

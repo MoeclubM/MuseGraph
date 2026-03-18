@@ -93,6 +93,13 @@ def _reset_task_manager():
 
 class TestCogneeGraphFlow:
     @pytest.mark.asyncio
+    async def test_list_tasks_invalid_project_id_returns_422(self, client: AsyncClient):
+        resp = await client.get("/api/projects/undefined/graphs/tasks")
+
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == "Invalid project id"
+
+    @pytest.mark.asyncio
     async def test_generate_ontology_success(
         self,
         client: AsyncClient,

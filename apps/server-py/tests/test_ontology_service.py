@@ -116,6 +116,8 @@ class TestOntologyService:
 
             assert result is not None
             assert "entity_types" in result
+            assert mock_llm.await_args_list[0].kwargs["prefer_stream_override"] is False
+            assert mock_llm.await_args_list[0].kwargs["stream_fallback_nonstream_override"] is False
 
     @pytest.mark.asyncio
     async def test_generate_ontology_llm_failure_raises_runtime_error(self):
@@ -162,6 +164,8 @@ class TestOntologyService:
             assert result["edge_types"][0]["name"] == "WORKS_FOR"
             assert result["edge_types"][0]["source_type"] == "PERSON"
             assert result["edge_types"][0]["target_type"] == "ORGANIZATION"
+            assert mock_llm.await_args_list[0].kwargs["prefer_stream_override"] is False
+            assert mock_llm.await_args_list[0].kwargs["stream_fallback_nonstream_override"] is False
 
     @pytest.mark.asyncio
     async def test_generate_ontology_invalid_json_raises(self):

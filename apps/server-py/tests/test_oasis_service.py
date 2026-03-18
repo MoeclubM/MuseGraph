@@ -496,6 +496,8 @@ class TestAsyncOasisFunctions:
 
             assert result["scenario_summary"] == "LLM summary"
             assert mock_llm.await_args.kwargs["max_tokens"] == 4096
+            assert mock_llm.await_args.kwargs["prefer_stream_override"] is False
+            assert mock_llm.await_args.kwargs["stream_fallback_nonstream_override"] is False
 
     @pytest.mark.asyncio
     async def test_generate_oasis_analysis_backfills_summary_from_context(self, mock_db: AsyncMock):
@@ -709,6 +711,8 @@ class TestAsyncOasisFunctions:
 
             assert result["agent_activity"][0]["actions_per_hour"] == 1.0
             assert mock_llm.await_args.kwargs["max_tokens"] == 2048
+            assert mock_llm.await_args.kwargs["prefer_stream_override"] is False
+            assert mock_llm.await_args.kwargs["stream_fallback_nonstream_override"] is False
 
     @pytest.mark.asyncio
     async def test_generate_oasis_report(self, mock_db: AsyncMock):
@@ -741,3 +745,38 @@ class TestAsyncOasisFunctions:
 
             assert result["title"] == "Test Report"
             assert result["status"] == "completed"
+            assert mock_llm.await_args.kwargs["prefer_stream_override"] is False
+            assert mock_llm.await_args.kwargs["stream_fallback_nonstream_override"] is False
+
+    @pytest.mark.asyncio
+    async def test_generate_oasis_report_salvages_field_level_json(self, mock_db: AsyncMock):
+        """Test generate_oasis_report salvages malformed top-level JSON."""
+        from app.services.oasis import generate_oasis_report
+
+        package = {"simulation_id": "sim-1"}
+        analysis = {"scenario_summary": "Summary"}
+        run_result = {"metrics": {"total_hours": 72}}
+
+        malformed = (
+            'invalid prefix\n'
+            '"title": "Recovered Report",\n'
+            '"executive_summary": "Recovered summary",\n'
+            '"key_findings": ["finding1"],\n'
+            '"next_actions": ["action1"],\n'
+            '"markdown": "# Report\nRecovered"'
+        )
+
+        with patch("app.services.oasis.call_llm", new=AsyncMock(return_value={"content": malformed})):
+            result = await generate_oasis_report(
+                package=package,
+                analysis=analysis,
+                run_result=run_result,
+                requirement="Test requirement",
+                model="gpt-4o-mini",
+                db=mock_db,
+            )
+
+            assert result["title"] == "Recovered Report"
+            assert result["executive_summary"] == "Recovered summary"
+            assert result["key_findings"] == ["finding1"]
+            assert result["next_actions"] == ["action1"]

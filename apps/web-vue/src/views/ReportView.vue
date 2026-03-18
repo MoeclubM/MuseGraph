@@ -43,20 +43,20 @@ onMounted(() => {
             </p>
           </div>
           <div class="flex flex-wrap items-center justify-end gap-2">
-            <Button variant="ghost" :loading="loading" @click="loadData">刷新</Button>
+            <Button variant="ghost" :loading="loading" @click="loadData">Refresh</Button>
             <Button
               v-if="report?.simulation_id"
               variant="secondary"
               @click="router.push(`/interaction/${reportId}`)"
             >
-              进入交互
+              Open Interaction
             </Button>
             <Button
               v-if="report?.simulation_id"
               variant="ghost"
               @click="router.push(`/simulation/${report.simulation_id}`)"
             >
-              返回 Simulation
+              Back to Simulation
             </Button>
           </div>
         </div>
@@ -71,7 +71,7 @@ onMounted(() => {
 
       <Card>
         <h2 class="text-sm font-medium text-stone-600 dark:text-zinc-300 uppercase tracking-wider mb-2">Sections</h2>
-        <div v-if="sections.length === 0" class="text-sm text-stone-500 dark:text-zinc-500">暂无分段</div>
+        <div v-if="sections.length === 0" class="text-sm text-stone-500 dark:text-zinc-500">No sections yet</div>
         <div v-else class="space-y-3">
           <div v-for="section in sections" :key="section.index" class="rounded border border-stone-300 dark:border-zinc-700 bg-stone-100/70 dark:bg-zinc-800/40 p-3">
             <h3 class="text-sm font-medium text-stone-700 dark:text-zinc-200">{{ section.index + 1 }}. {{ section.title }}</h3>

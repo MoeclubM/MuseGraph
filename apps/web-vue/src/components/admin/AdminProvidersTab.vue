@@ -44,7 +44,7 @@ const emit = defineEmits<{
           <Input
             v-model="providerForm.provider"
             list="provider-type-options"
-            placeholder="Provider type (e.g. openai_compatible)"
+            placeholder="Provider type"
           />
           <datalist id="provider-type-options">
             <option v-for="item in providerTypeOptions" :key="item" :value="item" />
@@ -65,7 +65,7 @@ const emit = defineEmits<{
     </Card>
 
     <Card :padding="false">
-      <div class="py-3 sm:py-4">
+      <div class="px-3 py-3 sm:px-4 sm:py-4">
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead class="bg-stone-100/80 dark:bg-zinc-800/60">

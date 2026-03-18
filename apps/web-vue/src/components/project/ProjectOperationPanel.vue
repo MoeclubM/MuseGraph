@@ -133,7 +133,7 @@ const runDisabled = computed(() =>
         v-model="operationModelValue"
         :disabled="props.modelsLoading"
       >
-        <option value="">Use backend default</option>
+        <option value="">Auto-select first configured model</option>
         <option v-for="m in props.models" :key="m.id" :value="m.id">{{ m.name }}</option>
       </Select>
     </div>
