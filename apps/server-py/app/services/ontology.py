@@ -189,7 +189,13 @@ async def _repair_ontology_json(raw_output: str, model: str, db: AsyncSession) -
         "3) Keep relation source_type/target_type explicit and non-empty.\n\n"
         f"Draft:\n{content[:12000]}"
     )
-    repaired = await call_llm(model, repair_prompt, db)
+    repaired = await call_llm(
+        model,
+        repair_prompt,
+        db,
+        prefer_stream_override=False,
+        stream_fallback_nonstream_override=False,
+    )
     return str(repaired.get("content") or "").strip() or None
 
 
@@ -428,6 +434,8 @@ async def generate_ontology(
             _build_ontology_prompt(payload_text, requirement),
             db,
             max_tokens=2200,
+            prefer_stream_override=False,
+            stream_fallback_nonstream_override=False,
         )
         api_called = True
         provider_name = str(llm_result.get("provider") or "")
@@ -463,6 +471,8 @@ async def generate_ontology(
                 _build_retry_prompt(payload_text, requirement),
                 db,
                 max_tokens=2200,
+                prefer_stream_override=False,
+                stream_fallback_nonstream_override=False,
             )
             input_tokens += int(retry_result.get("input_tokens") or 0)
             output_tokens += int(retry_result.get("output_tokens") or 0)
@@ -540,9 +550,9 @@ def build_graph_input_with_ontology(text: str, ontology: dict[str, Any] | None) 
         }
         extraction_rules = (
             "[GRAPH_EXTRACTION_RULES]\n"
-            "1) 人物/组织等实体必须使用规范名称，别名仅作为同一实体的别名，不要拆成新实体。\n"
-            "2) 事件短语（如“X去世”“X丧事”）应建模为事件类节点，不要当作人物实体名称。\n"
-            "3) 场景或位置短语（如“X屋”“X正室”）不要作为人物别名。\n"
+            "1) People, organizations, and other entities must use canonical names. Treat aliases as aliases of the same entity instead of creating new entities.\n"
+            "2) Event phrases such as deaths, funerals, or ceremonies must be modeled as event nodes instead of person entities.\n"
+            "3) Scene or location phrases must not be used as person aliases.\n"
             "[/GRAPH_EXTRACTION_RULES]\n\n"
         )
         return (

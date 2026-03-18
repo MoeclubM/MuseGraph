@@ -56,21 +56,29 @@ async function handleRegister() {
         <Input
           v-model="email"
           label="Email"
+          name="email"
           type="email"
+          autocomplete="email"
+          autocapitalize="off"
+          :spellcheck="false"
           placeholder="you@example.com"
         />
 
         <Input
           v-model="nickname"
           label="Nickname"
+          name="nickname"
           type="text"
+          autocomplete="nickname"
           placeholder="Display name"
         />
 
         <Input
           v-model="password"
           label="Password"
+          name="password"
           type="password"
+          autocomplete="new-password"
           placeholder="At least 6 characters"
         />
 

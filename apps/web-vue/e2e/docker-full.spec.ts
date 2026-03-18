@@ -9,6 +9,10 @@ const REQUESTED_EMBEDDING_MODEL_NAME = process.env.PW_EMBEDDING_MODEL_NAME || ''
 const PROVIDER_API_KEY = process.env.PW_PROVIDER_API_KEY || ''
 const TEST_USER_PASSWORD = process.env.PW_TEST_USER_PASSWORD || 'User123!Pass'
 
+function e2eLog(message: string) {
+  console.log(`[E2E] ${message}`)
+}
+
 interface AdminProvider {
   id: string
   name: string
@@ -36,22 +40,19 @@ test.describe('Docker Full Flow', () => {
 
     const testUserEmail = `pw-user-${Date.now()}@example.com`
 
-    await registerTestUser(page, testUserEmail)
+    await registerTestUserInApi(request, testUserEmail)
 
-    await loginAsAdmin(page)
-    const adminToken = await getAuthToken(page)
+    const adminToken = await loginAdminInApi(request)
     const provider = await upsertProviderInAdminApi(request, adminToken)
     const modelSelection = await ensureProviderModelsInAdminApi(request, adminToken, provider)
     await upsertPricingInAdminApi(request, adminToken, modelSelection.model)
     await tuneOasisRuntimeInAdminApi(request, adminToken)
     await topUpUserBalanceInAdminApi(request, adminToken, testUserEmail, 500)
-    await logout(page)
-
     await login(page, testUserEmail, TEST_USER_PASSWORD)
     const userToken = await getAuthToken(page)
 
     await createProjectFromDashboard(page)
-    await runCreateOperation(page, modelSelection.model)
+    await runCreateOperation(page, request, userToken, modelSelection.model)
     await runOntologyToGraphToOasisPipeline(
       page,
       request,
@@ -59,12 +60,32 @@ test.describe('Docker Full Flow', () => {
       modelSelection.model,
       modelSelection.embeddingModel
     )
-    await runContinueOperation(page, modelSelection.model)
+    await runContinueOperation(page, request, userToken, modelSelection.model)
   })
 })
 
-async function loginAsAdmin(page: Page) {
-  await login(page, ADMIN_EMAIL, ADMIN_PASSWORD)
+async function loginAdminInApi(request: APIRequestContext): Promise<string> {
+  e2eLog('Admin auth: requesting admin token via API')
+  const response = await request.fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    data: {
+      email: ADMIN_EMAIL,
+      password: ADMIN_PASSWORD,
+    },
+  })
+  if (!response.ok()) {
+    const detail = (await response.text()).slice(0, 800)
+    throw new Error(`POST /api/auth/login failed: ${response.status()} ${detail}`)
+  }
+  const payload = (await response.json()) as { token?: string; user?: { is_admin?: boolean } }
+  if (!payload.token) {
+    throw new Error('Admin auth response did not include a token')
+  }
+  if (!payload.user?.is_admin) {
+    throw new Error('Admin auth response did not return an admin user')
+  }
+  return payload.token
 }
 
 async function login(page: Page, email: string, password: string) {
@@ -75,14 +96,21 @@ async function login(page: Page, email: string, password: string) {
   await expect(page).toHaveURL(/\/dashboard$/)
 }
 
-async function registerTestUser(page: Page, email: string) {
-  await page.goto('/register')
-  await page.getByPlaceholder('you@example.com').fill(email)
-  await page.getByPlaceholder('Display name').fill('PW Test User')
-  await page.getByPlaceholder('At least 6 characters').fill(TEST_USER_PASSWORD)
-  await page.getByRole('button', { name: 'Create Account' }).click()
-  await expect(page).toHaveURL(/\/dashboard$/)
-  await logout(page)
+async function registerTestUserInApi(request: APIRequestContext, email: string) {
+  e2eLog(`Auth bootstrap: registering ${email} via API`)
+  const response = await request.fetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    data: {
+      email,
+      password: TEST_USER_PASSWORD,
+      nickname: 'PW Test User',
+    },
+  })
+  if (!response.ok()) {
+    const detail = (await response.text()).slice(0, 800)
+    throw new Error(`POST /api/auth/register failed: ${response.status()} ${detail}`)
+  }
 }
 
 async function getAuthToken(page: Page): Promise<string> {
@@ -261,48 +289,71 @@ async function topUpUserBalanceInAdminApi(
 }
 
 async function createProjectFromDashboard(page: Page) {
-  await page.goto('/dashboard')
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+  e2eLog('Create project: open projects page')
+  await page.goto('/projects')
+  await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible()
   await page.getByRole('button', { name: /New Project|Create Project/i }).first().click()
   await page.getByPlaceholder('Project title').fill(`E2E Full Flow ${Date.now()}`)
   await page.getByRole('button', { name: 'Create', exact: true }).click()
   await expect(page).toHaveURL(/\/projects\/[^/]+$/)
+  e2eLog('Create project: waiting for project workspace shell')
+  await expect(page.getByRole('tab', { name: /Graph \+ RAG/i })).toBeVisible({ timeout: 60000 })
+  await expect(page.getByRole('tab', { name: /AI Create/i })).toBeVisible({ timeout: 60000 })
+  await expect(page.getByRole('tab', { name: /Scenario Sim/i })).toBeVisible({ timeout: 60000 })
 }
 
 async function openTab(page: Page, tabName: RegExp) {
   const tab = page.getByRole('tab', { name: tabName })
   if (await tab.count()) {
-    await tab.first().click()
+    const firstTab = tab.first()
+    await expect(firstTab).toBeVisible({ timeout: 60000 })
+    await firstTab.click({ timeout: 20000 })
     return
   }
-  await page.getByRole('button', { name: tabName }).first().click()
+  const fallbackButton = page.getByRole('button', { name: tabName }).first()
+  await expect(fallbackButton).toBeVisible({ timeout: 60000 })
+  await fallbackButton.click({ timeout: 20000 })
 }
 
-async function runCreateOperation(page: Page, model: string) {
+async function runCreateOperation(page: Page, request: APIRequestContext, token: string, model: string) {
+  e2eLog(`AI Create: start with model ${model}`)
+  e2eLog('AI Create: opening tab')
   await openTab(page, /AI Create/i)
+  e2eLog('AI Create: tab open')
+  e2eLog(`AI Create: selecting model ${model}`)
   await selectModelByLabel(page, 'Operation Model', model)
+  e2eLog('AI Create: model selected')
+  e2eLog('AI Create: filling prompt')
   await page.getByPlaceholder('Describe theme, style, setting, and any must-have elements.').fill(
-    '写一个发生在沿海城市的公共交通协同治理故事，包含多方博弈与风险应对。'
+    'Write a story about coastal public transit coordination, with competing stakeholders and risk response.'
   )
+  e2eLog('AI Create: filling outline')
   await page.getByPlaceholder('Generated outline will appear here. You can edit before drafting.').fill(
-    '1. 高峰拥堵升级并引发舆论关注。\n2. 管理方发布试点方案并解释资源约束。\n3. 社区代表提出改进诉求并参与协同。'
+    '1. Rush-hour congestion escalates into a public issue.\n2. Operators publish a pilot plan and explain resource limits.\n3. Community representatives push for coordination and accountability.'
   )
+  e2eLog('AI Create: clicking draft generation')
   await clickAndWait(page.getByRole('button', { name: /Generate Draft From Outline/i }))
-  await expect(page.getByText('COMPLETED').first()).toBeVisible({ timeout: 300000 })
+  e2eLog('AI Create: waiting for operation completion via API')
+  await waitForOperationStatus(page, request, token, 'CREATE', 300000)
+  e2eLog('AI Create: operation completed')
 }
 
-async function runContinueOperation(page: Page, model: string) {
+async function runContinueOperation(page: Page, request: APIRequestContext, token: string, model: string) {
+  e2eLog(`AI Continue: start with model ${model}`)
   await openTab(page, /AI Create/i)
+  e2eLog('AI Continue: clicking continue mode')
   await clickAndWait(page.getByRole('button', { name: 'Continue' }))
   await selectModelByLabel(page, 'Operation Model', model)
   await page.getByPlaceholder('Describe what should happen next and any writing constraints.').fill(
-    '继续写后续演化，突出风险处置与共识形成，保持叙事一致。'
+    'Continue the story with risk handling, negotiation, and a realistic consensus-building outcome.'
   )
   await page.getByPlaceholder('Continuation outline and checks from graph analysis will appear here.').fill(
-    '1. 社区与运营方召开联合协调会。\n2. 争议点被量化并给出阶段性指标。\n3. 行动计划上线后反馈逐步转正。'
+    '1. The community and operators hold a joint coordination meeting.\n2. The main disagreements are quantified into measurable checkpoints.\n3. After rollout, feedback gradually turns positive.'
   )
   await clickAndWait(page.getByRole('button', { name: /Run Continue/i }))
-  await expect(page.getByText('COMPLETED').first()).toBeVisible({ timeout: 300000 })
+  e2eLog('AI Continue: waiting for operation completion via API')
+  await waitForOperationStatus(page, request, token, 'CONTINUE', 300000)
+  e2eLog('AI Continue: operation completed')
 }
 
 async function runOntologyToGraphToOasisPipeline(
@@ -322,39 +373,113 @@ async function runOntologyToGraphToOasisPipeline(
   await clickAndWait(page.getByRole('button', { name: 'Generate Ontology' }))
   await expect(page.getByText('Ontology ready')).toBeVisible({ timeout: 300000 })
 
-  await clickAndWait(page.getByRole('button', { name: /Build Knowledge Graph/i }))
+  e2eLog('Graph pipeline: build knowledge graph')
+  const buildGraphButtons = page.getByRole('button', { name: /Build Knowledge Graph/i })
+  e2eLog(`Graph pipeline: build button count ${await buildGraphButtons.count()}`)
+  const buildGraphButton = buildGraphButtons.first()
+  e2eLog(`Graph pipeline: build button text ${(await buildGraphButton.textContent())?.trim() || '<empty>'}`)
+  e2eLog(`Graph pipeline: build button disabled attr ${String(await buildGraphButton.getAttribute('disabled'))}`)
+  await expect(buildGraphButton).toBeEnabled({ timeout: 60000 })
+  await buildGraphButton.scrollIntoViewIfNeeded()
+  e2eLog('Graph pipeline: build button scrolled into view')
+  const buildButtonHitTest = await buildGraphButton.evaluate((el) => {
+    const rect = el.getBoundingClientRect()
+    const x = rect.left + rect.width / 2
+    const y = rect.top + rect.height / 2
+    const top = document.elementFromPoint(x, y)
+    return {
+      same: !!top && (top === el || el.contains(top)),
+      topTag: top?.tagName || null,
+      topText: (top?.textContent || '').trim().slice(0, 80),
+    }
+  })
+  e2eLog(`Graph pipeline: build button hit test ${JSON.stringify(buildButtonHitTest)}`)
+  e2eLog('Graph pipeline: clicking build button')
+  await buildGraphButton.click({ timeout: 20000 })
+  e2eLog('Graph pipeline: click returned')
   await waitForGraphReady(page, request, token, 10 * 60 * 1000)
+  e2eLog('Graph pipeline: graph is ready')
 
-  await openTab(page, /OASIS Sim/i)
-  await page.getByPlaceholder('Enter OASIS analysis focus').fill('关注群体行为演化、风险节点和传播路径。')
-  await selectModelByLabel(page, 'OASIS Analysis Model', model)
-  await selectModelByLabel(page, 'OASIS Simulation Model', model)
-  await selectModelByLabel(page, 'OASIS Report Model', model)
+  e2eLog('Scenario pipeline: open Scenario Sim tab')
+  await openTab(page, /Scenario Sim/i)
+  await page.getByPlaceholder('Describe the scenario analysis focus').fill('Focus on behavior shifts, risk inflection points, and propagation paths.')
+  await selectModelByLabel(page, 'Analysis Model', model)
+  await selectModelByLabel(page, 'Execution Model', model)
+  await selectModelByLabel(page, 'Report Model', model)
 
-  await clickAndWait(page.getByRole('button', { name: 'Run OASIS Analysis' }))
-  await expect(page.getByText('OASIS summary ready. Guidance and agent profiles are now used by continuation generation.'))
+  e2eLog('Scenario pipeline: generate analysis')
+  await clickAndWait(page.getByRole('button', { name: 'Generate Scenario Analysis' }))
+  await expect(page.getByText('Scenario analysis is ready. Guidance and analysis profiles are now available for continuation workflows.'))
     .toBeVisible({ timeout: 300000 })
 
-  await clickAndWait(page.getByRole('button', { name: 'Prepare OASIS Package (Task)' }))
-  await expect(page.getByText('Simulation Package:')).toBeVisible({ timeout: 300000 })
+  e2eLog('Scenario pipeline: prepare runtime package')
+  await clickAndWait(page.getByRole('button', { name: 'Prepare Runtime Package' }))
+  await expect(page.getByText('Runtime Package:')).toBeVisible({ timeout: 300000 })
 
-  await clickAndWait(page.getByRole('button', { name: 'Run OASIS Simulation (Task)' }))
+  e2eLog('Scenario pipeline: execute run')
+  await clickAndWait(page.getByRole('button', { name: 'Execute Scenario Run' }))
   await expect(page.getByText('Run:')).toBeVisible({ timeout: 300000 })
 
-  await clickAndWait(page.getByRole('button', { name: 'Generate OASIS Report (Task)' }))
-  await expect(page.getByText('Report:')).toBeVisible({ timeout: 300000 })
+  e2eLog('Scenario pipeline: generate report')
+  await clickAndWait(page.getByRole('button', { name: 'Generate Analysis Report' }))
+  await expect(page.getByText(/^Report: report_/).first()).toBeVisible({ timeout: 300000 })
 }
 
-async function waitForGraphReady(page: Page, request: APIRequestContext, token: string, timeoutMs: number) {
+async function waitForOperationStatus(
+  page: Page,
+  request: APIRequestContext,
+  token: string,
+  type: 'CREATE' | 'CONTINUE',
+  timeoutMs: number
+) {
   const projectId = await currentProjectId(page)
   await expect
     .poll(
       async () => {
-        const response = await request.fetch(`/api/projects/${projectId}/graphs`, {
+        const response = await request.fetch(`/api/projects/${projectId}/operations`, {
           headers: { Authorization: `Bearer ${token}` },
         })
-        if (!response.ok()) return 'error'
-        const payload = (await response.json()) as { status?: string; graph_freshness?: string }
+        if (!response.ok()) return `error:${response.status()}`
+        const payload = (await response.json()) as Array<{ type?: string; status?: string; output?: string | null }>
+        const match = payload.find((item) => String(item.type || '').toUpperCase() === type)
+        if (!match) return 'missing'
+        const status = String(match.status || '').toUpperCase()
+        if (status === 'FAILED') return 'FAILED'
+        if (status === 'COMPLETED' && String(match.output || '').trim()) return 'COMPLETED'
+        return status || 'pending'
+      },
+      { timeout: timeoutMs, intervals: [1000, 2000, 3000, 5000] }
+    )
+    .toBe('COMPLETED')
+}
+
+async function waitForGraphReady(page: Page, request: APIRequestContext, token: string, timeoutMs: number) {
+  e2eLog('Graph pipeline: waiting for graph readiness')
+  const projectId = await currentProjectId(page)
+  await expect
+    .poll(
+      async () => {
+        const [statusResponse, taskResponse] = await Promise.all([
+          request.fetch(`/api/projects/${projectId}/graphs`, {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+          request.fetch(`/api/projects/${projectId}/graphs/tasks?task_type=graph_build&limit=5`, {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+        ])
+        if (!statusResponse.ok()) return 'error'
+        const payload = (await statusResponse.json()) as { status?: string; graph_freshness?: string }
+
+        if (taskResponse.ok()) {
+          const taskPayload = (await taskResponse.json()) as {
+            tasks?: Array<{ status?: string; error?: string | null; message?: string | null }>
+          }
+          const latestTask = (taskPayload.tasks || [])[0]
+          if (latestTask && String(latestTask.status || '').toLowerCase() === 'failed') {
+            return `failed:${String(latestTask.error || latestTask.message || 'Graph build task failed')}`
+          }
+        }
+
         if (payload.status !== 'ready') return payload.status || 'pending'
         if (payload.graph_freshness === 'syncing') return 'syncing'
         return 'ready'
@@ -373,7 +498,10 @@ async function currentProjectId(page: Page): Promise<string> {
 }
 
 async function selectModelByLabel(page: Page, label: string, model: string) {
-  const select = page.locator('label', { hasText: label }).locator('xpath=following-sibling::select').first()
+  const field = page.getByText(label, { exact: true }).locator('xpath=ancestor::*[.//select][1]').first()
+  const select = field.locator('select').first()
+  await expect(select).toBeVisible({ timeout: 180000 })
+  await expect(select).toBeEnabled({ timeout: 180000 })
   await select.scrollIntoViewIfNeeded()
   await expect
     .poll(async () => select.locator(`option[value="${model}"]`).count(), { timeout: 180000 })
@@ -387,6 +515,7 @@ async function clickAndWait(locator: Locator) {
 }
 
 async function logout(page: Page) {
+  e2eLog('Logout and cleanup session')
   await page.evaluate(() => {
     localStorage.removeItem('token')
     localStorage.removeItem('user')
@@ -395,3 +524,8 @@ async function logout(page: Page) {
   await page.goto('/login')
   await expect(page).toHaveURL(/\/login$/)
 }
+
+
+
+
+

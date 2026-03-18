@@ -73,7 +73,7 @@ const llmModelConcurrencyOverridesInputValue = computed({
           <Textarea
             v-model="llmModelConcurrencyOverridesInputValue"
             :rows="4"
-            placeholder='{"gpt-4o-mini": 4, "claude-3-7-sonnet": 2}'
+            placeholder='{"your-model-id": 4}'
           />
         </div>
         <label class="inline-flex items-center gap-2 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">

@@ -16,41 +16,21 @@ class Settings(BaseSettings):
     # File storage (local persistent path)
     FILE_STORAGE_ROOT: str = ".musegraph/storage"
 
-    # AI
-    OPENAI_API_KEY: str = ""
-    ANTHROPIC_API_KEY: str = ""
-    LLM_API_KEY: str = ""
-    LLM_ENDPOINT: str = ""
-    LLM_MODEL: str = ""
-
-    # Cognee LLM (defaults to OPENAI_API_KEY if not set)
-    COGNEE_LLM_API_KEY: str = ""
-    COGNEE_LLM_BASE_URL: str = ""
-    COGNEE_LLM_MODEL: str = ""
-
-    # Optional legacy Cognee / Neo4j backend
+    # Optional legacy Neo4j config (Cognee) and local Graphiti store path
     NEO4J_URL: str = ""
     NEO4J_USERNAME: str = ""
     NEO4J_PASSWORD: str = ""
+    NEO4J_DATABASE: str = ""
+    GRAPHITI_DB_PATH: str = ".musegraph/graphiti/graphiti.kuzu"
+    GRAPHITI_EMBEDDING_DIM: int = 1024
 
     # App
     APP_URL: str = "http://localhost:3000"
     AUTO_SEED_DATA: bool = False
 
     TELEMETRY_DISABLED: bool = True
-    GRAPH_BACKEND: str = "zep"
-    ZEP_API_KEY: str = ""
-    # Optional bootstrap for default provider/model/pricing
-    AUTO_BOOTSTRAP_NEWAPI: bool = False
-    NEWAPI_PROVIDER_NAME: str = "NewAPI"
-    NEWAPI_PROVIDER_TYPE: str = "openai_compatible"
+    GRAPH_BACKEND: str = "graphiti"
     SUPPORTED_PROVIDER_TYPES: str = "openai_compatible,anthropic_compatible"
-    NEWAPI_PROVIDER_PRIORITY: int = 100
-    NEWAPI_BASE_URL: str = ""
-    NEWAPI_API_KEY: str = ""
-    NEWAPI_MODEL: str = ""
-    NEWAPI_INPUT_PRICE: float = 0.0011
-    NEWAPI_OUTPUT_PRICE: float = 0.0044
 
     # Optional seed admin bootstrap (used by seed.py)
     SEED_ADMIN_EMAIL: str = ""

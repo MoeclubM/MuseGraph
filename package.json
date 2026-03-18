@@ -10,7 +10,7 @@
     "test:web": "pnpm --filter @musegraph/web test",
     "test:web:coverage": "pnpm --filter @musegraph/web test:coverage",
     "typecheck": "turbo run typecheck",
-    "clean": "turbo run clean && rm -rf node_modules"
+    "clean": "turbo run clean && node -e \"require('node:fs').rmSync('node_modules', { recursive: true, force: true })\""
   },
   "devDependencies": {
     "turbo": "^2.4.0",
@@ -28,3 +28,4 @@
     ]
   }
 }
+

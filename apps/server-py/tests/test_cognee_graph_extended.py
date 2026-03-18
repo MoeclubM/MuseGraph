@@ -1,4 +1,4 @@
-"""Tests for cognee graph router endpoints."""
+﻿"""Tests for cognee graph router endpoints."""
 
 from __future__ import annotations
 
@@ -17,6 +17,14 @@ def _scalar_one_or_none(value):
     return result
 
 
+def _scalars_all(values):
+    result = MagicMock()
+    scalars = MagicMock()
+    scalars.all.return_value = values
+    result.scalars.return_value = scalars
+    return result
+
+
 def _close_and_stub_task(coro):
     coro.close()
     return MagicMock()
@@ -29,7 +37,7 @@ class TestCogneeGraphStatus:
     async def test_get_graph_status_no_graph(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test getting status when no graph exists."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
             cognee_dataset_id=None,
             ontology_schema=None,
@@ -37,7 +45,7 @@ class TestCogneeGraphStatus:
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
-        resp = await client.get("/api/projects/proj-1/graphs")
+        resp = await client.get("/api/projects/11111111-1111-4111-8111-111111111111/graphs")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -47,7 +55,7 @@ class TestCogneeGraphStatus:
     async def test_get_graph_status_with_graph(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test getting status when graph exists."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
             cognee_dataset_id="dataset-1",
             ontology_schema={"entity_types": []},
@@ -55,7 +63,7 @@ class TestCogneeGraphStatus:
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
-        resp = await client.get("/api/projects/proj-1/graphs")
+        resp = await client.get("/api/projects/11111111-1111-4111-8111-111111111111/graphs")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -66,12 +74,12 @@ class TestCogneeGraphStatus:
     async def test_get_graph_status_unauthorized(self, client: AsyncClient, mock_db: AsyncMock):
         """Test getting status of another user's project."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id="different-user-id",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
-        resp = await client.get("/api/projects/proj-1/graphs")
+        resp = await client.get("/api/projects/11111111-1111-4111-8111-111111111111/graphs")
 
         assert resp.status_code == 403
 
@@ -83,13 +91,13 @@ class TestCogneeGraphAdd:
     async def test_add_text_to_graph_unauthorized(self, client: AsyncClient, mock_db: AsyncMock):
         """Test adding text to another user's project."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id="different-user-id",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
         resp = await client.post(
-            "/api/projects/proj-1/graphs",
+            "/api/projects/11111111-1111-4111-8111-111111111111/graphs",
             json={"text": "Test content"},
         )
 
@@ -99,14 +107,14 @@ class TestCogneeGraphAdd:
     async def test_add_text_to_graph_no_ontology(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test adding text without ontology returns 400."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
             ontology_schema=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
         resp = await client.post(
-            "/api/projects/proj-1/graphs",
+            "/api/projects/11111111-1111-4111-8111-111111111111/graphs",
             json={"text": "Test content"},
         )
 
@@ -120,13 +128,13 @@ class TestCogneeGraphSearch:
     async def test_search_graph_unauthorized(self, client: AsyncClient, mock_db: AsyncMock):
         """Test searching another user's graph."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id="different-user-id",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
         resp = await client.post(
-            "/api/projects/proj-1/graphs/search",
+            "/api/projects/11111111-1111-4111-8111-111111111111/graphs/search",
             json={"query": "test query"},
         )
 
@@ -136,14 +144,14 @@ class TestCogneeGraphSearch:
     async def test_search_graph_no_dataset(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test searching graph without dataset returns 400."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
             cognee_dataset_id=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
         resp = await client.post(
-            "/api/projects/proj-1/graphs/search",
+            "/api/projects/11111111-1111-4111-8111-111111111111/graphs/search",
             json={"query": "test query"},
         )
 
@@ -157,12 +165,12 @@ class TestCogneeGraphVisualization:
     async def test_get_visualization_unauthorized(self, client: AsyncClient, mock_db: AsyncMock):
         """Test getting visualization of another user's graph."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id="different-user-id",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
-        resp = await client.get("/api/projects/proj-1/graphs/visualization")
+        resp = await client.get("/api/projects/11111111-1111-4111-8111-111111111111/graphs/visualization")
 
         assert resp.status_code == 403
 
@@ -171,7 +179,7 @@ class TestCogneeGraphVisualization:
     async def test_get_visualization_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test getting visualization successfully."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
             cognee_dataset_id="dataset-1",
         )
@@ -181,7 +189,7 @@ class TestCogneeGraphVisualization:
             return {"nodes": [], "edges": []}
 
         with patch("app.services.cognee.get_graph_visualization", side_effect=mock_viz_func):
-            resp = await client.get("/api/projects/proj-1/graphs/visualization")
+            resp = await client.get("/api/projects/11111111-1111-4111-8111-111111111111/graphs/visualization")
 
             assert resp.status_code == 200
             data = resp.json()
@@ -196,12 +204,12 @@ class TestCogneeGraphDelete:
     async def test_delete_graph_unauthorized(self, client: AsyncClient, mock_db: AsyncMock):
         """Test deleting another user's graph."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id="different-user-id",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
-        resp = await client.delete("/api/projects/proj-1/graphs")
+        resp = await client.delete("/api/projects/11111111-1111-4111-8111-111111111111/graphs")
 
         assert resp.status_code == 403
 
@@ -209,7 +217,7 @@ class TestCogneeGraphDelete:
     async def test_delete_graph_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test deleting graph successfully."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
             cognee_dataset_id="dataset-1",
         )
@@ -218,7 +226,7 @@ class TestCogneeGraphDelete:
         with patch("app.routers.cognee_graph.delete_dataset") as mock_delete:
             mock_delete.return_value = None
 
-            resp = await client.delete("/api/projects/proj-1/graphs")
+            resp = await client.delete("/api/projects/11111111-1111-4111-8111-111111111111/graphs")
 
             assert resp.status_code == 204
 
@@ -230,13 +238,13 @@ class TestOntologyGenerate:
     async def test_generate_ontology_unauthorized(self, client: AsyncClient, mock_db: AsyncMock):
         """Test generating ontology for another user's project."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id="different-user-id",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
         resp = await client.post(
-            "/api/projects/proj-1/graphs/ontology/generate",
+            "/api/projects/11111111-1111-4111-8111-111111111111/graphs/ontology/generate",
             json={"text": "Test content"},
         )
 
@@ -246,14 +254,14 @@ class TestOntologyGenerate:
     async def test_generate_ontology_no_text(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test generating ontology without text returns 400."""
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
             chapters=[],
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
         resp = await client.post(
-            "/api/projects/proj-1/graphs/ontology/generate",
+            "/api/projects/11111111-1111-4111-8111-111111111111/graphs/ontology/generate",
             json={},
         )
 
@@ -314,11 +322,11 @@ class TestOasisAnalyze:
     @pytest.mark.asyncio
     async def test_analyze_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -337,7 +345,7 @@ class TestOasisAnalyze:
              patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"):
             mock_fn.return_value = (mock_analysis, mock_context)
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/analyze",
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/analyze",
                 json={"text": "Analyze this text"},
             )
             assert resp.status_code == 200
@@ -353,11 +361,11 @@ class TestOasisAnalyze:
     @pytest.mark.asyncio
     async def test_analyze_exception(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -374,7 +382,7 @@ class TestOasisAnalyze:
              patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"):
             mock_fn.side_effect = RuntimeError("LLM call failed")
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/analyze",
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/analyze",
                 json={"text": "Analyze this text"},
             )
             assert resp.status_code == 500
@@ -387,11 +395,11 @@ class TestOasisPrepare:
     @pytest.mark.asyncio
     async def test_prepare_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -410,7 +418,7 @@ class TestOasisPrepare:
              patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value={"agents": [], "scenarios": []}), \
              patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"):
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/prepare",
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/prepare",
                 json={"text": "prepare text"},
             )
             assert resp.status_code == 200
@@ -421,11 +429,11 @@ class TestOasisPrepare:
     @pytest.mark.asyncio
     async def test_prepare_exception(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -436,13 +444,17 @@ class TestOasisPrepare:
             cognee_dataset_id="dataset-1", oasis_analysis={"agents": []},
             simulation_requirement=None, component_models=None,
         )
-        mock_db.execute.return_value = _scalar_one_or_none(project)
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(project),
+            _scalars_all(project.chapters),
+            _scalar_one_or_none(None),
+        ]
 
         with patch.object(_cg_mod, "build_oasis_package", side_effect=RuntimeError("Package build failed")), \
              patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value={"agents": [], "scenarios": []}), \
              patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"):
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/prepare", json={},
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/prepare", json={},
             )
             assert resp.status_code == 500
             assert "Package build failed" in resp.json()["detail"]
@@ -450,11 +462,11 @@ class TestOasisPrepare:
     @pytest.mark.asyncio
     async def test_prepare_with_requirement_provided(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -484,7 +496,7 @@ class TestOasisPrepare:
              ), \
              patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"):
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/prepare",
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/prepare",
                 json={"requirement": "custom requirement", "chapter_ids": ["ch-1"]},
             )
             assert resp.status_code == 200
@@ -497,11 +509,11 @@ class TestOasisPrepareTask:
     @pytest.mark.asyncio
     async def test_prepare_task_starts(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -518,7 +530,7 @@ class TestOasisPrepareTask:
         with patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"), \
              patch.object(_cg_mod.asyncio, "create_task", side_effect=_close_and_stub_task) as mock_ct:
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/prepare/task",
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/prepare/task",
                 json={"text": f"prepare text {nonce}"},
             )
             assert resp.status_code == 200
@@ -535,11 +547,11 @@ class TestOasisRun:
     @pytest.mark.asyncio
     async def test_run_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -551,7 +563,11 @@ class TestOasisRun:
             oasis_analysis={"agents": [], "latest_package": {"config": {}}},
             simulation_requirement=None, component_models=None,
         )
-        mock_db.execute.return_value = _scalar_one_or_none(project)
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(project),
+            _scalars_all(project.chapters),
+            _scalar_one_or_none(None),
+        ]
         mock_run_result = {"steps": [], "summary": "done"}
         valid_analysis = {
             "scenario_summary": "Ready",
@@ -566,7 +582,6 @@ class TestOasisRun:
                 }
             ],
             "simulation_config": {
-                "active_platforms": ["twitter"],
                 "time_config": {
                     "total_hours": 48,
                     "minutes_per_round": 60,
@@ -578,7 +593,7 @@ class TestOasisRun:
                     {
                         "name": "Agent1",
                         "activity_level": 0.6,
-                        "posts_per_hour": 1.0,
+                        "actions_per_hour": 1.0,
                         "response_delay_minutes": 30,
                         "stance": "neutral",
                     }
@@ -590,7 +605,7 @@ class TestOasisRun:
         with patch.object(_cg_mod, "build_oasis_run_result", return_value=mock_run_result), \
              patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value=valid_analysis):
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/run", json={},
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/run", json={},
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -602,11 +617,11 @@ class TestOasisRun:
     @pytest.mark.asyncio
     async def test_run_no_package_auto_builds(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -631,7 +646,6 @@ class TestOasisRun:
                 }
             ],
             "simulation_config": {
-                "active_platforms": ["twitter"],
                 "time_config": {
                     "total_hours": 48,
                     "minutes_per_round": 60,
@@ -643,7 +657,7 @@ class TestOasisRun:
                     {
                         "name": "Agent1",
                         "activity_level": 0.6,
-                        "posts_per_hour": 1.0,
+                        "actions_per_hour": 1.0,
                         "response_delay_minutes": 30,
                         "stance": "neutral",
                     }
@@ -667,7 +681,7 @@ class TestOasisRun:
         ), \
              patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value=valid_analysis):
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/run", json={},
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/run", json={},
             )
         assert resp.status_code == 200
         assert resp.json()["run_result"].get("content_hash")
@@ -679,11 +693,11 @@ class TestOasisRunTask:
     @pytest.mark.asyncio
     async def test_run_task_starts(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -699,7 +713,7 @@ class TestOasisRunTask:
 
         with patch.object(_cg_mod.asyncio, "create_task", side_effect=_close_and_stub_task) as mock_ct:
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/run/task",
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/run/task",
                 json={"package": {"nonce": nonce}},
             )
             assert resp.status_code == 200
@@ -712,11 +726,11 @@ class TestOasisRunTask:
     @pytest.mark.asyncio
     async def test_run_task_reuses_inflight_idempotent_task(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -736,14 +750,14 @@ class TestOasisRunTask:
             updated_at=datetime.now(timezone.utc),
             progress=35,
             message="Running simulation estimation...",
-            metadata={"project_id": "proj-1", "idempotency_key": "oasis_run:existing"},
+            metadata={"project_id": "11111111-1111-4111-8111-111111111111", "idempotency_key": "oasis_run:existing"},
         )
 
         with patch.object(_cg_mod, "task_manager") as mock_tm, \
              patch.object(_cg_mod.asyncio, "create_task") as mock_ct:
             mock_tm.find_inflight_task_by_idempotency.return_value = existing_task
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/run/task", json={},
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/run/task", json={},
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -759,11 +773,11 @@ class TestOasisReport:
     @pytest.mark.asyncio
     async def test_report_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -779,7 +793,11 @@ class TestOasisReport:
             },
             simulation_requirement="test req", component_models=None,
         )
-        mock_db.execute.return_value = _scalar_one_or_none(project)
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(project),
+            _scalars_all(project.chapters),
+            _scalar_one_or_none(None),
+        ]
         mock_report = {"sections": [], "summary": "Report complete"}
         valid_analysis = {
             "scenario_summary": "Ready",
@@ -794,7 +812,6 @@ class TestOasisReport:
                 }
             ],
             "simulation_config": {
-                "active_platforms": ["twitter"],
                 "time_config": {
                     "total_hours": 48,
                     "minutes_per_round": 60,
@@ -806,7 +823,7 @@ class TestOasisReport:
                     {
                         "name": "Agent1",
                         "activity_level": 0.6,
-                        "posts_per_hour": 1.0,
+                        "actions_per_hour": 1.0,
                         "response_delay_minutes": 30,
                         "stance": "neutral",
                     }
@@ -821,7 +838,7 @@ class TestOasisReport:
              patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"):
             mock_fn.return_value = mock_report
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/report", json={},
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/report", json={},
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -833,11 +850,11 @@ class TestOasisReport:
     @pytest.mark.asyncio
     async def test_report_no_package(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -862,7 +879,6 @@ class TestOasisReport:
                 }
             ],
             "simulation_config": {
-                "active_platforms": ["twitter"],
                 "time_config": {
                     "total_hours": 48,
                     "minutes_per_round": 60,
@@ -874,7 +890,7 @@ class TestOasisReport:
                     {
                         "name": "Agent1",
                         "activity_level": 0.6,
-                        "posts_per_hour": 1.0,
+                        "actions_per_hour": 1.0,
                         "response_delay_minutes": 30,
                         "stance": "neutral",
                     }
@@ -901,7 +917,7 @@ class TestOasisReport:
              patch.object(_cg_mod, "_ensure_analysis_for_provenance", new_callable=AsyncMock, return_value=valid_analysis), \
              patch.object(_cg_mod, "generate_oasis_report", new_callable=AsyncMock, return_value=mock_report):
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/report", json={},
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/report", json={},
             )
             assert resp.status_code == 200
             assert resp.json()["report"]["summary"] == "generated"
@@ -910,11 +926,11 @@ class TestOasisReport:
     async def test_report_no_run_result_auto_generates(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test report auto-generates run_result when missing."""
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -929,7 +945,11 @@ class TestOasisReport:
             },
             simulation_requirement=None, component_models=None,
         )
-        mock_db.execute.return_value = _scalar_one_or_none(project)
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(project),
+            _scalars_all(project.chapters),
+            _scalar_one_or_none(None),
+        ]
         mock_run = {"steps": [], "summary": "auto"}
         mock_report = {"sections": []}
         valid_analysis = {
@@ -945,7 +965,6 @@ class TestOasisReport:
                 }
             ],
             "simulation_config": {
-                "active_platforms": ["twitter"],
                 "time_config": {
                     "total_hours": 48,
                     "minutes_per_round": 60,
@@ -957,7 +976,7 @@ class TestOasisReport:
                     {
                         "name": "Agent1",
                         "activity_level": 0.6,
-                        "posts_per_hour": 1.0,
+                        "actions_per_hour": 1.0,
                         "response_delay_minutes": 30,
                         "stance": "neutral",
                     }
@@ -971,7 +990,7 @@ class TestOasisReport:
              patch.object(_cg_mod, "generate_oasis_report", new_callable=AsyncMock, return_value=mock_report), \
              patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"):
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/report", json={},
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/report", json={},
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -985,11 +1004,11 @@ class TestOasisReportTask:
     @pytest.mark.asyncio
     async def test_report_task_starts(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -1006,7 +1025,7 @@ class TestOasisReportTask:
         with patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"), \
              patch.object(_cg_mod.asyncio, "create_task", side_effect=_close_and_stub_task) as mock_ct:
             resp = await client.post(
-                "/api/projects/proj-1/graphs/oasis/report/task", json={"report_model": f"gpt-4-{nonce}"},
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/report/task", json={"report_model": f"gpt-4-{nonce}"},
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -1021,20 +1040,20 @@ class TestOasisTaskStatus:
 
     @pytest.mark.asyncio
     async def test_task_not_found(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
-        project = SimpleNamespace(id="proj-1", user_id=fake_user.id)
+        project = SimpleNamespace(id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id)
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
         with patch.object(_cg_mod, "task_manager") as mock_tm:
             mock_tm.get_task.return_value = None
             resp = await client.get(
-                "/api/projects/proj-1/graphs/oasis/tasks/nonexistent-id",
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/tasks/nonexistent-id",
             )
             assert resp.status_code == 404
             assert "Task not found" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_task_wrong_project(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
-        project = SimpleNamespace(id="proj-1", user_id=fake_user.id)
+        project = SimpleNamespace(id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id)
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
         fake_task = MagicMock()
@@ -1043,7 +1062,7 @@ class TestOasisTaskStatus:
         with patch.object(_cg_mod, "task_manager") as mock_tm:
             mock_tm.get_task.return_value = fake_task
             resp = await client.get(
-                "/api/projects/proj-1/graphs/oasis/tasks/some-task-id",
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/tasks/some-task-id",
             )
             assert resp.status_code == 404
             assert "Task not found" in resp.json()["detail"]
@@ -1054,7 +1073,7 @@ class TestOasisTaskList:
 
     @pytest.mark.asyncio
     async def test_list_tasks(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
-        project = SimpleNamespace(id="proj-1", user_id=fake_user.id)
+        project = SimpleNamespace(id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id)
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
         now = datetime.now(timezone.utc)
@@ -1069,13 +1088,13 @@ class TestOasisTaskList:
             "message": "Done",
             "result": {"package": {}},
             "error": None,
-            "metadata": {"project_id": "proj-1"},
+            "metadata": {"project_id": "11111111-1111-4111-8111-111111111111"},
         }
 
         with patch.object(_cg_mod, "task_manager") as mock_tm:
             mock_tm.list_tasks.return_value = [fake_task]
             resp = await client.get(
-                "/api/projects/proj-1/graphs/oasis/tasks",
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/oasis/tasks",
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -1090,13 +1109,13 @@ class TestGraphSearchExtended:
     @pytest.mark.asyncio
     async def test_search_no_dataset_returns_400(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id,
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id,
             cognee_dataset_id=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
         resp = await client.post(
-            "/api/projects/proj-1/graphs/search",
+            "/api/projects/11111111-1111-4111-8111-111111111111/graphs/search",
             json={"query": "find something"},
         )
         assert resp.status_code == 400
@@ -1105,7 +1124,7 @@ class TestGraphSearchExtended:
     @pytest.mark.asyncio
     async def test_search_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id,
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id,
             cognee_dataset_id="dataset-1",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -1113,7 +1132,7 @@ class TestGraphSearchExtended:
 
         with patch.object(_cg_mod, "search_graph", new_callable=AsyncMock, return_value=mock_results):
             resp = await client.post(
-                "/api/projects/proj-1/graphs/search",
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/search",
                 json={"query": "find something"},
             )
             assert resp.status_code == 200
@@ -1126,7 +1145,7 @@ class TestGraphVisualizationSuccess:
     @pytest.mark.asyncio
     async def test_visualization_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id,
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id,
             cognee_dataset_id="dataset-1",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -1136,7 +1155,7 @@ class TestGraphVisualizationSuccess:
         }
 
         with patch.object(_cg_mod, "get_graph_visualization", new_callable=AsyncMock, return_value=mock_viz):
-            resp = await client.get("/api/projects/proj-1/graphs/visualization")
+            resp = await client.get("/api/projects/11111111-1111-4111-8111-111111111111/graphs/visualization")
             assert resp.status_code == 200
             data = resp.json()
             assert len(data["nodes"]) == 1
@@ -1146,7 +1165,7 @@ class TestGraphVisualizationSuccess:
     @pytest.mark.asyncio
     async def test_visualization_runtime_error_returns_502(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id,
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id,
             cognee_dataset_id="dataset-1",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -1157,7 +1176,7 @@ class TestGraphVisualizationSuccess:
             new_callable=AsyncMock,
             side_effect=RuntimeError("graph backend unavailable"),
         ):
-            resp = await client.get("/api/projects/proj-1/graphs/visualization")
+            resp = await client.get("/api/projects/11111111-1111-4111-8111-111111111111/graphs/visualization")
             assert resp.status_code == 502
             assert "graph backend unavailable" in resp.json()["detail"]
 
@@ -1168,11 +1187,11 @@ class TestAddToGraphOntologyFromBody:
     @pytest.mark.asyncio
     async def test_add_with_ontology_in_body(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
-            id="proj-1", user_id=fake_user.id, title="Test",
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id, title="Test",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
-                    project_id="proj-1",
+                    project_id="11111111-1111-4111-8111-111111111111",
                     title="Main Draft",
                     content="Some content",
                     order_index=0,
@@ -1189,7 +1208,7 @@ class TestAddToGraphOntologyFromBody:
              patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"), \
              patch.object(_cg_mod, "add_and_cognify", new_callable=AsyncMock, return_value="dataset-new"):
             resp = await client.post(
-                "/api/projects/proj-1/graphs",
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs",
                 json={"text": "Test content", "ontology": body_ontology},
             )
             assert resp.status_code == 201
@@ -1197,3 +1216,5 @@ class TestAddToGraphOntologyFromBody:
             assert data["status"] == "ok"
             assert data["dataset_id"] == "dataset-new"
             assert project.ontology_schema == body_ontology
+
+

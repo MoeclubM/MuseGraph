@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+﻿import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 import Button from '@/components/ui/Button.vue'
 
@@ -24,13 +24,16 @@ describe('Button Component', () => {
     it('should apply primary variant classes by default', () => {
       const wrapper = mount(Button)
       const cls = wrapper.classes().join(' ')
-      expect(cls).toContain('from-amber-500')
-      expect(cls).toContain('to-amber-600')
+      expect(cls).toContain('border-[color:var(--muse-accent)]')
+      expect(cls).toContain('bg-[color:var(--muse-accent)]')
+      expect(cls).toContain('text-[color:var(--muse-accent-ink)]')
     })
 
     it('should apply md size classes by default', () => {
       const wrapper = mount(Button)
-      expect(wrapper.classes().join(' ')).toContain('px-4')
+      const cls = wrapper.classes().join(' ')
+      expect(cls).toContain('px-4')
+      expect(cls).toContain('h-10')
     })
   })
 
@@ -46,8 +49,6 @@ describe('Button Component', () => {
         props: { disabled: true },
       })
       await wrapper.trigger('click')
-      // Native disabled buttons don't emit click events
-      // But Vue test-utils still triggers the event on the element
       expect(wrapper.attributes('disabled')).toBeDefined()
     })
   })
@@ -79,7 +80,6 @@ describe('Button Component', () => {
         props: { loading: true },
         slots: { default: 'Submit' },
       })
-      // Loader2 from lucide-vue-next renders an svg
       expect(wrapper.find('svg').exists()).toBe(true)
     })
   })
@@ -90,9 +90,9 @@ describe('Button Component', () => {
         props: { variant: 'primary' },
       })
       const cls = wrapper.classes().join(' ')
-      expect(cls).toContain('from-amber-500')
-      expect(cls).toContain('to-amber-600')
-      expect(cls).toContain('text-white')
+      expect(cls).toContain('border-[color:var(--muse-accent)]')
+      expect(cls).toContain('bg-[color:var(--muse-accent)]')
+      expect(cls).toContain('text-[color:var(--muse-accent-ink)]')
     })
 
     it('should apply secondary variant classes', () => {
@@ -100,8 +100,9 @@ describe('Button Component', () => {
         props: { variant: 'secondary' },
       })
       const cls = wrapper.classes().join(' ')
-      expect(cls).toContain('bg-stone-200')
-      expect(cls).toContain('text-stone-800')
+      expect(cls).toContain('border-[color:var(--muse-border)]')
+      expect(cls).toContain('bg-[color:var(--muse-panel)]')
+      expect(cls).toContain('text-[color:var(--muse-text)]')
     })
 
     it('should apply danger variant classes', () => {
@@ -109,9 +110,9 @@ describe('Button Component', () => {
         props: { variant: 'danger' },
       })
       const cls = wrapper.classes().join(' ')
-      expect(cls).toContain('from-red-500')
-      expect(cls).toContain('to-red-600')
-      expect(cls).toContain('text-white')
+      expect(cls).toContain('border-[color:var(--muse-danger)]')
+      expect(cls).toContain('bg-[color:var(--muse-danger)]')
+      expect(cls).toContain('text-[color:var(--muse-accent-ink)]')
     })
 
     it('should apply ghost variant classes', () => {
@@ -120,7 +121,7 @@ describe('Button Component', () => {
       })
       const cls = wrapper.classes().join(' ')
       expect(cls).toContain('bg-transparent')
-      expect(cls).toContain('text-stone-700')
+      expect(cls).toContain('text-[color:var(--muse-text-muted)]')
     })
   })
 
@@ -141,7 +142,7 @@ describe('Button Component', () => {
       })
       const cls = wrapper.classes().join(' ')
       expect(cls).toContain('px-4')
-      expect(cls).toContain('py-2')
+      expect(cls).toContain('h-10')
     })
 
     it('should apply lg size classes', () => {
@@ -150,7 +151,7 @@ describe('Button Component', () => {
       })
       const cls = wrapper.classes().join(' ')
       expect(cls).toContain('px-6')
-      expect(cls).toContain('h-10')
+      expect(cls).toContain('h-11')
       expect(cls).toContain('text-[0.95rem]')
     })
   })

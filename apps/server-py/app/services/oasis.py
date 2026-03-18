@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 OASIS_ANALYSIS_MAX_TOKENS = 4096
 OASIS_SIMULATION_CONFIG_MAX_TOKENS = 2048
+OASIS_REPORT_MAX_TOKENS = 4096
 OASIS_JSON_MAX_ATTEMPTS = 3
 
 
@@ -291,6 +292,19 @@ def _salvage_oasis_simulation_config_payload(raw_content: str) -> dict[str, Any]
     return payload
 
 
+def _salvage_oasis_report_payload(raw_content: str) -> dict[str, Any] | None:
+    payload = {
+        "title": _extract_named_json_value(raw_content, "title"),
+        "executive_summary": _extract_named_json_value(raw_content, "executive_summary"),
+        "key_findings": _extract_named_json_value(raw_content, "key_findings"),
+        "next_actions": _extract_named_json_value(raw_content, "next_actions"),
+        "markdown": _extract_named_json_value(raw_content, "markdown"),
+    }
+    if not any(value not in (None, "", [], {}) for value in payload.values()):
+        return None
+    return payload
+
+
 async def _call_llm_json_with_validation(
     *,
     model: str,
@@ -305,7 +319,14 @@ async def _call_llm_json_with_validation(
     retry_prompt = prompt
     safe_attempts = max(1, int(max_attempts or 1))
     for attempt in range(safe_attempts):
-        llm_result = await call_llm(model, retry_prompt, db, max_tokens=max_tokens)
+        llm_result = await call_llm(
+            model,
+            retry_prompt,
+            db,
+            max_tokens=max_tokens,
+            prefer_stream_override=False,
+            stream_fallback_nonstream_override=False,
+        )
         raw_content = str(llm_result.get("content") or "")
         parsed = extract_json_object(raw_content)
         candidates: list[tuple[str, dict[str, Any]]] = []
@@ -350,6 +371,34 @@ async def _call_llm_json_with_validation(
     if last_error is not None:
         raise last_error
     raise ValueError("response_not_json_or_invalid_schema")
+
+def _validate_oasis_report_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("oasis_report_llm_response_not_json_or_invalid_schema")
+
+    title = str(payload.get("title") or "OASIS Report").strip() or "OASIS Report"
+    summary = str(payload.get("executive_summary") or "").strip()
+    if not summary:
+        raise ValueError("oasis_report_executive_summary_missing")
+
+    key_findings = _safe_list(payload.get("key_findings"), 10)
+    if not key_findings:
+        raise ValueError("oasis_report_key_findings_missing")
+
+    next_actions = _safe_list(payload.get("next_actions"), 10)
+    if not next_actions:
+        raise ValueError("oasis_report_next_actions_missing")
+
+    markdown = str(payload.get("markdown") or "").strip()
+
+    return {
+        "title": title,
+        "executive_summary": summary,
+        "key_findings": key_findings,
+        "next_actions": next_actions,
+        "markdown": markdown,
+    }
+
 
 def _safe_list(value: Any, max_items: int = 12) -> list[str]:
     if not isinstance(value, list):
@@ -985,25 +1034,17 @@ async def generate_oasis_report(
         f"Run Result:\n{json.dumps(run_data, ensure_ascii=False)[:9000]}"
     )
 
-    llm_result = await call_llm(selected_model, prompt, db)
-    parsed = extract_json_object(str(llm_result.get("content") or ""))
-    if not isinstance(parsed, dict):
-        raise ValueError("oasis_report_llm_response_not_json_or_invalid_schema")
+    parsed = await _call_llm_json_with_validation(
+        model=selected_model,
+        prompt=prompt,
+        db=db,
+        max_tokens=OASIS_REPORT_MAX_TOKENS,
+        validator=_validate_oasis_report_payload,
+        repairer=_salvage_oasis_report_payload,
+        max_attempts=OASIS_JSON_MAX_ATTEMPTS,
+    )
 
-    title = str(parsed.get("title") or "OASIS Report").strip() or "OASIS Report"
-    summary = str(parsed.get("executive_summary") or "").strip()
-    if not summary:
-        raise ValueError("oasis_report_executive_summary_missing")
-
-    key_findings = _safe_list(parsed.get("key_findings"), 10)
-    if not key_findings:
-        raise ValueError("oasis_report_key_findings_missing")
-
-    next_actions = _safe_list(parsed.get("next_actions"), 10)
-    if not next_actions:
-        raise ValueError("oasis_report_next_actions_missing")
-
-    markdown = str(parsed.get("markdown") or "").strip() or _build_report_markdown(
+    markdown = parsed["markdown"] or _build_report_markdown(
         requirement=requirement,
         analysis=analysis_data,
         run_result=run_data,
@@ -1013,10 +1054,10 @@ async def generate_oasis_report(
         "report_id": report_id,
         "simulation_id": str(package.get("simulation_id") or ""),
         "generated_at": generated_at,
-        "title": title,
-        "executive_summary": summary,
-        "key_findings": key_findings,
-        "next_actions": next_actions,
+        "title": parsed["title"],
+        "executive_summary": parsed["executive_summary"],
+        "key_findings": parsed["key_findings"],
+        "next_actions": parsed["next_actions"],
         "markdown": markdown,
         "status": "completed",
     }

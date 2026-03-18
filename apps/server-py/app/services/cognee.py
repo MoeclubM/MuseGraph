@@ -41,11 +41,11 @@ _LITELLM_RETRY_COUNT_OVERRIDE: contextvars.ContextVar[int | None] = contextvars.
 _LITELLM_RETRY_INTERVAL_SECONDS_OVERRIDE: contextvars.ContextVar[float | None] = contextvars.ContextVar("musegraph_litellm_retry_interval_seconds_override", default=None)
 
 def _graph_backend_name() -> str:
-    return str(getattr(settings, "GRAPH_BACKEND", "zep") or "zep").strip().lower() or "zep"
+    return str(getattr(settings, "GRAPH_BACKEND", "graphiti") or "graphiti").strip().lower() or "graphiti"
 
 
-def _use_zep_graph_backend() -> bool:
-    return _graph_backend_name() == "zep"
+def _use_graphiti_graph_backend() -> bool:
+    return _graph_backend_name() == "graphiti"
 
 _COGNEE_RUNTIME_CACHE_TARGETS: tuple[tuple[str, str], ...] = (
     ("cognee.infrastructure.llm.config", "get_llm_config"),
@@ -1089,8 +1089,11 @@ def _patch_cognee_runtime_compatibility() -> None:
 
 async def setup_cognee():
     """Configure graph infrastructure for the active backend."""
-    if _use_zep_graph_backend():
-        logger.info("Using Zep Graphiti backend for graph operations")
+    if _use_graphiti_graph_backend():
+        from app.services.graphiti_graph import setup_graphiti
+
+        logger.info("Using local Graphiti backend for graph operations")
+        await setup_graphiti()
         return
     try:
         await _ensure_cognee_postgres_database_exists()
@@ -1305,41 +1308,10 @@ async def _configure_cognee_llm(
     selected_embedding_model = (embedding_model or "").strip()
     config_obj: Any = None
     if db is None:
-        # Compatibility fallback for tests/standalone calls.
-        provider = detect_provider(_strip_model_provider_prefix(selected_model)) if selected_model else "openai_compatible"
-        api_key = (settings.COGNEE_LLM_API_KEY or settings.OPENAI_API_KEY).strip()
-        base_url = (settings.COGNEE_LLM_BASE_URL or "").strip() or None
-        if not selected_model:
-            selected_model = (settings.COGNEE_LLM_MODEL or "").strip() or DEFAULT_MODEL
-        if not api_key:
-            logger.debug("Skip Cognee runtime provider injection because db is None and no fallback key is configured.")
-            return
-        llm_provider = _resolve_cognee_runtime_provider(provider, endpoint=base_url, purpose="llm")
-        llm_model_with_prefix = _with_model_prefix(selected_model, llm_provider)
-        llm_config: dict[str, Any] = {
-            "llm_api_key": api_key,
-            "llm_model": llm_model_with_prefix,
-            "llm_provider": llm_provider,
-        }
-        if base_url:
-            llm_config["llm_endpoint"] = base_url
-        import cognee
-
-        config_obj = getattr(cognee, "config", None)
-        if config_obj and hasattr(config_obj, "set_llm_config"):
-            config_obj.set_llm_config(llm_config)
-        _set_runtime_env("LLM_PROVIDER", llm_provider)
-        _set_runtime_env("LLM_MODEL", llm_model_with_prefix)
-        _set_runtime_env("LLM_API_KEY", api_key)
-        _set_runtime_env("LLM_ENDPOINT", base_url)
-        _apply_cognee_embedding_config(
-            config_obj=config_obj,
-            model=selected_embedding_model or os.getenv("EMBEDDING_MODEL", "").strip() or None,
-            api_key=(os.getenv("EMBEDDING_API_KEY", "").strip() or api_key),
-            endpoint=(os.getenv("EMBEDDING_ENDPOINT", "").strip() or base_url),
-            provider=os.getenv("EMBEDDING_PROVIDER", "").strip() or provider,
+        logger.debug(
+            "Skip Cognee runtime provider injection because no database session was provided. "
+            "Runtime provider and model configuration must come from Admin -> Providers."
         )
-        _clear_cognee_runtime_caches()
         return
 
     result = await db.execute(
@@ -1484,15 +1456,17 @@ async def add_and_cognify(
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> str:
     """Add text to a Cognee dataset, build knowledge graph, and enrich with memify."""
-    if _use_zep_graph_backend():
-        from app.services.zep_graph import build_graph as build_graph_with_zep
+    if _use_graphiti_graph_backend():
+        from app.services.graphiti_graph import build_graph as build_graph_with_graphiti
 
-        return await build_graph_with_zep(
+        return await build_graph_with_graphiti(
             project_id,
             text,
             ontology=ontology,
             db=db,
             progress_callback=progress_callback,
+            model=model,
+            embedding_model=embedding_model,
         )
 
     import cognee
@@ -1817,7 +1791,7 @@ async def _rerank_search_results_with_llm(
 
 async def prepare_cognee_search_runtime(project_id: str, db: AsyncSession) -> None:
     """Configure Cognee runtime before graph search requests."""
-    if _use_zep_graph_backend():
+    if _use_graphiti_graph_backend():
         return
     result = await db.execute(select(TextProject).where(TextProject.id == project_id))
     project = result.scalar_one_or_none()
@@ -1844,10 +1818,10 @@ async def search_graph(
 ) -> list[dict[str, Any]]:
     """Search the knowledge graph using the active backend."""
     normalized_search_type = str(search_type or "").strip().upper() or "INSIGHTS"
-    if _use_zep_graph_backend():
-        from app.services.zep_graph import search_graph as search_graph_with_zep
+    if _use_graphiti_graph_backend():
+        from app.services.graphiti_graph import search_graph as search_graph_with_graphiti
 
-        parsed = await search_graph_with_zep(
+        parsed = await search_graph_with_graphiti(
             project_id,
             query,
             top_k=top_k,
@@ -1927,10 +1901,10 @@ async def get_graph_visualization(
     alias_model: str | None = None,
 ) -> dict[str, Any]:
     """Get graph data for visualization via the active backend."""
-    if _use_zep_graph_backend():
-        from app.services.zep_graph import get_graph_visualization as get_graph_visualization_with_zep
+    if _use_graphiti_graph_backend():
+        from app.services.graphiti_graph import get_graph_visualization as get_graph_visualization_with_graphiti
 
-        return await get_graph_visualization_with_zep(project_id, db=db)
+        return await get_graph_visualization_with_graphiti(project_id, db=db)
 
     from cognee.modules.data.methods import get_authorized_existing_datasets, get_dataset_data
     from cognee.modules.users.methods import get_default_user
@@ -2080,10 +2054,15 @@ async def delete_dataset(
     db: AsyncSession | None = None,
 ) -> None:
     """Delete graph data for the active backend."""
-    if _use_zep_graph_backend():
-        from app.services.zep_graph import delete_graph as delete_graph_with_zep
+    if _use_graphiti_graph_backend():
+        from app.services.graphiti_graph import delete_graph as delete_graph_with_graphiti
 
-        await delete_graph_with_zep(project_id, db=db)
+        await delete_graph_with_graphiti(
+            project_id,
+            model=model,
+            embedding_model=embedding_model,
+            db=db,
+        )
         return
     await _configure_cognee_llm(model=model, embedding_model=embedding_model, db=db)
     import cognee

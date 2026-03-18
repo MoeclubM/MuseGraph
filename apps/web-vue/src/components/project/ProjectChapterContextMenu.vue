@@ -31,7 +31,7 @@ const emit = defineEmits<{
         class="h-auto w-full justify-start px-2 py-1.5 text-left text-xs text-stone-700 dark:text-zinc-200"
         @click="emit('open')"
       >
-        打开章节
+        Open chapter
       </Button>
       <Button
         variant="ghost"
@@ -39,7 +39,7 @@ const emit = defineEmits<{
         class="h-auto w-full justify-start px-2 py-1.5 text-left text-xs text-stone-700 dark:text-zinc-200"
         @click="emit('rename')"
       >
-        重命名章节
+        Rename chapter
       </Button>
       <Button
         variant="ghost"
@@ -47,7 +47,7 @@ const emit = defineEmits<{
         class="h-auto w-full justify-start px-2 py-1.5 text-left text-xs text-stone-700 dark:text-zinc-200"
         @click="emit('toggleScope')"
       >
-        {{ props.inScope ? '移出流程范围' : '加入流程范围' }}
+        {{ props.inScope ? 'Remove from workflow scope' : 'Add to workflow scope' }}
       </Button>
       <Button
         variant="ghost"
@@ -55,7 +55,7 @@ const emit = defineEmits<{
         class="h-auto w-full justify-start px-2 py-1.5 text-left text-xs text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-300 dark:hover:bg-red-900/20 dark:hover:text-red-200"
         @click="emit('delete')"
       >
-        删除章节
+        Delete chapter
       </Button>
     </div>
   </Teleport>

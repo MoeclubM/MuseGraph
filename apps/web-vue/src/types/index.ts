@@ -149,7 +149,7 @@ export interface AdminUser {
     paid_orders: number
     paid_amount: number
   } | null
-  // 兼容后端可能返回的扁平化聚合字段
+  // Compatibility for flattened aggregate fields that may still come from the backend
   total_tokens?: number
   total_requests?: number
   total_cost?: number

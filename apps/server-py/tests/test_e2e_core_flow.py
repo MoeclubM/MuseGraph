@@ -1,4 +1,4 @@
-"""Core end-to-end API flow tests aligned with current product scope."""
+﻿"""Core end-to-end API flow tests aligned with current product scope."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def _chapter(chapter_id: str, content: str):
     now = datetime.now(timezone.utc)
     return SimpleNamespace(
         id=chapter_id,
-        project_id="proj-1",
+        project_id="11111111-1111-4111-8111-111111111111",
         title="Main Draft",
         content=content,
         order_index=0,
@@ -84,7 +84,7 @@ class TestE2EGraphTaskFlow:
 
         task_manager.cleanup_old_tasks(max_age_hours=0)
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
             chapters=[_chapter("ch-1", "hello world")],
             cognee_dataset_id="dataset-1",
@@ -108,7 +108,7 @@ class TestE2EGraphTaskFlow:
         g["_start_project_task"] = _fake_start_project_task
         try:
             start_resp = await client.post(
-                "/api/projects/proj-1/graphs/ontology/generate/task",
+                "/api/projects/11111111-1111-4111-8111-111111111111/graphs/ontology/generate/task",
                 json={"text": "chapter text", "model": "MiniMax-M2.5"},
             )
         finally:
@@ -118,7 +118,7 @@ class TestE2EGraphTaskFlow:
         task_id = start_resp.json()["task"]["task_id"]
 
         mock_db.execute.return_value = _scalar_one_or_none(project)
-        list_resp = await client.get("/api/projects/proj-1/graphs/tasks")
+        list_resp = await client.get("/api/projects/11111111-1111-4111-8111-111111111111/graphs/tasks")
         assert list_resp.status_code == 200
         task_ids = [item["task_id"] for item in list_resp.json()["tasks"]]
         assert task_id in task_ids
@@ -186,7 +186,7 @@ class TestE2ESimulationFlow:
 
         sim = SimpleNamespace(
             simulation_id="sim-e2e-1",
-            project_id="proj-1",
+            project_id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
             status="ready",
             profiles=[{"name": "Agent1"}],
@@ -199,7 +199,7 @@ class TestE2ESimulationFlow:
             metadata_={},
         )
         project = SimpleNamespace(
-            id="proj-1",
+            id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
             title="E2E Project",
             simulation_requirement="Focus on consistency",
@@ -244,3 +244,4 @@ class TestE2ESimulationFlow:
         status_resp = await client.get("/api/simulation/sim-e2e-1/run-status")
         assert status_resp.status_code == 200
         assert status_resp.json()["data"]["status"] == "completed"
+

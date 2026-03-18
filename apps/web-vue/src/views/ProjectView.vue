@@ -90,6 +90,11 @@ const continueOutlineLoading = ref(false)
 const continueOutlineError = ref<string | null>(null)
 const confirmedSimulationId = ref('')
 
+function hasValidProjectId(): boolean {
+  const value = String(projectId.value || '').trim()
+  return !!value && value !== 'undefined' && value !== 'null'
+}
+
 const {
   projectCharacters,
   selectedCharacterIds,
@@ -179,11 +184,11 @@ type GraphBuildSummary = {
 }
 const graphBuildSummary = ref<GraphBuildSummary | null>(null)
 
-const ONTOLOGY_PRESET_PROMPT = `请基于当前章节文本构建可用于 RAG 与剧情推理的本体（Ontology），要求：
-1. 实体类型覆盖：人物、组织、地点、事件、时间、物品、关系角色；
-2. 关系类型需明确方向与语义，例如：BELONGS_TO、LOCATED_IN、PARTICIPATES_IN、CAUSES、PRECEDES；
-3. 避免泛化占位类型（如仅 CONCEPT/RELATED_TO），名称使用清晰的英文大写下划线；
-4. 输出实体与关系必须可直接用于图谱入库与后续检索增强生成。`
+const ONTOLOGY_PRESET_PROMPT = `Build an ontology from the selected chapter text for RAG and scenario reasoning.
+1. Cover entity types such as PERSON, ORGANIZATION, LOCATION, EVENT, TIME, OBJECT, and ROLE.
+2. Define relation types with clear direction and semantics, for example BELONGS_TO, LOCATED_IN, PARTICIPATES_IN, CAUSES, and PRECEDES.
+3. Avoid vague placeholder types such as CONCEPT or RELATED_TO. Use clear English uppercase snake_case names.
+4. Output entity and relation types that can be used directly for graph ingestion and retrieval-augmented generation.`
 
 const ontologyLoading = ref(false)
 const ontologyError = ref<string | null>(null)
@@ -217,6 +222,7 @@ const taskListLoading = ref(false)
 const taskListError = ref<string | null>(null)
 const taskListFilter = ref<'all' | 'running' | 'completed' | 'failed' | 'cancelled'>('all')
 const taskCenterExpanded = ref(false)
+const taskCenterAutoExpanded = ref(false)
 const cancellingTaskIds = ref<string[]>([])
 let taskListTimer: ReturnType<typeof setInterval> | null = null
 const TASK_LIST_POLL_MS = 6000
@@ -686,14 +692,22 @@ function upsertTaskListItem(task: OasisTask) {
   }
   taskList.value = sortTasksByCreated(next)
   syncGraphBuildSummaryFromTask(task)
+  syncTaskCenterExpansionFromTasks()
 }
 
 function replaceTaskList(tasks: OasisTask[]) {
   taskList.value = sortTasksByCreated(tasks)
   syncGraphBuildSummaryFromTasks(taskList.value)
+  syncTaskCenterExpansionFromTasks()
 }
 
 async function loadTaskList(silent = false) {
+  if (!hasValidProjectId()) {
+    replaceTaskList([])
+    taskListError.value = null
+    taskListLoading.value = false
+    return
+  }
   if (!silent) {
     taskListLoading.value = true
     taskListError.value = null
@@ -758,6 +772,30 @@ function taskTypeLabel(taskType: string): string {
 function isRunningTaskStatus(status: string): boolean {
   const normalized = String(status || '').toLowerCase()
   return normalized === 'pending' || normalized === 'processing'
+}
+
+function expandTaskCenterForRunningTask() {
+  // Keep task status in the floating badge without covering the workflow panel.
+  taskCenterAutoExpanded.value = false
+}
+
+function handleTaskCenterExpandedChange(value: boolean) {
+  taskCenterExpanded.value = value
+  taskCenterAutoExpanded.value = false
+}
+
+function syncTaskCenterExpansionFromTasks() {
+  const hasRunningTasks = taskList.value.some((task) => isRunningTaskStatus(task.status))
+  if (hasRunningTasks) {
+    if (!taskCenterExpanded.value) {
+      expandTaskCenterForRunningTask()
+    }
+    return
+  }
+  if (taskCenterAutoExpanded.value) {
+    taskCenterExpanded.value = false
+    taskCenterAutoExpanded.value = false
+  }
 }
 
 function syncCancelledTask(task: OasisTask) {
@@ -1473,6 +1511,7 @@ async function handleCreateWorkflowSimulation() {
 }
 
 async function loadProject() {
+  if (!hasValidProjectId()) return
   await projectStore.fetchProject(projectId.value)
   await loadGraphStatus(true)
   if (projectStore.currentProject) {
@@ -1509,6 +1548,11 @@ async function loadProject() {
 }
 
 async function resumeProjectTasks() {
+  if (!hasValidProjectId()) {
+    replaceTaskList([])
+    taskListError.value = null
+    return
+  }
   try {
     const response = await listGraphTasks(projectId.value, { limit: 60 })
     const tasks = Array.isArray(response.tasks) ? response.tasks : []
@@ -1522,7 +1566,7 @@ async function resumeProjectTasks() {
     )
     if (pipelineRunning) {
       syncPipelineProgress(pipelineRunning)
-      taskCenterExpanded.value = true
+      expandTaskCenterForRunningTask()
       startPipelineTaskPolling(pipelineRunning.task_id)
     }
 
@@ -1536,7 +1580,7 @@ async function resumeProjectTasks() {
       )
     )
     if (oasisRunning) {
-      taskCenterExpanded.value = true
+      expandTaskCenterForRunningTask()
       startOasisTaskPolling(oasisRunning.task_id)
     } else {
       const latestOasis = tasks.find((task) =>
@@ -1616,7 +1660,7 @@ async function triggerIncrementalGraphRefresh(chapterIds: string[] = []) {
     pipelineTask.value = response.task
     upsertTaskListItem(response.task)
     syncPipelineProgress(response.task)
-    taskCenterExpanded.value = true
+    expandTaskCenterForRunningTask()
     startPipelineTaskPolling(response.task.task_id)
     toast.success('RAG graph refresh started (incremental)')
   } catch (e: any) {
@@ -1842,7 +1886,7 @@ async function handleGenerateOntology() {
     pipelineTask.value = response.task
     upsertTaskListItem(response.task)
     syncPipelineProgress(response.task)
-    taskCenterExpanded.value = true
+    expandTaskCenterForRunningTask()
     startPipelineTaskPolling(response.task.task_id)
     toast.success('Ontology task started')
   } catch (e: any) {
@@ -1882,7 +1926,7 @@ async function handleBuildGraph() {
     pipelineTask.value = response.task
     upsertTaskListItem(response.task)
     syncPipelineProgress(response.task)
-    taskCenterExpanded.value = true
+    expandTaskCenterForRunningTask()
     startPipelineTaskPolling(response.task.task_id)
     toast.success(
       graphBuildMode.value === 'incremental'
@@ -1925,7 +1969,7 @@ async function handleGraphAnalysis() {
     })
     oasisTask.value = result.task
     upsertTaskListItem(result.task)
-    taskCenterExpanded.value = true
+    expandTaskCenterForRunningTask()
     startOasisTaskPolling(result.task.task_id)
     toast.success('Scenario analysis task started')
   } catch (e: any) {
@@ -1953,7 +1997,7 @@ async function handlePrepareOasisPackage() {
     })
     oasisTask.value = result.task
     upsertTaskListItem(result.task)
-    taskCenterExpanded.value = true
+    expandTaskCenterForRunningTask()
     startOasisTaskPolling(result.task.task_id)
     toast.success('Runtime package task started')
   } catch (e: any) {
@@ -1973,7 +2017,7 @@ async function handleRunOasisSimulation() {
     })
     oasisTask.value = result.task
     upsertTaskListItem(result.task)
-    taskCenterExpanded.value = true
+    expandTaskCenterForRunningTask()
     startOasisTaskPolling(result.task.task_id)
     toast.success('Simulation run task started')
   } catch (e: any) {
@@ -1991,7 +2035,7 @@ async function handleGenerateOasisReport() {
     })
     oasisTask.value = result.task
     upsertTaskListItem(result.task)
-    taskCenterExpanded.value = true
+    expandTaskCenterForRunningTask()
     startOasisTaskPolling(result.task.task_id)
     toast.success('Report task started')
   } catch (e: any) {
@@ -2137,6 +2181,7 @@ watch(
       inlineRenameChapterId.value = ''
       inlineRenameChapterTitle.value = ''
       taskCenterExpanded.value = false
+      taskCenterAutoExpanded.value = false
       cancellingTaskIds.value = []
       stopPipelineTaskPolling()
       stopOasisTaskPolling()
@@ -2473,7 +2518,7 @@ watch(selectedChapterIds, () => {
       :filter="taskListFilter"
       :cancelling-task-ids="cancellingTaskIds"
       :format-date="formatDate"
-      @update:expanded="taskCenterExpanded = $event"
+      @update:expanded="handleTaskCenterExpandedChange"
       @update:filter="taskListFilter = $event"
       @refresh="handleRefreshTaskList"
       @cancel="handleCancelTask"

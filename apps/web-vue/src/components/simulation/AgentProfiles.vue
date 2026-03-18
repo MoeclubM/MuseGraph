@@ -56,7 +56,7 @@ function getStanceColor(stance: string) {
 <template>
   <div class="w-full">
     <div v-if="profiles.length === 0" class="text-sm text-stone-500 dark:text-zinc-500 py-4 text-center">
-      暂无 Agent 信息
+      No agent profiles yet
     </div>
 
     <div
@@ -137,7 +137,7 @@ function getStanceColor(stance: string) {
       v-if="maxDisplay > 0 && profiles.length > maxDisplay"
       class="mt-3 text-center text-xs text-stone-500 dark:text-zinc-500"
     >
-      显示 {{ maxDisplay }} / {{ profiles.length }} 个 Agents
+      Showing {{ maxDisplay }} / {{ profiles.length }} agents
     </div>
   </div>
 </template>

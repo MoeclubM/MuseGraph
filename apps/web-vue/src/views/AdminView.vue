@@ -88,14 +88,14 @@ const showUserForm = ref(false)
 const providerForm = ref<{ id: string; name: string; provider: string; api_key: string; base_url: string; is_active: boolean; priority: number }>({
   id: '',
   name: '',
-  provider: 'openai_compatible',
+  provider: '',
   api_key: '',
   base_url: '',
   is_active: true,
   priority: 0,
 })
 const showProviderForm = ref(false)
-const providerTypeOptions = (import.meta.env.VITE_PROVIDER_TYPES || 'openai_compatible,anthropic_compatible')
+const providerTypeOptions = (import.meta.env.VITE_PROVIDER_TYPES || '')
   .split(',')
   .map((item: string) => item.trim())
   .filter((item: string) => item.length > 0)
@@ -182,13 +182,13 @@ const pricingFormError = ref('')
 
 
 const tabItems: Array<{ value: Tab; label: string; icon: Component; hint: string }> = [
-  { value: 'overview', label: 'Overview', icon: BarChart3, hint: '系统统计' },
-  { value: 'users', label: 'Users', icon: Users, hint: '用户管理' },
-  { value: 'providers', label: 'Providers', icon: PlugZap, hint: '渠道配置' },
-  { value: 'models', label: 'Models', icon: BrainCircuit, hint: '模型与计费' },
-  { value: 'advanced', label: 'Advanced', icon: SlidersHorizontal, hint: '高级设置' },
-  { value: 'payments', label: 'Payments', icon: CreditCard, hint: '支付配置' },
-  { value: 'tasks', label: 'Tasks', icon: ListChecks, hint: '任务管理' },
+  { value: 'overview', label: 'Overview', icon: BarChart3, hint: 'System stats' },
+  { value: 'users', label: 'Users', icon: Users, hint: 'User management' },
+  { value: 'providers', label: 'Providers', icon: PlugZap, hint: 'Provider setup' },
+  { value: 'models', label: 'Models', icon: BrainCircuit, hint: 'Models and pricing' },
+  { value: 'advanced', label: 'Advanced', icon: SlidersHorizontal, hint: 'Runtime settings' },
+  { value: 'payments', label: 'Payments', icon: CreditCard, hint: 'Payment gateway' },
+  { value: 'tasks', label: 'Tasks', icon: ListChecks, hint: 'Task monitoring' },
 ]
 
 const discoveredModelsForCurrentKind = computed(() =>
@@ -253,10 +253,10 @@ function parseModelConcurrencyOverrides(raw: string): Record<string, number> {
   try {
     payload = JSON.parse(text)
   } catch (error: unknown) {
-    throw new Error('llm_model_concurrency_overrides 必须是合法 JSON 对象')
+    throw new Error('llm_model_concurrency_overrides must be valid JSON')
   }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error('llm_model_concurrency_overrides 必须是对象，例如 {"gpt-4o-mini": 4}')
+    throw new Error('llm_model_concurrency_overrides must be a JSON object, for example {"your-model-id": 4}')
   }
   const normalized: Record<string, number> = {}
   for (const [rawKey, rawValue] of Object.entries(payload as Record<string, unknown>)) {
@@ -289,7 +289,7 @@ function modelTypeForModel(model: string): string {
 }
 
 function formatPricing(rule?: PricingRule): string {
-  if (!rule) return '未配置'
+  if (!rule) return 'Not configured'
   if (rule.billing_mode === 'REQUEST') return '$' + rule.request_price.toFixed(6) + ' / request'
   return '$' + rule.input_price.toFixed(6) + ' in + $' + rule.output_price.toFixed(6) + ' out / 1M tokens'
 }
@@ -501,13 +501,20 @@ function editProvider(p: Provider) {
 }
 
 function newProvider() {
-  providerForm.value = { id: '', name: '', provider: 'openai_compatible', api_key: '', base_url: '', is_active: true, priority: 0 }
+  providerForm.value = { id: '', name: '', provider: '', api_key: '', base_url: '', is_active: true, priority: 0 }
   showProviderForm.value = true
 }
 
 async function saveProvider() {
   const providerType = providerForm.value.provider.trim()
-  if (!providerType) return
+  if (!providerForm.value.name.trim()) {
+    window.alert('Provider name is required')
+    return
+  }
+  if (!providerType) {
+    window.alert('Provider type is required')
+    return
+  }
   const payload: {
     name: string
     provider: string
@@ -953,7 +960,7 @@ onMounted(loadAll)
         <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div class="space-y-1">
             <h1 class="text-xl font-semibold text-stone-800 dark:text-zinc-100">Admin Panel</h1>
-            <p class="text-sm text-stone-500 dark:text-zinc-400">管理用户、渠道、模型计费与支付配置</p>
+            <p class="text-sm text-stone-500 dark:text-zinc-400">Manage users, providers, pricing, payment settings, and runtime controls.</p>
           </div>
           <div class="grid grid-cols-2 gap-2 text-xs md:grid-cols-3">
             <div class="rounded-lg border border-stone-300/70 bg-stone-100/80 px-3 py-2 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">

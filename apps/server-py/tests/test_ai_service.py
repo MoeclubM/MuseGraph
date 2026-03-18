@@ -346,8 +346,8 @@ class TestCallLLM:
             assert result["input_tokens"] == 80
 
     @pytest.mark.asyncio
-    async def test_call_llm_uses_settings_fallback(self, mock_db: AsyncMock):
-        """Test call_llm uses settings when no provider config."""
+    async def test_call_llm_requires_admin_provider_config(self, mock_db: AsyncMock):
+        """Test call_llm rejects requests when no provider is configured in admin."""
         from app.services.ai import call_llm
 
         result_mock = MagicMock()
@@ -356,9 +356,6 @@ class TestCallLLM:
         result_mock.scalars.return_value = scalars_mock
         mock_db.execute.return_value = result_mock
 
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=MagicMock(content="Response"))]
-        mock_response.usage = MagicMock(prompt_tokens=50, completion_tokens=25)
         runtime_cfg = {
             "llm_request_timeout_seconds": 180,
             "llm_retry_count": 4,
@@ -367,17 +364,9 @@ class TestCallLLM:
             "llm_stream_fallback_nonstream": True,
         }
 
-        with patch("openai.AsyncOpenAI") as mock_openai, \
-             patch("app.services.ai.settings") as mock_settings, \
-             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
-            mock_settings.OPENAI_API_KEY = "settings-key"
-            mock_client = MagicMock()
-            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
-            mock_openai.return_value = mock_client
-
-            result = await call_llm("gpt-4o-mini", "Test", mock_db)
-
-            assert result["content"] == "Response"
+        with patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
+            with pytest.raises(ValueError, match="No active provider is configured"):
+                await call_llm("gpt-4o-mini", "Test", mock_db)
 
     @pytest.mark.asyncio
     async def test_call_llm_retries_transient_openai_error(self, mock_db: AsyncMock):

@@ -39,7 +39,7 @@ function getLevelBadgeClass(level: LogEntry['level']) {
 function formatTimestamp(timestamp: string) {
   try {
     const date = new Date(timestamp)
-    return date.toLocaleTimeString('zh-CN', { hour12: false })
+    return date.toLocaleTimeString('en-GB', { hour12: false })
   } catch {
     return timestamp
   }
@@ -66,7 +66,7 @@ watch(
     :style="{ maxHeight }"
   >
     <div v-if="logs.length === 0" class="p-4 text-stone-500 dark:text-zinc-500 text-center">
-      暂无日志
+      No logs yet
     </div>
     <div v-else class="divide-y divide-stone-300/70 dark:divide-zinc-800/50">
       <div

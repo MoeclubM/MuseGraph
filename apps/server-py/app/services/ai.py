@@ -9,7 +9,6 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.models.billing import Usage
 from app.models.config import AIProviderConfig, PaymentConfig, PricingRule, PromptTemplate
 from app.models.project import TextOperation, TextProject
@@ -27,7 +26,7 @@ OPERATION_PROMPTS = {
     "SUMMARIZE": "You are a summarization expert. Provide a concise summary of the following text:\n\n{input}",
 }
 
-DEFAULT_MODEL = str(settings.LLM_MODEL or "").strip()
+DEFAULT_MODEL = ""
 MONEY_SCALE = Decimal("0.000001")
 DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 180
 DEFAULT_LLM_RETRY_COUNT = 4
@@ -284,8 +283,6 @@ def _resolve_requested_model(model: str, configs: list[AIProviderConfig]) -> str
     selected = str(model or "").strip()
     if selected:
         return selected
-    if DEFAULT_MODEL:
-        return DEFAULT_MODEL
 
     for config in configs:
         for model_name in get_provider_chat_models(config):
@@ -294,7 +291,7 @@ def _resolve_requested_model(model: str, configs: list[AIProviderConfig]) -> str
                 return candidate
 
     raise ValueError(
-        "No model specified. Please provide `model`, set LLM_MODEL, or configure provider chat models in WebUI."
+        "No model specified. Add chat models in Admin -> Providers or choose a model explicitly."
     )
 
 
@@ -535,15 +532,21 @@ async def call_llm(
     billing_user_id: str | None = None,
     billing_project_id: str | None = None,
     billing_operation_id: str | None = None,
+    prefer_stream_override: bool | None = None,
+    stream_fallback_nonstream_override: bool | None = None,
 ) -> dict:
     runtime_cfg = await _load_llm_runtime_config(db)
     timeout_seconds = int(runtime_cfg["llm_request_timeout_seconds"])
     retry_count = int(runtime_cfg["llm_retry_count"])
     retry_interval_seconds = float(runtime_cfg["llm_retry_interval_seconds"])
     prefer_stream = bool(runtime_cfg.get("llm_prefer_stream", DEFAULT_LLM_PREFER_STREAM))
+    if prefer_stream_override is not None:
+        prefer_stream = bool(prefer_stream_override)
     stream_fallback_nonstream = bool(
         runtime_cfg.get("llm_stream_fallback_nonstream", DEFAULT_LLM_STREAM_FALLBACK_NONSTREAM)
     )
+    if stream_fallback_nonstream_override is not None:
+        stream_fallback_nonstream = bool(stream_fallback_nonstream_override)
     task_concurrency_limit = _coerce_limiter_limit(
         runtime_cfg.get("llm_task_concurrency", DEFAULT_LLM_TASK_CONCURRENCY),
         DEFAULT_LLM_TASK_CONCURRENCY,
@@ -570,15 +573,18 @@ async def call_llm(
                 config = c
                 break
 
-    provider = str(config.provider if config else detect_provider(model)).strip().lower()
+    if not config:
+        raise ValueError(
+            f'No active provider is configured for model "{model}". Add a provider and model in Admin -> Providers first.'
+        )
+
+    provider = str(config.provider).strip().lower()
     if provider not in SUPPORTED_LLM_PROVIDERS:
         raise ValueError(f"Unsupported provider: {provider}")
-    api_key = config.api_key if config else (
-        settings.ANTHROPIC_API_KEY if is_anthropic_provider(provider) else (settings.OPENAI_API_KEY or settings.LLM_API_KEY)
-    )
-    base_url = config.base_url if config and config.base_url else None
+    api_key = config.api_key
+    base_url = config.base_url if config.base_url else None
     if not str(api_key or "").strip():
-        raise ValueError(f"Missing API key for provider: {provider}")
+        raise ValueError(f'Provider "{config.name}" is missing an API key in Admin -> Providers.')
 
     content = ""
     input_tokens = 0

@@ -38,15 +38,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Seed failed: {e}")
 
-    # Optional default provider/model/pricing bootstrap for Docker quick-start
-    if settings.AUTO_BOOTSTRAP_NEWAPI:
-        try:
-            from app.services.default_ai_bootstrap import bootstrap_default_provider_and_pricing
-
-            async with async_session() as db:
-                await bootstrap_default_provider_and_pricing(db)
-        except Exception as e:
-            logger.warning(f"Default AI bootstrap failed: {e}")
 
     yield
     # Shutdown

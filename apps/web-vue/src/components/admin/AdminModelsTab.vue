@@ -83,7 +83,7 @@ const providerModelManualInputValue = computed({
     <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-3">
       <h2 class="text-base font-semibold text-stone-800 dark:text-zinc-100">Models & Pricing</h2>
       <div class="flex flex-wrap items-center gap-2 sm:flex-nowrap">
-        <span class="text-xs text-stone-500 dark:text-zinc-400">Token 计费单位固定为 1M</span>
+        <span class="text-xs text-stone-500 dark:text-zinc-400">Token billing unit is fixed at 1M.</span>
         <Button size="sm" @click="emit('open-model-form')">Add Model</Button>
       </div>
     </div>
@@ -180,7 +180,7 @@ const providerModelManualInputValue = computed({
     </Card>
 
     <Card :padding="false">
-      <div class="py-3 sm:py-4">
+      <div class="px-3 py-3 sm:px-4 sm:py-4">
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead class="bg-stone-100/80 dark:bg-zinc-800/60">

@@ -44,41 +44,7 @@ async def seed():
         else:
             print("  Skipped admin user creation (set SEED_ADMIN_EMAIL + SEED_ADMIN_PASSWORD to enable)")
 
-        # 2. Pricing Rules
-        pricing_rules = [
-            PricingRule(
-                model="gpt-4o-mini",
-                billing_mode="TOKEN",
-                input_price=0.15,
-                output_price=0.6,
-                token_unit=1_000_000,
-                request_price=0,
-                is_active=True,
-            ),
-            PricingRule(
-                model="gpt-4o",
-                billing_mode="TOKEN",
-                input_price=2.5,
-                output_price=10,
-                token_unit=1_000_000,
-                request_price=0,
-                is_active=True,
-            ),
-            PricingRule(
-                model="claude-3-5-sonnet-20241022",
-                billing_mode="TOKEN",
-                input_price=3,
-                output_price=15,
-                token_unit=1_000_000,
-                request_price=0,
-                is_active=True,
-            ),
-        ]
-        db.add_all(pricing_rules)
-        await db.flush()
-        print("  Created pricing rules")
-
-        # 3. Prompt Templates
+        # 2. Prompt Templates
         templates = [
             PromptTemplate(
                 name="create_default", type="CREATE",
