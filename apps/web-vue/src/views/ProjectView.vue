@@ -385,7 +385,7 @@ const graphFreshnessHint = computed(() => {
   if (state === 'syncing') {
     const taskId = String(statusPayload?.graph_syncing_task_id || '').trim()
     return taskId
-      ? `Graph build task is running (${taskId.slice(0, 8)}...).`
+      ? `Graph build task is running (task id: ${taskId}).`
       : 'Graph build task is running.'
   }
   if (state === 'stale') {

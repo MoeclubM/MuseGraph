@@ -95,7 +95,7 @@ const props = defineProps<{
 
 <template>
   <div class="space-y-5">
-    <div class="space-y-3 rounded-xl border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
+    <div class="space-y-3 rounded-md border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
       <div class="flex items-center justify-between gap-2">
         <p class="text-xs font-medium uppercase tracking-wider text-stone-700 dark:text-zinc-300">
           Character Cards
@@ -125,7 +125,7 @@ const props = defineProps<{
         <div
           v-for="character in props.projectCharacters"
           :key="character.id"
-          class="rounded-lg border border-stone-300/80 bg-stone-50/90 p-3 dark:border-zinc-700/60 dark:bg-zinc-900/40"
+          class="rounded-md border border-stone-300/80 bg-stone-50/90 p-3 dark:border-zinc-700/60 dark:bg-zinc-900/40"
         >
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 space-y-1">
@@ -160,7 +160,7 @@ const props = defineProps<{
 
       <div
         v-if="props.characterFormOpen"
-        class="space-y-2 rounded-lg border border-amber-300/70 bg-amber-100/80 p-3 dark:border-amber-700/50 dark:bg-amber-900/15"
+        class="space-y-2 rounded-md border border-amber-300/70 bg-amber-100/80 p-3 dark:border-amber-700/50 dark:bg-amber-900/15"
       >
         <p class="text-xs font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">
           {{ props.editingCharacterId ? 'Edit Character Card' : 'Create Character Card' }}
@@ -192,7 +192,7 @@ const props = defineProps<{
       </div>
     </div>
 
-    <div class="space-y-3 rounded-xl border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
+    <div class="space-y-3 rounded-md border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
       <div class="flex items-center justify-between gap-2">
         <p class="text-xs font-medium uppercase tracking-wider text-stone-700 dark:text-zinc-300">
           Glossary Terms
@@ -222,7 +222,7 @@ const props = defineProps<{
         <div
           v-for="term in props.projectGlossaryTerms"
           :key="term.id"
-          class="rounded-lg border border-stone-300/80 bg-stone-50/90 p-3 dark:border-zinc-700/60 dark:bg-zinc-900/40"
+          class="rounded-md border border-stone-300/80 bg-stone-50/90 p-3 dark:border-zinc-700/60 dark:bg-zinc-900/40"
         >
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 space-y-1">
@@ -254,7 +254,7 @@ const props = defineProps<{
 
       <div
         v-if="props.glossaryFormOpen"
-        class="space-y-2 rounded-lg border border-amber-300/70 bg-amber-100/80 p-3 dark:border-amber-700/50 dark:bg-amber-900/15"
+        class="space-y-2 rounded-md border border-amber-300/70 bg-amber-100/80 p-3 dark:border-amber-700/50 dark:bg-amber-900/15"
       >
         <p class="text-xs font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">
           {{ props.editingGlossaryTermId ? 'Edit Glossary Term' : 'Create Glossary Term' }}
@@ -286,7 +286,7 @@ const props = defineProps<{
       </div>
     </div>
 
-    <div class="space-y-3 rounded-xl border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
+    <div class="space-y-3 rounded-md border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
       <div class="flex items-center justify-between gap-2">
         <p class="text-xs font-medium uppercase tracking-wider text-stone-700 dark:text-zinc-300">
           Worldbook Entries
@@ -316,7 +316,7 @@ const props = defineProps<{
         <div
           v-for="entry in props.projectWorldbookEntries"
           :key="entry.id"
-          class="rounded-lg border border-stone-300/80 bg-stone-50/90 p-3 dark:border-zinc-700/60 dark:bg-zinc-900/40"
+          class="rounded-md border border-stone-300/80 bg-stone-50/90 p-3 dark:border-zinc-700/60 dark:bg-zinc-900/40"
         >
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 space-y-1">
@@ -351,7 +351,7 @@ const props = defineProps<{
 
       <div
         v-if="props.worldbookFormOpen"
-        class="space-y-2 rounded-lg border border-amber-300/70 bg-amber-100/80 p-3 dark:border-amber-700/50 dark:bg-amber-900/15"
+        class="space-y-2 rounded-md border border-amber-300/70 bg-amber-100/80 p-3 dark:border-amber-700/50 dark:bg-amber-900/15"
       >
         <p class="text-xs font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">
           {{ props.editingWorldbookEntryId ? 'Edit Worldbook Entry' : 'Create Worldbook Entry' }}

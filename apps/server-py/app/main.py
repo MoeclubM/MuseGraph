@@ -23,10 +23,11 @@ async def lifespan(app: FastAPI):
     # Ensure local storage root
     ensure_bucket()
 
-    # Initialize Cognee
+    # Initialize graph runtime
     try:
-        from app.services.cognee import setup_cognee
-        await setup_cognee()
+        from app.services.graph_service import setup_graph_runtime
+
+        await setup_graph_runtime()
     except Exception:
         pass
 
@@ -56,7 +57,7 @@ async def attach_request_id(request: Request, call_next):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.APP_URL, "http://localhost:3000", "http://localhost:5173"],
+    allow_origins=[settings.APP_URL, "http://localhost:3000", "http://localhost:3010", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

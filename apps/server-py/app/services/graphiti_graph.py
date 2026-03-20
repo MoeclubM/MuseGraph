@@ -7,9 +7,10 @@ import os
 import re
 import shutil
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, get_origin
 
 from pydantic import BaseModel, Field, create_model
@@ -25,10 +26,12 @@ from app.services.provider_models import get_provider_chat_models, get_provider_
 
 logger = logging.getLogger(__name__)
 
-_GRAPHITI_CHUNK_SIZE = 5000
-_GRAPHITI_CHUNK_OVERLAP = 400
+_GRAPHITI_CHUNK_SIZE = 8000
+_GRAPHITI_CHUNK_OVERLAP = 240
 _GRAPHITI_MAX_VIS_NODES = 320
 _GRAPHITI_MAX_VIS_EDGES = 900
+_GRAPHITI_LLM_MAX_TOKENS = 4096
+_GRAPHITI_EPISODE_HEARTBEAT_SECONDS = 10.0
 _GRAPHITI_SETUP_LOCK = asyncio.Lock()
 _GRAPHITI_SETUP_COMPLETE: set[str] = set()
 
@@ -45,6 +48,143 @@ class _GraphitiRuntimeSelection:
     timeout_seconds: int
     retry_count: int
     max_coroutines: int
+
+
+def _iter_graphiti_table_rows(text: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for raw_line in re.split(r"[\r\n]+", str(text or "")):
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "|" not in line:
+            continue
+        cells = [cell.strip().strip("`") for cell in line.strip("|").split("|")]
+        if not any(cells):
+            continue
+        compact = [re.sub(r"\s+", "", cell) for cell in cells]
+        if compact and all(re.fullmatch(r":?-{2,}:?", cell or "") for cell in compact):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def _normalize_extracted_entities_text_payload(text: Any) -> list[dict[str, Any]]:
+    source = str(text or "").strip()
+    if not source:
+        return []
+
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+
+    def add_item(name: str, entity_type_id: int | None) -> None:
+        normalized_name = str(name or "").strip().strip('"').strip("'")
+        if not normalized_name or entity_type_id is None:
+            return
+        key = (normalized_name.casefold(), int(entity_type_id))
+        if key in seen:
+            return
+        seen.add(key)
+        items.append({"name": normalized_name, "entity_type_id": int(entity_type_id)})
+
+    for cells in _iter_graphiti_table_rows(source):
+        header = " ".join(cells).lower()
+        if "entity" in header and ("type" in header or "entity_type_id" in header):
+            continue
+        name = str(cells[0] if cells else "").strip()
+        entity_type_id: int | None = None
+        for cell in reversed(cells[1:]):
+            match = re.search(r"(?<!\d)(\d{1,6})(?!\d)", str(cell))
+            if match:
+                entity_type_id = int(match.group(1))
+                break
+        add_item(name, entity_type_id)
+
+    if items:
+        return items
+
+    for raw_line in re.split(r"[\r\n]+", source):
+        line = re.sub(r"^[\-\*\u2022\d\.\)\s]+", "", str(raw_line or "").strip())
+        if not line or line.startswith("#"):
+            continue
+        match = re.match(
+            r"^(?P<name>.+?)(?:\s*[\|\-:]\s*|\s*\()\D*(?P<entity_type_id>\d{1,6})\D*\)?$",
+            line,
+        )
+        if match:
+            add_item(match.group("name"), int(match.group("entity_type_id")))
+
+    return items
+
+
+def _normalize_extracted_edges_text_payload(text: Any) -> list[dict[str, Any]]:
+    source = str(text or "").strip()
+    if not source:
+        return []
+
+    items: list[dict[str, Any]] = []
+
+    def normalize_relation(value: str) -> str:
+        relation = re.sub(r"[^A-Za-z0-9]+", "_", str(value or "").strip()).strip("_").upper()
+        return relation or "RELATED_TO"
+
+    def add_item(source_name: str, target_name: str, relation_type: str, fact: str, valid_at: str | None = None, invalid_at: str | None = None) -> None:
+        src = str(source_name or "").strip().strip('"').strip("'")
+        tgt = str(target_name or "").strip().strip('"').strip("'")
+        rel = normalize_relation(relation_type)
+        description = str(fact or "").strip().strip('"').strip("'")
+        if not src or not tgt:
+            return
+        if not description:
+            description = f"{src} {rel.replace('_', ' ').lower()} {tgt}"
+        payload: dict[str, Any] = {
+            "source_entity_name": src,
+            "target_entity_name": tgt,
+            "relation_type": rel,
+            "fact": description,
+        }
+        if valid_at:
+            payload["valid_at"] = str(valid_at).strip()
+        if invalid_at:
+            payload["invalid_at"] = str(invalid_at).strip()
+        items.append(payload)
+
+    for cells in _iter_graphiti_table_rows(source):
+        header = [str(cell).strip().lower() for cell in cells]
+        if any("source" in cell for cell in header) and any("target" in cell for cell in header):
+            continue
+        if len(cells) >= 4:
+            if "target" in header[1] or "relation" in header[2]:
+                add_item(cells[0], cells[1], cells[2], cells[3], cells[4] if len(cells) > 4 else None, cells[5] if len(cells) > 5 else None)
+            else:
+                add_item(cells[0], cells[2], cells[1], cells[3], cells[4] if len(cells) > 4 else None, cells[5] if len(cells) > 5 else None)
+
+    return items
+
+
+def _normalize_graphiti_plain_text_payload(
+    response_model: type[BaseModel] | None,
+    text: Any,
+) -> Any:
+    if response_model is None:
+        return text
+
+    model_name = getattr(response_model, "__name__", "")
+    field_names = list(getattr(response_model, "model_fields", {}).keys())
+
+    if model_name == "ExtractedEntities":
+        return {"extracted_entities": _normalize_extracted_entities_text_payload(text)}
+
+    if model_name == "ExtractedEdges":
+        return {"edges": _normalize_extracted_edges_text_payload(text)}
+
+    if model_name == "SummarizedEntities":
+        return {"summaries": _normalize_graphiti_structured_payload(response_model, {"summaries": text}).get("summaries", [])}
+
+    if model_name == "EdgeDuplicate":
+        return _normalize_graphiti_structured_payload(response_model, text)
+
+    if len(field_names) == 1:
+        return {field_names[0]: str(text or "").strip()}
+
+    return text
 
 
 def _normalize_graphiti_structured_payload(
@@ -77,7 +217,23 @@ def _normalize_graphiti_structured_payload(
         normalized_edges = []
         for item in items:
             if isinstance(item, dict):
-                aliased = dict(item)
+                nested_payload: dict[str, Any] | None = None
+                for nested_key in ("fact", "edge", "relationship", "relation"):
+                    candidate = item.get(nested_key)
+                    if isinstance(candidate, dict):
+                        nested_payload = dict(candidate)
+                        break
+                if nested_payload is None and len(item) == 1:
+                    only_value = next(iter(item.values()))
+                    if isinstance(only_value, dict):
+                        nested_payload = dict(only_value)
+
+                aliased = dict(nested_payload or {})
+                for key, value in item.items():
+                    if key in {"fact", "edge", "relationship", "relation"} and isinstance(value, dict):
+                        continue
+                    if key not in aliased:
+                        aliased[key] = value
                 if "source_entity_name" not in aliased:
                     for alias in ("source_name", "source_entity", "source"):
                         alias_value = str(aliased.get(alias) or "").strip()
@@ -175,6 +331,22 @@ def _normalize_graphiti_structured_payload(
         return normalized
 
     def _normalize_int_list(value: Any) -> list[int]:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("[") and stripped.endswith("]"):
+                try:
+                    return _normalize_int_list(json.loads(stripped))
+                except Exception:
+                    pass
+            normalized: list[int] = []
+            for match in re.finditer(r"(?<!\d)-?\d+(?!\d)", stripped):
+                try:
+                    normalized.append(int(match.group(0)))
+                except Exception:
+                    continue
+            return normalized
         if not isinstance(value, list):
             return []
         normalized: list[int] = []
@@ -195,6 +367,29 @@ def _normalize_graphiti_structured_payload(
 
     def _normalize_edge_duplicate_payload(value: Any) -> dict[str, list[int]]:
         candidate = value
+        if isinstance(candidate, str):
+            text = candidate.strip()
+            if not text:
+                return {"duplicate_facts": [], "contradicted_facts": []}
+            payload: dict[str, Any] = {}
+            duplicate_match = re.search(
+                r"(?:duplicate_facts|duplicates?)\s*[:=]\s*(?P<value>\[[^\]]*\]|[^\r\n]+)",
+                text,
+                flags=re.IGNORECASE,
+            )
+            contradiction_match = re.search(
+                r"(?:contradicted_facts|contradictions?|invalidated_facts)\s*[:=]\s*(?P<value>\[[^\]]*\]|[^\r\n]+)",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if duplicate_match:
+                payload["duplicate_facts"] = duplicate_match.group("value")
+            if contradiction_match:
+                payload["contradicted_facts"] = contradiction_match.group("value")
+            if payload:
+                candidate = payload
+            else:
+                return {"duplicate_facts": [], "contradicted_facts": []}
         if isinstance(candidate, list):
             candidate = next(
                 (item for item in candidate if isinstance(item, dict)),
@@ -241,14 +436,17 @@ def _normalize_graphiti_structured_payload(
             return {"summaries": _normalize_summary_items(payload)}
         return {field_names[0]: payload}
 
-    if isinstance(payload, str) and len(field_names) == 1 and payload.strip():
-        return {field_names[0]: payload.strip()}
+    if isinstance(payload, str) and payload.strip():
+        return _normalize_graphiti_plain_text_payload(response_model, payload)
 
     if not isinstance(payload, dict):
         return payload
 
     if model_name == "ExtractedEntities" and isinstance(payload.get("extracted_entities"), list):
         return {"extracted_entities": _normalize_entity_items(payload["extracted_entities"])}
+
+    if model_name == "ExtractedEntities" and isinstance(payload.get("extracted_entities"), str):
+        return {"extracted_entities": _normalize_extracted_entities_text_payload(payload.get("extracted_entities"))}
 
     if model_name == "ExtractedEntities" and "extracted_entities" not in payload:
         candidate = payload.get("nodes")
@@ -259,6 +457,9 @@ def _normalize_graphiti_structured_payload(
 
     if model_name == "ExtractedEdges" and isinstance(payload.get("edges"), list):
         return {"edges": _normalize_edge_items(payload["edges"])}
+
+    if model_name == "ExtractedEdges" and isinstance(payload.get("edges"), str):
+        return {"edges": _normalize_extracted_edges_text_payload(payload.get("edges"))}
 
     if model_name == "ExtractedEdges" and "edges" not in payload:
         for key in ("relationships", "relations"):
@@ -301,6 +502,47 @@ def _normalize_graphiti_structured_payload(
     return payload
 
 
+def _is_graphiti_store_io_error(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    return "io exception" in message and "cannot read from file" in message
+
+
+def _clear_graphiti_store(project_id: str) -> None:
+    db_path = Path(_graphiti_store_path(project_id))
+    store_dir = db_path.parent
+    _GRAPHITI_SETUP_COMPLETE.discard(str(db_path))
+    if store_dir.exists():
+        shutil.rmtree(store_dir, ignore_errors=True)
+
+
+def _open_kuzu_driver(
+    KuzuDriver: Any,
+    *,
+    db_path: str,
+    project_id: str | None = None,
+    max_concurrent_queries: int | None = None,
+) -> Any:
+    kwargs: dict[str, Any] = {"db": db_path}
+    if max_concurrent_queries is not None:
+        kwargs["max_concurrent_queries"] = max_concurrent_queries
+    try:
+        driver = KuzuDriver(**kwargs)
+    except Exception as exc:
+        if project_id and _is_graphiti_store_io_error(exc):
+            logger.warning(
+                "Graphiti store is unreadable; clearing local store and retrying once. "
+                "project_id=%s db_path=%s",
+                project_id,
+                db_path,
+                exc_info=True,
+            )
+            _clear_graphiti_store(project_id)
+            driver = KuzuDriver(**kwargs)
+        else:
+            raise
+    return _patch_graphiti_driver_compatibility(driver)
+
+
 def _parse_graphiti_response_content(
     response_model: type[BaseModel] | None,
     raw_content: str,
@@ -325,16 +567,85 @@ def _parse_graphiti_response_content(
     if parsed_payload is None:
         # Some providers still return plain text for single-field structured prompts.
         if response_model is not None:
-            field_names = list(getattr(response_model, "model_fields", {}).keys())
-            if len(field_names) == 1:
-                return {field_names[0]: text}
+            return _normalize_graphiti_plain_text_payload(response_model, text)
         raise ValueError("Unable to parse Graphiti LLM response as JSON")
 
     return _normalize_graphiti_structured_payload(response_model, parsed_payload)
 
 
+def _validate_graphiti_response_payload(
+    response_model: type[BaseModel] | None,
+    payload: Any,
+) -> Any:
+    if response_model is None:
+        return payload
+    validated = response_model.model_validate(payload)
+    return validated.model_dump(mode="python")
+
+
 def _graphiti_telemetry_enabled() -> str:
     return "true" if not bool(getattr(settings, "TELEMETRY_DISABLED", True)) else "false"
+
+
+def _graphiti_effective_max_tokens(value: int | None) -> int:
+    try:
+        requested = int(value or _GRAPHITI_LLM_MAX_TOKENS)
+    except Exception:
+        requested = _GRAPHITI_LLM_MAX_TOKENS
+    return max(256, min(_GRAPHITI_LLM_MAX_TOKENS, requested))
+
+
+def _graphiti_exception_status_code(exc: Exception) -> int | None:
+    for attr in ("status_code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    response = getattr(exc, "response", None)
+    for attr in ("status_code", "status"):
+        value = getattr(response, attr, None)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
+def _is_retryable_graphiti_llm_error(exc: Exception) -> bool:
+    import openai
+
+    if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError, asyncio.TimeoutError, TimeoutError)):
+        return True
+    status_code = _graphiti_exception_status_code(exc)
+    if isinstance(status_code, int) and status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
+        return True
+    text = f"{type(exc).__name__}: {exc}".lower()
+    retryable_markers = (
+        "504",
+        "gateway time-out",
+        "gateway timeout",
+        "timed out",
+        "timeout",
+        "connection error",
+        "temporary",
+        "temporarily unavailable",
+        "bad gateway",
+        "service unavailable",
+    )
+    return any(marker in text for marker in retryable_markers)
+
+
+def _graphiti_retry_delay_seconds(attempt_number: int) -> float:
+    return min(8.0, max(0.5, float(attempt_number) * 1.5))
+
+
+def _graphiti_episode_timeout_seconds(timeout_seconds: int | None) -> int:
+    try:
+        requested = int(timeout_seconds or 180)
+    except Exception:
+        requested = 180
+    return max(60, min(600, requested + 30))
 
 
 def _build_graph_id() -> str:
@@ -597,7 +908,7 @@ async def _resolve_graphiti_runtime(
 
     llm_base_url = str(getattr(llm_provider, "base_url", "") or "").strip()
     embedding_base_url = str(getattr(embedding_provider, "base_url", "") or "").strip()
-    max_coroutines = max(1, min(20, int(runtime_cfg.get("llm_task_concurrency", 4) or 4)))
+    max_coroutines = max(1, min(64, int(runtime_cfg.get("llm_task_concurrency", 4) or 4)))
 
     return _GraphitiRuntimeSelection(
         llm_model=llm_model,
@@ -751,31 +1062,91 @@ def _patch_graphiti_llm_client(openai_generic_client_cls: type[Any]) -> type[Any
                     openai_messages.append({"role": "system", "content": message.content})
 
             try:
-                response_format: dict[str, Any] = {"type": "json_object"}
+                schema_name = getattr(response_model, "__name__", "structured_response")
+                response_formats: list[dict[str, Any] | None] = [{"type": "json_object"}]
                 if response_model is not None:
-                    schema_name = getattr(response_model, "__name__", "structured_response")
-                    response_format = {
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": schema_name,
-                            "schema": response_model.model_json_schema(),
+                    response_formats = [
+                        {
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": schema_name,
+                                "schema": response_model.model_json_schema(),
+                            },
                         },
-                    }
+                        {"type": "json_object"},
+                    ]
 
-                response = await self.client.chat.completions.create(
-                    model=self.model or "gpt-4.1-mini",
-                    messages=openai_messages,
-                    temperature=self.temperature,
-                    max_tokens=max_tokens or self.max_tokens,
-                    response_format=response_format,  # type: ignore[arg-type]
+                effective_max_tokens = _graphiti_effective_max_tokens(max_tokens or self.max_tokens)
+                timeout_seconds = max(
+                    5,
+                    min(
+                        1800,
+                        int(getattr(getattr(self, "config", None), "timeout_seconds", 180) or 180),
+                    ),
                 )
-                raw_content = response.choices[0].message.content or ""
-                return _parse_graphiti_response_content(response_model, raw_content)
+
+                last_exc: Exception | None = None
+                for attempt_index, response_format in enumerate(response_formats, start=1):
+                    request_kwargs: dict[str, Any] = {
+                        "model": self.model or "gpt-4.1-mini",
+                        "messages": openai_messages,
+                        "temperature": self.temperature,
+                        "max_tokens": effective_max_tokens,
+                        "timeout": timeout_seconds,
+                    }
+                    if response_format is not None:
+                        request_kwargs["response_format"] = response_format
+                    try:
+                        response = await self.client.chat.completions.create(**request_kwargs)
+                        raw_content = response.choices[0].message.content or ""
+                        parsed_payload = _parse_graphiti_response_content(response_model, raw_content)
+                        return _validate_graphiti_response_payload(response_model, parsed_payload)
+                    except openai.RateLimitError as exc:
+                        raise RateLimitError from exc
+                    except Exception as exc:
+                        last_exc = exc
+                        if _is_retryable_graphiti_llm_error(exc):
+                            break
+                    if attempt_index >= len(response_formats):
+                        break
+                    current_format_name = str(
+                        (response_format or {}).get("type") if isinstance(response_format, dict) else "none"
+                    )
+                    next_format = response_formats[attempt_index]
+                    next_format_name = str(
+                        (next_format or {}).get("type") if isinstance(next_format, dict) else "none"
+                    )
+                    logger.warning(
+                        "Graphiti structured-output request failed; retrying with fallback format. "
+                        "model=%s response_model=%s base_url=%s format=%s next_format=%s "
+                        "max_tokens=%s timeout=%s error_type=%s error=%r",
+                        self.model or "gpt-4.1-mini",
+                        getattr(response_model, "__name__", None),
+                        getattr(getattr(self, "config", None), "base_url", ""),
+                        current_format_name,
+                        next_format_name,
+                        effective_max_tokens,
+                        timeout_seconds,
+                        type(last_exc).__name__ if last_exc is not None else "UnknownError",
+                        last_exc,
+                    )
+                    continue
+
+                assert last_exc is not None
+                logger.exception(
+                    "Graphiti LLM request failed. model=%s response_model=%s base_url=%s "
+                    "max_tokens=%s timeout=%s error_type=%s error=%r",
+                    self.model or "gpt-4.1-mini",
+                    getattr(response_model, "__name__", None),
+                    getattr(getattr(self, "config", None), "base_url", ""),
+                    effective_max_tokens,
+                    timeout_seconds,
+                    type(last_exc).__name__,
+                    last_exc,
+                )
+                raise last_exc
             except openai.RateLimitError as exc:
                 raise RateLimitError from exc
-            except Exception as exc:
-                logger.error(f"Error in generating Graphiti LLM response: {exc}")
-                raise
 
     return MuseGraphGraphitiClient
 
@@ -798,14 +1169,16 @@ async def _create_graphiti(*, runtime: _GraphitiRuntimeSelection, project_id: st
     os.environ["SEMAPHORE_LIMIT"] = str(runtime.max_coroutines)
     os.environ["EMBEDDING_DIM"] = str(_embedding_dimension())
 
+    llm_max_tokens = _graphiti_effective_max_tokens(16384)
     llm_config = LLMConfig(
         api_key=runtime.llm_api_key,
         model=runtime.llm_model,
         base_url=runtime.llm_base_url or None,
         temperature=0,
-        max_tokens=16384,
+        max_tokens=llm_max_tokens,
         small_model=runtime.reranker_model,
     )
+    llm_config.timeout_seconds = runtime.timeout_seconds
     embedder_config = OpenAIEmbedderConfig(
         api_key=runtime.embedding_api_key,
         base_url=runtime.embedding_base_url or None,
@@ -813,16 +1186,87 @@ async def _create_graphiti(*, runtime: _GraphitiRuntimeSelection, project_id: st
         embedding_dim=_embedding_dimension(),
     )
     graphiti_llm_client_cls = _patch_graphiti_llm_client(OpenAIGenericClient)
-    driver = _patch_graphiti_driver_compatibility(
-        KuzuDriver(db=db_path, max_concurrent_queries=runtime.max_coroutines)
+    driver = _open_kuzu_driver(
+        KuzuDriver,
+        db_path=db_path,
+        project_id=project_id,
+        max_concurrent_queries=runtime.max_coroutines,
     )
+    llm_client = graphiti_llm_client_cls(config=llm_config, max_tokens=llm_max_tokens)
+    llm_client.MAX_RETRIES = 0
     return Graphiti(
         graph_driver=driver,
-        llm_client=graphiti_llm_client_cls(config=llm_config, max_tokens=16384),
+        llm_client=llm_client,
         embedder=OpenAIEmbedder(config=embedder_config),
         cross_encoder=OpenAIRerankerClient(config=llm_config),
         max_coroutines=runtime.max_coroutines,
     )
+
+
+async def _run_graphiti_episode(
+    *,
+    graphiti: Any,
+    runtime: _GraphitiRuntimeSelection,
+    index: int,
+    total_chunks: int,
+    emit: Any,
+    episode_kwargs: dict[str, Any],
+) -> Any:
+    episode_timeout_seconds = _graphiti_episode_timeout_seconds(runtime.timeout_seconds)
+    max_episode_attempts = max(1, int(runtime.retry_count or 0) + 1)
+    progress_before_episode = 30 + int((max(0, index - 1) / max(1, total_chunks)) * 70)
+
+    for attempt in range(1, max_episode_attempts + 1):
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        task = asyncio.create_task(graphiti.add_episode(**episode_kwargs))
+        emit(progress_before_episode, f"Graphiti ingesting episode {index}/{total_chunks}...")
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=_GRAPHITI_EPISODE_HEARTBEAT_SECONDS)
+                if task in done:
+                    return await task
+
+                elapsed_seconds = int(loop.time() - started_at)
+                if elapsed_seconds >= episode_timeout_seconds:
+                    task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await task
+                    raise asyncio.TimeoutError(
+                        f"Graphiti episode {index}/{total_chunks} timed out after {elapsed_seconds}s"
+                    )
+
+                emit(
+                    progress_before_episode,
+                    f"Graphiti ingesting episode {index}/{total_chunks}... {elapsed_seconds}s elapsed",
+                )
+        except Exception as exc:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
+
+            if _is_retryable_graphiti_llm_error(exc) and attempt < max_episode_attempts:
+                delay_seconds = _graphiti_retry_delay_seconds(attempt)
+                logger.warning(
+                    "Graphiti episode failed; retrying. index=%s total=%s attempt=%s/%s timeout=%ss error_type=%s error=%r",
+                    index,
+                    total_chunks,
+                    attempt + 1,
+                    max_episode_attempts,
+                    episode_timeout_seconds,
+                    type(exc).__name__,
+                    exc,
+                )
+                emit(
+                    progress_before_episode,
+                    f"Graphiti episode {index}/{total_chunks} retrying in {delay_seconds:.1f}s...",
+                )
+                await asyncio.sleep(delay_seconds)
+                continue
+            raise
+
+    raise RuntimeError(f"Graphiti episode {index}/{total_chunks} failed without a terminal exception.")
 
 
 async def setup_graphiti(project_id: str | None = None) -> None:
@@ -845,7 +1289,7 @@ async def setup_graphiti(project_id: str | None = None) -> None:
             _recipes,
         ) = _import_graphiti_runtime()
         os.environ["GRAPHITI_TELEMETRY_ENABLED"] = _graphiti_telemetry_enabled()
-        driver = _patch_graphiti_driver_compatibility(KuzuDriver(db=db_path))
+        driver = _open_kuzu_driver(KuzuDriver, db_path=db_path, project_id=project_id)
         try:
             await driver.build_indices_and_constraints()
         finally:
@@ -902,23 +1346,27 @@ async def build_graph(
         emit(25, "Preparing Graphiti local runtime...")
         await graphiti.build_indices_and_constraints()
         total_chunks = len(chunks)
-        previous_episode_uuid: str | None = None
+        base_reference_time = datetime.now(timezone.utc)
         for index, chunk in enumerate(chunks, start=1):
-            result = await graphiti.add_episode(
-                name=f"{str(getattr(project, 'title', '') or 'MuseGraph Graph')} {index}/{total_chunks}",
-                episode_body=chunk,
-                source=EpisodeType.text,
-                source_description="MuseGraph graph build chunk",
-                reference_time=datetime.now(timezone.utc),
-                group_id=graph_id,
-                entity_types=entity_types,
-                edge_types=edge_types,
-                edge_type_map=edge_type_map,
-                previous_episode_uuids=[previous_episode_uuid] if previous_episode_uuid else None,
-                saga=f"graph_build_{graph_id}",
-                saga_previous_episode_uuid=previous_episode_uuid,
+            await _run_graphiti_episode(
+                graphiti=graphiti,
+                runtime=runtime,
+                index=index,
+                total_chunks=total_chunks,
+                emit=emit,
+                episode_kwargs={
+                    "name": f"{str(getattr(project, 'title', '') or 'MuseGraph Graph')} {index}/{total_chunks}",
+                    "episode_body": chunk,
+                    "source": EpisodeType.text,
+                    "source_description": "MuseGraph graph build chunk",
+                    "reference_time": base_reference_time + timedelta(seconds=index - 1),
+                    "group_id": graph_id,
+                    "entity_types": entity_types,
+                    "edge_types": edge_types,
+                    "edge_type_map": edge_type_map,
+                    "saga": f"graph_build_{graph_id}",
+                },
             )
-            previous_episode_uuid = str(getattr(getattr(result, "episode", None), "uuid", "") or "").strip() or previous_episode_uuid
             progress = 30 + int((index / total_chunks) * 70)
             emit(progress, f"Graphiti ingesting episodes {index}/{total_chunks}...")
         emit(100, "Graph build complete")
@@ -1160,14 +1608,68 @@ async def get_graph_visualization(project_id: str, *, db: AsyncSession | None = 
         await graphiti.close()
 
 
-async def delete_graph(project_id: str, *, db: AsyncSession | None = None) -> None:
+async def has_graph_data(project_id: str, *, db: AsyncSession | None = None) -> bool:
+    project = await _load_project(project_id, db)
+    graph_id = str(getattr(project, "cognee_dataset_id", "") or "").strip()
+    if not graph_id:
+        return False
+
+    db_path = Path(_graphiti_store_path(project_id))
+    if not db_path.exists():
+        return False
+
+    (
+        _Graphiti,
+        KuzuDriver,
+        _OpenAIGenericClient,
+        _LLMConfig,
+        _OpenAIEmbedder,
+        _OpenAIEmbedderConfig,
+        _OpenAIRerankerClient,
+        _EpisodeType,
+        _recipes,
+    ) = _import_graphiti_runtime()
+    try:
+        await setup_graphiti(project_id)
+        driver = _open_kuzu_driver(KuzuDriver, db_path=str(db_path), project_id=project_id)
+    except Exception:
+        logger.warning("Failed to initialize Graphiti store health check for project %s", project_id, exc_info=True)
+        return False
+    try:
+        node_records, _, _ = await driver.execute_query(
+            """
+            MATCH (n:Entity)
+            WHERE coalesce(n.group_id, '') = $group_id
+            RETURN count(n) AS node_count
+            """,
+            group_id=graph_id,
+        )
+        for record in node_records or []:
+            payload = _record_to_dict(record)
+            try:
+                return int(payload.get("node_count") or 0) > 0
+            except Exception:
+                continue
+        return False
+    except Exception:
+        logger.warning("Failed to check Graphiti store health for project %s", project_id, exc_info=True)
+        return False
+    finally:
+        await driver.close()
+
+
+async def delete_graph(
+    project_id: str,
+    *,
+    model: str | None = None,
+    embedding_model: str | None = None,
+    db: AsyncSession | None = None,
+) -> None:
+    # Keep a compatible signature with the previous graph backend dispatch.
+    _ = (model, embedding_model)
     project = await _load_project(project_id, db)
     graph_id = str(getattr(project, "cognee_dataset_id", "") or "").strip()
     if not graph_id:
         return
 
-    db_path = Path(_graphiti_store_path(project_id))
-    store_dir = db_path.parent
-    _GRAPHITI_SETUP_COMPLETE.discard(str(db_path))
-    if store_dir.exists():
-        shutil.rmtree(store_dir, ignore_errors=True)
+    _clear_graphiti_store(project_id)

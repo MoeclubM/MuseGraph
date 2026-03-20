@@ -107,16 +107,18 @@ onMounted(async () => {
 
 <template>
   <AppLayout>
-    <div class="mx-auto w-full max-w-2xl space-y-5">
-      <div>
-        <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Recharge</h1>
-        <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">Top up your account balance</p>
-      </div>
+    <div class="muse-page-shell muse-page-shell-narrow">
+      <section class="muse-page-header">
+        <div>
+          <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Recharge</h1>
+          <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">Top up your account balance</p>
+        </div>
+      </section>
 
       <!-- Balance Card -->
       <Card>
         <div class="flex items-center gap-4">
-          <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-amber-500/15 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
+          <div class="flex h-12 w-12 items-center justify-center rounded-md bg-amber-500/15 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
             <Wallet class="w-6 h-6" />
           </div>
           <div class="flex-1">
@@ -139,12 +141,12 @@ onMounted(async () => {
       <Card>
         <h2 class="mb-4 text-base font-semibold text-stone-900 dark:text-stone-100">Add Funds</h2>
 
-        <div v-if="success" class="mb-4 flex items-center gap-2 rounded-lg border border-emerald-300/70 bg-emerald-100 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-700/50 dark:bg-emerald-900/20 dark:text-emerald-300">
+        <div v-if="success" class="mb-4 flex items-center gap-2 rounded-md border border-emerald-300/70 bg-emerald-100 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-700/50 dark:bg-emerald-900/20 dark:text-emerald-300">
           <CheckCircle class="w-4 h-4" />
           Deposit successful! Your balance has been updated.
         </div>
 
-        <div v-if="error" class="mb-4 rounded-lg border border-red-300/80 bg-red-100 px-4 py-3 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
+        <div v-if="error" class="mb-4 rounded-md border border-red-300/80 bg-red-100 px-4 py-3 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
           {{ error }}
         </div>
 
@@ -212,7 +214,7 @@ onMounted(async () => {
           </Button>
         </div>
 
-        <div v-if="ordersError" class="mb-3 rounded-lg border border-red-300/80 bg-red-100 px-4 py-3 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
+        <div v-if="ordersError" class="mb-3 rounded-md border border-red-300/80 bg-red-100 px-4 py-3 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
           {{ ordersError }}
         </div>
 

@@ -2,11 +2,13 @@ FROM mirror.gcr.io/library/node:20-alpine AS builder
 
 WORKDIR /app
 
+ENV CI=true
+
 # Copy workspace root files needed for pnpm install
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web-vue/package.json apps/web-vue/package.json
 
-RUN corepack enable && pnpm install --frozen-lockfile --filter @musegraph/web... || pnpm install --filter @musegraph/web...
+RUN corepack enable && pnpm install --frozen-lockfile --filter @musegraph/web...
 
 COPY apps/web-vue/ apps/web-vue/
 RUN cd apps/web-vue && pnpm build

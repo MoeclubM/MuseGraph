@@ -55,7 +55,7 @@ const emit = defineEmits<{
       <div
         v-for="sim in props.projectSimulations.slice(0, 8)"
         :key="sim.simulation_id"
-        class="rounded-lg border border-stone-300/70 dark:border-zinc-700/50 bg-stone-100/75 dark:bg-zinc-800/40 px-3 py-2"
+        class="rounded-md border border-stone-300/70 dark:border-zinc-700/50 bg-stone-100/75 dark:bg-zinc-800/40 px-3 py-2"
       >
         <div class="flex items-center justify-between gap-2">
           <Button

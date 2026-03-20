@@ -275,8 +275,8 @@ onUnmounted(() => {
     <template #sidebar>
       <AppSidebar :active-id="simulation?.project_id" />
     </template>
-    <div class="space-y-5">
-      <Card>
+    <div class="muse-page-shell muse-page-shell-wide">
+      <section class="muse-page-header">
         <div class="space-y-4">
           <div class="flex items-start justify-between gap-4">
             <div>
@@ -327,7 +327,7 @@ onUnmounted(() => {
             />
           </div>
         </div>
-      </Card>
+      </section>
 
       <div class="grid grid-cols-1 gap-4" :class="{ 'lg:grid-cols-2': viewMode === 'split' }">
         <Card v-if="viewMode !== 'graph'">
@@ -393,15 +393,15 @@ onUnmounted(() => {
         </div>
 
         <div class="grid grid-cols-1 gap-4 text-sm md:grid-cols-3">
-          <div class="rounded-lg border border-stone-300/80 bg-stone-100/70 p-3 dark:border-zinc-700/50 dark:bg-zinc-800/50">
+          <div class="rounded-md border border-stone-300/80 bg-stone-100/70 p-3 dark:border-zinc-700/50 dark:bg-zinc-800/50">
             <div class="mb-1 text-xs text-stone-500 dark:text-zinc-400">Report Status</div>
             <div class="font-medium text-stone-800 dark:text-zinc-100">{{ reportState?.status || 'Not generated' }}</div>
           </div>
-          <div class="rounded-lg border border-stone-300/80 bg-stone-100/70 p-3 dark:border-zinc-700/50 dark:bg-zinc-800/50">
+          <div class="rounded-md border border-stone-300/80 bg-stone-100/70 p-3 dark:border-zinc-700/50 dark:bg-zinc-800/50">
             <div class="mb-1 text-xs text-stone-500 dark:text-zinc-400">Participant Count</div>
             <div class="font-medium text-stone-800 dark:text-zinc-100">{{ profiles.length }} active</div>
           </div>
-          <div class="rounded-lg border border-stone-300/80 bg-stone-100/70 p-3 dark:border-zinc-700/50 dark:bg-zinc-800/50">
+          <div class="rounded-md border border-stone-300/80 bg-stone-100/70 p-3 dark:border-zinc-700/50 dark:bg-zinc-800/50">
             <div class="mb-1 text-xs text-stone-500 dark:text-zinc-400">Environment Status</div>
             <div class="font-medium capitalize text-stone-800 dark:text-zinc-100">{{ simulation?.env_status?.status || 'Unknown' }}</div>
           </div>

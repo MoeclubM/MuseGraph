@@ -67,10 +67,10 @@ function getStanceColor(stance: string) {
         v-for="profile in displayedProfiles"
         :key="profile.name"
         :class="[
-          'rounded-lg border p-3 text-left transition-all',
+          'rounded-md border p-3 text-left transition-all',
           interactive ? 'cursor-pointer hover:bg-stone-200/60 dark:hover:bg-zinc-800/50' : 'cursor-default',
           selectedAgent === profile.name
-            ? 'border-[#FF5722] bg-[#FF5722]/10 shadow-lg shadow-orange-500/10'
+            ? 'border-amber-500/70 bg-amber-100/70 dark:bg-amber-900/20'
             : 'border-stone-300/80 bg-stone-100/70 hover:border-stone-400 dark:border-zinc-700/50 dark:bg-zinc-800/30 dark:hover:border-zinc-600'
         ]"
         :disabled="!interactive"
@@ -78,7 +78,7 @@ function getStanceColor(stance: string) {
       >
         <!-- Header: Avatar + Name + Role -->
         <div class="flex items-start gap-2.5">
-          <div class="w-10 h-10 rounded-full bg-gradient-to-br from-stone-300 to-stone-400 dark:from-zinc-700 dark:to-zinc-800 flex items-center justify-center text-sm font-bold text-stone-700 dark:text-zinc-300 shrink-0 border border-stone-400 dark:border-zinc-600">
+          <div class="w-10 h-10 rounded-full bg-stone-300 dark:bg-zinc-700 flex items-center justify-center text-sm font-bold text-stone-700 dark:text-zinc-300 shrink-0 border border-stone-400 dark:border-zinc-600">
             {{ getInitials(profile.name) }}
           </div>
 

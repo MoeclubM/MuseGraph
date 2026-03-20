@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -79,6 +80,97 @@ class TestProviderModels:
         assert resp.json()["models"] == ["gpt-4o-mini"]
         assert provider.models == ["gpt-4o-mini"]
         mock_db.flush.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_provider_removes_orphan_pricing_and_project_references(
+        self,
+        admin_client: AsyncClient,
+        mock_db: AsyncMock,
+    ):
+        provider = SimpleNamespace(
+            id="provider-1",
+            name="primary-provider",
+            provider="openai_compatible",
+            api_key="sk-test",
+            base_url="https://example.com/v1",
+            models={
+                "models": ["MiniMax-M2.5", "Shared-Model"],
+                "embedding_models": ["Qwen3-Embedding-0.6B"],
+            },
+        )
+        remaining_provider = SimpleNamespace(
+            id="provider-2",
+            name="secondary-provider",
+            provider="openai_compatible",
+            api_key="sk-test-2",
+            base_url="https://example.org/v1",
+            models={"models": ["Shared-Model"], "embedding_models": ["Embed-Only"]},
+        )
+        orphan_rule = SimpleNamespace(id="rule-1", model="MiniMax-M2.5")
+        shared_rule = SimpleNamespace(id="rule-2", model="Shared-Model")
+        project = SimpleNamespace(
+            id=str(uuid.uuid4()),
+            component_models={
+                "graph_build": "MiniMax-M2.5",
+                "graph_embedding": "Qwen3-Embedding-0.6B",
+                "default": "Shared-Model",
+            },
+        )
+        untouched_project = SimpleNamespace(
+            id=str(uuid.uuid4()),
+            component_models={"default": "Other-Model"},
+        )
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(provider),
+            _scalars_all([remaining_provider]),
+            _scalars_all([orphan_rule]),
+            _scalars_all([project, untouched_project]),
+        ]
+
+        resp = await admin_client.delete("/api/admin/providers/provider-1")
+
+        assert resp.status_code == 204
+        mock_db.delete.assert_any_await(orphan_rule)
+        mock_db.delete.assert_any_await(provider)
+        assert project.component_models == {"default": "Shared-Model"}
+        assert untouched_project.component_models == {"default": "Other-Model"}
+
+    @pytest.mark.asyncio
+    async def test_delete_provider_keeps_shared_model_references(
+        self,
+        admin_client: AsyncClient,
+        mock_db: AsyncMock,
+    ):
+        provider = SimpleNamespace(
+            id="provider-1",
+            name="primary-provider",
+            provider="openai_compatible",
+            api_key="sk-test",
+            base_url="https://example.com/v1",
+            models={"models": ["Shared-Model"], "embedding_models": []},
+        )
+        remaining_provider = SimpleNamespace(
+            id="provider-2",
+            name="secondary-provider",
+            provider="openai_compatible",
+            api_key="sk-test-2",
+            base_url="https://example.org/v1",
+            models={"models": ["Shared-Model"], "embedding_models": []},
+        )
+        project = SimpleNamespace(
+            id=str(uuid.uuid4()),
+            component_models={"default": "Shared-Model"},
+        )
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(provider),
+            _scalars_all([remaining_provider]),
+        ]
+
+        resp = await admin_client.delete("/api/admin/providers/provider-1")
+
+        assert resp.status_code == 204
+        mock_db.delete.assert_called_once_with(provider)
+        assert project.component_models == {"default": "Shared-Model"}
 
     @pytest.mark.asyncio
     async def test_discover_provider_models_persist(self, admin_client: AsyncClient, mock_db: AsyncMock, monkeypatch):
@@ -318,6 +410,132 @@ def _scalars_first(item):
     return result
 
 
+class TestPricingRules:
+
+    @pytest.mark.asyncio
+    async def test_update_pricing_renames_provider_and_project_model_references(
+        self,
+        admin_client: AsyncClient,
+        mock_db: AsyncMock,
+    ):
+        rule = SimpleNamespace(
+            id="rule-1",
+            model="MiniMax-M2.5",
+            billing_mode="TOKEN",
+            input_price=Decimal("0.120000"),
+            output_price=Decimal("0.340000"),
+            token_unit=1_000_000,
+            request_price=Decimal("0"),
+            is_active=True,
+        )
+        provider = SimpleNamespace(
+            id="provider-1",
+            name="primary-provider",
+            provider="openai_compatible",
+            api_key="sk-test",
+            base_url="https://example.com/v1",
+            models={
+                "models": ["MiniMax-M2.5", "MiniMax-M2.7"],
+                "embedding_models": ["MiniMax-M2.5", "Qwen3-Embedding-0.6B"],
+            },
+        )
+        untouched_provider = SimpleNamespace(
+            id="provider-2",
+            name="secondary-provider",
+            provider="openai_compatible",
+            api_key="sk-test-2",
+            base_url="https://example.org/v1",
+            models={"models": ["Other-Model"], "embedding_models": ["Embed-Only"]},
+        )
+        project = SimpleNamespace(
+            id=str(uuid.uuid4()),
+            component_models={
+                "operation_create": "MiniMax-M2.5",
+                "graph_embedding": "MiniMax-M2.5",
+                "default": "MiniMax-M2.7",
+            },
+        )
+        untouched_project = SimpleNamespace(
+            id=str(uuid.uuid4()),
+            component_models={"default": "Other-Model"},
+        )
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(rule),
+            _scalar_one_or_none(None),
+            _scalars_all([provider, untouched_provider]),
+            _scalars_all([project, untouched_project]),
+        ]
+
+        resp = await admin_client.put(
+            "/api/admin/pricing/rule-1",
+            json={
+                "model": "MiniMax-M2.7",
+                "billing_mode": "TOKEN",
+                "input_price": 0.12,
+                "output_price": 0.34,
+                "token_unit": 1_000_000,
+                "is_active": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["model"] == "MiniMax-M2.7"
+        assert provider.models == {
+            "models": ["MiniMax-M2.7"],
+            "embedding_models": ["MiniMax-M2.7", "Qwen3-Embedding-0.6B"],
+        }
+        assert untouched_provider.models == {
+            "models": ["Other-Model"],
+            "embedding_models": ["Embed-Only"],
+        }
+        assert project.component_models == {
+            "operation_create": "MiniMax-M2.7",
+            "graph_embedding": "MiniMax-M2.7",
+            "default": "MiniMax-M2.7",
+        }
+        assert untouched_project.component_models == {"default": "Other-Model"}
+        mock_db.flush.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_update_pricing_rejects_duplicate_model_name(
+        self,
+        admin_client: AsyncClient,
+        mock_db: AsyncMock,
+    ):
+        rule = SimpleNamespace(
+            id="rule-1",
+            model="MiniMax-M2.5",
+            billing_mode="TOKEN",
+            input_price=Decimal("0.120000"),
+            output_price=Decimal("0.340000"),
+            token_unit=1_000_000,
+            request_price=Decimal("0"),
+            is_active=True,
+        )
+        existing = SimpleNamespace(id="rule-2", model="MiniMax-M2.7")
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(rule),
+            _scalar_one_or_none(existing),
+        ]
+
+        resp = await admin_client.put(
+            "/api/admin/pricing/rule-1",
+            json={
+                "model": "MiniMax-M2.7",
+                "billing_mode": "TOKEN",
+                "input_price": 0.12,
+                "output_price": 0.34,
+                "token_unit": 1_000_000,
+                "is_active": True,
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Pricing rule for this model already exists"
+        mock_db.flush.assert_not_awaited()
+
+
 class TestAdminUsers:
 
     @pytest.mark.asyncio
@@ -514,7 +732,7 @@ class TestOasisConfig:
         assert body["llm_retry_interval_seconds"] == 2.0
         assert body["llm_prefer_stream"] is True
         assert body["llm_stream_fallback_nonstream"] is True
-        assert body["llm_task_concurrency"] == 1
+        assert body["llm_task_concurrency"] == 4
         assert body["llm_model_default_concurrency"] == 8
         assert body["llm_model_concurrency_overrides"] == {}
 

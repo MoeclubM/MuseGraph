@@ -16,7 +16,7 @@ const forwarded = useForwardProps(delegatedProps)
 <template>
   <TabsList
     v-bind="forwarded"
-    :class="cn('inline-flex h-10 items-center justify-center rounded-lg border border-stone-300/80 bg-stone-100 p-[3px] text-stone-600 dark:border-zinc-700/60 dark:bg-zinc-800 dark:text-zinc-400', props.class)"
+    :class="cn('inline-flex h-10 items-center justify-center rounded-md border border-stone-300/80 bg-stone-100 p-[3px] text-stone-600 dark:border-zinc-700/60 dark:bg-zinc-800 dark:text-zinc-400', props.class)"
   >
     <slot />
   </TabsList>

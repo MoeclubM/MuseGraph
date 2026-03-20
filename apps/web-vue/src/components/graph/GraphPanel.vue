@@ -253,7 +253,7 @@ onUnmounted(() => {
     <div ref="container" class="w-full h-full bg-stone-100 rounded-lg border border-stone-300/80 overflow-hidden dark:bg-zinc-900 dark:border-zinc-700/50" />
 
     <!-- Legend -->
-    <div class="absolute top-3 left-3 bg-stone-50/95 backdrop-blur-sm rounded-lg border border-stone-300/80 p-3 dark:bg-zinc-800/90 dark:border-zinc-700/60">
+    <div class="absolute top-3 left-3 bg-stone-50/95 rounded-lg border border-stone-300/80 p-3 dark:bg-zinc-800/90 dark:border-zinc-700/60">
       <p class="text-xs font-medium text-stone-500 dark:text-zinc-400 mb-2">Node Types</p>
       <div class="space-y-1">
         <div
@@ -276,7 +276,7 @@ onUnmounted(() => {
     >
       <div
         v-if="selectedNode"
-        class="absolute bottom-3 left-3 right-3 bg-stone-50/95 backdrop-blur-sm rounded-lg border border-stone-300/80 p-4 dark:bg-zinc-800/90 dark:border-zinc-700/60"
+        class="absolute bottom-3 left-3 right-3 bg-stone-50/95 rounded-lg border border-stone-300/80 p-4 dark:bg-zinc-800/90 dark:border-zinc-700/60"
       >
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-2">

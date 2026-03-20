@@ -35,7 +35,7 @@ function formatDate(dateStr: string) {
 </script>
 
 <template>
-  <aside class="w-64 shrink-0 border-r border-stone-300/80 dark:border-zinc-700/40 bg-[#efe8da]/90 dark:bg-zinc-900/60 flex flex-col h-full rounded-l-xl">
+  <aside class="flex h-full w-64 shrink-0 flex-col rounded-l-md border-r border-stone-300/80 bg-[#efe8da]/90 dark:border-zinc-700/40 dark:bg-zinc-900/60">
     <div class="flex items-center justify-between p-4 border-b border-stone-300/80 dark:border-zinc-700/40">
       <h2 class="text-sm font-semibold text-stone-700 dark:text-stone-300 uppercase tracking-wider">Projects</h2>
       <Button

@@ -168,6 +168,105 @@ def _validate_pricing_payload(
     return in_price, out_price, tok_unit, req_price
 
 
+def _replace_model_reference(values: list[str], old_model: str, new_model: str) -> list[str]:
+    next_values: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = new_model if value == old_model else value
+        if normalized in seen:
+            continue
+        next_values.append(normalized)
+        seen.add(normalized)
+    return next_values
+
+
+def _collect_provider_model_names(provider: AIProviderConfig) -> set[str]:
+    return {
+        *get_provider_chat_models(provider),
+        *get_provider_embedding_models(provider),
+    }
+
+
+async def _propagate_pricing_model_rename(db: AsyncSession, old_model: str, new_model: str) -> None:
+    if old_model == new_model:
+        return
+
+    provider_result = await db.execute(select(AIProviderConfig))
+    providers = provider_result.scalars().all()
+    for provider in providers:
+        changed = False
+        for kind in ("chat", "embedding"):
+            current_models = get_provider_models(provider, kind)
+            if old_model not in current_models:
+                continue
+            set_provider_models(provider, kind, _replace_model_reference(current_models, old_model, new_model))
+            changed = True
+        if changed:
+            db.add(provider)
+
+    project_result = await db.execute(select(TextProject))
+    projects = project_result.scalars().all()
+    for project in projects:
+        component_models = getattr(project, "component_models", None)
+        if not isinstance(component_models, dict):
+            continue
+
+        changed = False
+        next_component_models = dict(component_models)
+        for component_key, model_name in component_models.items():
+            if model_name != old_model:
+                continue
+            next_component_models[component_key] = new_model
+            changed = True
+
+        if changed:
+            project.component_models = next_component_models
+            db.add(project)
+
+
+async def _prune_deleted_provider_model_references(
+    db: AsyncSession,
+    *,
+    provider: AIProviderConfig,
+) -> None:
+    removed_models = _collect_provider_model_names(provider)
+    if not removed_models:
+        return
+
+    other_provider_result = await db.execute(
+        select(AIProviderConfig).where(AIProviderConfig.id != provider.id)
+    )
+    remaining_models: set[str] = set()
+    for item in other_provider_result.scalars().all():
+        remaining_models.update(_collect_provider_model_names(item))
+
+    orphan_models = removed_models - remaining_models
+    if not orphan_models:
+        return
+
+    pricing_result = await db.execute(
+        select(PricingRule).where(PricingRule.model.in_(sorted(orphan_models)))
+    )
+    for rule in pricing_result.scalars().all():
+        await db.delete(rule)
+
+    project_result = await db.execute(select(TextProject))
+    for project in project_result.scalars().all():
+        component_models = getattr(project, "component_models", None)
+        if not isinstance(component_models, dict):
+            continue
+
+        next_component_models = {
+            component_key: model_name
+            for component_key, model_name in component_models.items()
+            if model_name not in orphan_models
+        }
+        if next_component_models == component_models:
+            continue
+        project.component_models = next_component_models
+        db.add(project)
+
+
 @router.get("/stats", response_model=StatsResponse)
 async def get_stats(admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     now = datetime.now(timezone.utc)
@@ -1061,6 +1160,7 @@ async def delete_provider(
     provider = result.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+    await _prune_deleted_provider_model_references(db, provider=provider)
     await db.delete(provider)
     return None
 
@@ -1212,6 +1312,10 @@ async def create_pricing(
     if not model:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model is required")
 
+    existing = (await db.execute(select(PricingRule).where(PricingRule.model == model))).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Pricing rule for this model already exists")
+
     billing_mode = _normalize_billing_mode(body.get("billing_mode"))
     input_price, output_price, token_unit, request_price = _validate_pricing_payload(
         billing_mode=billing_mode,
@@ -1246,6 +1350,7 @@ async def update_pricing(
     rule = result.scalar_one_or_none()
     if not rule:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pricing rule not found")
+    original_model = str(rule.model or "").strip()
 
     billing_mode = _normalize_billing_mode(body.get("billing_mode", rule.billing_mode))
     input_price, output_price, token_unit, request_price = _validate_pricing_payload(
@@ -1260,7 +1365,17 @@ async def update_pricing(
         model = str(body.get("model") or "").strip()
         if not model:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model cannot be empty")
+        if model != original_model:
+            existing = (
+                await db.execute(select(PricingRule).where(PricingRule.model == model, PricingRule.id != rule_id))
+            ).scalar_one_or_none()
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Pricing rule for this model already exists",
+                )
         rule.model = model
+        await _propagate_pricing_model_rename(db, original_model, model)
 
     rule.billing_mode = billing_mode
     rule.input_price = input_price

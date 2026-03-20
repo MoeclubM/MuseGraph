@@ -9,10 +9,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "openai": "^4.70.0",
     "@anthropic-ai/sdk": "^0.36.0",
-    "zod": "^3.23.0",
-    "@musegraph/shared": "workspace:*"
+    "@musegraph/shared": "workspace:*",
+    "openai": "^4.70.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -732,6 +732,28 @@ class TestDeleteDataset:
     """Test delete_dataset function."""
 
     @pytest.mark.asyncio
+    async def test_delete_dataset_graphiti_branch_ignores_runtime_model_kwargs(self, monkeypatch: pytest.MonkeyPatch):
+        delete_mock = AsyncMock()
+        monkeypatch.setitem(cognee_service.__dict__, "_use_graphiti_graph_backend", lambda: True)
+
+        import sys
+        monkeypatch.setitem(
+            sys.modules,
+            "app.services.graphiti_graph",
+            SimpleNamespace(delete_graph=delete_mock),
+        )
+
+        db = AsyncMock()
+        await cognee_service.delete_dataset(
+            "p1",
+            model="chat-model",
+            embedding_model="embed-model",
+            db=db,
+        )
+
+        delete_mock.assert_awaited_once_with("p1", db=db)
+
+    @pytest.mark.asyncio
     async def test_delete_dataset_uses_empty_dataset_when_available(self, monkeypatch: pytest.MonkeyPatch):
         list_datasets_mock = AsyncMock(
             return_value=[

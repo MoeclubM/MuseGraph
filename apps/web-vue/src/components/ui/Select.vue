@@ -21,7 +21,7 @@ const emit = defineEmits<{
 }>()
 
 const selectVariants = cva(
-  'muse-field-base muse-focus-ring h-11 w-full appearance-none rounded-md px-3.5 pr-12 text-sm outline-none',
+  'muse-field-base muse-focus-ring h-11 w-full cursor-pointer appearance-none rounded-md px-3.5 pr-10 text-sm outline-none',
   {
     variants: {
       state: {
@@ -63,8 +63,7 @@ function onChange(e: Event) {
     >
       <slot />
     </select>
-    <div class="pointer-events-none absolute inset-y-0 right-0 flex w-11 items-center justify-center text-[color:var(--muse-text-muted)] transition-colors duration-150 group-hover:text-[color:var(--muse-text)]">
-      <span class="absolute inset-y-2 left-0 w-px bg-[color:var(--muse-field-divider)]"></span>
+    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-[color:var(--muse-text-muted)] transition-colors duration-150 group-hover:text-[color:var(--muse-text)] group-focus-within:text-[color:var(--muse-accent)]">
       <svg
         class="h-4 w-4"
         viewBox="0 0 20 20"

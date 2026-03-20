@@ -56,7 +56,6 @@ with (
             "redis.asyncio": _redis_asyncio_module,
         },
     ),
-    patch.dict("sys.modules", {"app.services.cognee": MagicMock()}),
     patch.dict("sys.modules", {"app.storage": _storage_module}),
 ):
     from app.database import get_db

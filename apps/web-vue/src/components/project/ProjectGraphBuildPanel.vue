@@ -106,13 +106,13 @@ const graphBuildModeValue = computed({
 <template>
   <div v-show="visible" class="space-y-5">
     <Card
-      class="space-y-4 !rounded-xl !border-stone-300/80 !bg-[#f3ede1] dark:!border-zinc-700/60 dark:!bg-zinc-800/55 !p-5"
+      class="space-y-4 !rounded-md !border-stone-300/80 !bg-[#f3ede1] dark:!border-zinc-700/60 dark:!bg-zinc-800/55 !p-5"
     >
       <div class="space-y-2">
         <h3 class="text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
           Step 1. Ontology Generation
         </h3>
-        <div class="rounded-lg border border-amber-700/30 bg-amber-900/10 p-3 space-y-1.5">
+        <div class="rounded-md border border-amber-700/30 bg-amber-900/10 p-3 space-y-1.5">
           <p class="text-sm font-medium text-amber-800 dark:text-amber-200">
             Purpose: define the entity and relation ontology first so graph ingestion and RAG retrieval use a stable schema.
           </p>
@@ -192,7 +192,7 @@ const graphBuildModeValue = computed({
         Current ontology is invalid for graph build. Regenerate ontology until valid structured output is returned.
       </Alert>
 
-      <div v-if="props.hasOntology" class="rounded-lg border border-emerald-700/40 bg-emerald-900/10 p-3 space-y-2">
+      <div v-if="props.hasOntology" class="rounded-md border border-emerald-700/40 bg-emerald-900/10 p-3 space-y-2">
         <div class="flex items-center justify-between text-xs text-emerald-700 dark:text-emerald-300">
           <span>Ontology ready</span>
           <span>{{ props.ontologyData?.entity_types?.length || 0 }} entities / {{ props.ontologyData?.edge_types?.length || 0 }} relations</span>
@@ -220,7 +220,7 @@ const graphBuildModeValue = computed({
     </Card>
 
     <Card
-      class="space-y-4 !rounded-xl !border-stone-300/80 !bg-[#f3ede1] dark:!border-zinc-700/60 dark:!bg-zinc-800/55 !p-5"
+      class="space-y-4 !rounded-md !border-stone-300/80 !bg-[#f3ede1] dark:!border-zinc-700/60 dark:!bg-zinc-800/55 !p-5"
     >
       <div class="space-y-2.5">
         <h3 class="text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
@@ -284,7 +284,7 @@ const graphBuildModeValue = computed({
           </p>
         </div>
         <div
-          class="rounded-lg border px-3 py-2 text-[11px]"
+          class="rounded-md border px-3 py-2 text-[11px]"
           :class="props.graphFreshnessClass(props.graphFreshnessState)"
         >
           <p class="font-medium">
@@ -326,7 +326,7 @@ const graphBuildModeValue = computed({
       </div>
       <div
         v-if="props.graphBuildSummary"
-        class="rounded-lg border border-stone-300/80 bg-stone-100/70 px-3 py-2 text-[11px] text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/45 dark:text-zinc-300 space-y-1"
+        class="rounded-md border border-stone-300/80 bg-stone-100/70 px-3 py-2 text-[11px] text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/45 dark:text-zinc-300 space-y-1"
       >
         <p>
           Last graph build:

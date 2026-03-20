@@ -188,7 +188,7 @@ class TestCogneeGraphVisualization:
         async def mock_viz_func(project_id, **_kwargs):
             return {"nodes": [], "edges": []}
 
-        with patch("app.services.cognee.get_graph_visualization", side_effect=mock_viz_func):
+        with patch("app.routers.cognee_graph.get_graph_visualization", side_effect=mock_viz_func):
             resp = await client.get("/api/projects/11111111-1111-4111-8111-111111111111/graphs/visualization")
 
             assert resp.status_code == 200

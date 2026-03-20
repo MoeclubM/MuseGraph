@@ -48,8 +48,8 @@ onMounted(() => {
 
 <template>
   <AppLayout>
-    <div class="space-y-5">
-      <Card>
+    <div class="muse-page-shell muse-page-shell-wide">
+      <section class="muse-page-header">
         <div class="flex items-start justify-between gap-4">
           <div>
             <h1 class="text-xl font-semibold text-stone-800 dark:text-zinc-100">Report Discussion</h1>
@@ -60,7 +60,7 @@ onMounted(() => {
             <Button variant="ghost" @click="router.push(`/report/${reportId}`)">Open Report</Button>
           </div>
         </div>
-      </Card>
+      </section>
 
       <Card>
         <h2 class="mb-2 text-sm font-medium uppercase tracking-wider text-stone-600 dark:text-zinc-300">Report Q&amp;A</h2>

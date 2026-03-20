@@ -9,8 +9,8 @@ const props = defineProps<{
 
 const classes = computed(() =>
   cn(
-    'muse-surface rounded-[1.35rem] overflow-hidden',
-    props.padding !== false && 'p-4 sm:p-5',
+    'muse-surface overflow-hidden rounded-md',
+    props.padding !== false && 'p-5 sm:p-6',
     props.stack !== false && 'card-stack'
   )
 )

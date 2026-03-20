@@ -21,7 +21,7 @@ const emit = defineEmits<{
     <div
       v-if="visible"
       data-chapter-context-menu="true"
-      class="fixed z-[90] w-48 rounded-lg border border-stone-300 bg-stone-50 p-1 shadow-xl dark:border-zinc-700 dark:bg-zinc-800"
+      class="fixed z-[90] w-48 rounded-md border border-stone-300 bg-stone-50 p-1 shadow-none dark:border-zinc-700 dark:bg-zinc-800"
       :style="props.style"
       @contextmenu.prevent
     >

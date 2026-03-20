@@ -27,11 +27,17 @@ const mockAuthResponse = {
   token: 'mock-jwt-token',
 }
 
+async function flushMicrotasks() {
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
 describe('Auth Store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     localStorage.clear()
+    window.history.replaceState({}, '', '/')
   })
 
   describe('initial state', () => {
@@ -49,6 +55,49 @@ describe('Auth Store', () => {
     it('should not be admin', () => {
       const store = useAuthStore()
       expect(store.isAdmin).toBe(false)
+    })
+
+    it('should silently clear stale local session during init', async () => {
+      localStorage.setItem('token', 'stale-token')
+      localStorage.setItem('user', JSON.stringify(mockUser))
+      vi.mocked(authApi.getMe).mockRejectedValue(new Error('Unauthorized'))
+      vi.mocked(authApi.logout).mockResolvedValue(undefined)
+
+      const store = useAuthStore()
+      store.init()
+      await flushMicrotasks()
+
+      expect(authApi.getMe).toHaveBeenCalledWith({ silentAuthFailure: true })
+      expect(authApi.logout).not.toHaveBeenCalled()
+      expect(store.token).toBeNull()
+      expect(store.user).toBeNull()
+      expect(localStorage.getItem('token')).toBeNull()
+      expect(localStorage.getItem('user')).toBeNull()
+    })
+
+    it('should not mark guest routes as authenticated before session validation succeeds', async () => {
+      window.history.replaceState({}, '', '/login')
+      localStorage.setItem('token', 'valid-token')
+      localStorage.setItem('user', JSON.stringify(mockUser))
+      let resolveGetMe: (value: typeof mockUser) => void = () => {}
+      vi.mocked(authApi.getMe).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveGetMe = resolve as (value: typeof mockUser) => void
+          })
+      )
+
+      const store = useAuthStore()
+      store.init()
+
+      expect(store.isAuthenticated).toBe(false)
+      expect(store.user).toBeNull()
+
+      resolveGetMe(mockUser)
+      await flushMicrotasks()
+
+      expect(store.isAuthenticated).toBe(true)
+      expect(store.user).toEqual(mockUser)
     })
   })
 

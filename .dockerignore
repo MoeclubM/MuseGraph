@@ -12,6 +12,11 @@ dist
 build
 *.tsbuildinfo
 coverage
+packages/**/dist
+apps/**/dist
+apps/web-vue/playwright-report
+apps/web-vue/test-results
+apps/web-vue/.turbo
 
 # Python build/test artifacts
 __pycache__/
@@ -48,3 +53,4 @@ apps/server-py/.musegraph/
 apps/web-vue/node_modules/
 .docker_tmp/
 apps/server-py/.env
+apps/web-vue/.env

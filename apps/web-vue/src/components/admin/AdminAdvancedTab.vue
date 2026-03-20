@@ -42,7 +42,7 @@ const llmModelConcurrencyOverridesInputValue = computed({
       <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-3">
         <div>
           <h3 class="text-sm font-medium text-stone-700 dark:text-zinc-200">LLM Request Config</h3>
-          <p class="text-xs text-stone-500 dark:text-zinc-400">Configure timeout, retry count, and concurrency.</p>
+          <p class="text-xs text-stone-500 dark:text-zinc-400">Configure timeout, retry count, and concurrency. These limits also affect local Graphiti graph ingest.</p>
         </div>
         <Button size="sm" variant="secondary" @click="emit('reload-llm-request-config')">Refresh</Button>
       </div>
@@ -76,11 +76,11 @@ const llmModelConcurrencyOverridesInputValue = computed({
             placeholder='{"your-model-id": 4}'
           />
         </div>
-        <label class="inline-flex items-center gap-2 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+        <label class="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
           <Checkbox v-model="oasisConfig.llm_prefer_stream" />
           llm_prefer_stream
         </label>
-        <label class="inline-flex items-center gap-2 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+        <label class="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
           <Checkbox v-model="oasisConfig.llm_stream_fallback_nonstream" />
           llm_stream_fallback_nonstream
         </label>

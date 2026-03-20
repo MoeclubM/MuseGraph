@@ -204,7 +204,7 @@ const estimatedActivityCount = computed(() => Number(
     </Alert>
     <div
       v-if="props.oasisTask"
-      class="space-y-2 rounded-lg border border-stone-300/80 bg-stone-100/75 p-3 text-xs text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-200"
+      class="space-y-2 rounded-md border border-stone-300/80 bg-stone-100/75 p-3 text-xs text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-200"
     >
       <div class="flex items-center justify-between">
         <span class="uppercase tracking-wider text-stone-500 dark:text-zinc-400">{{ currentTaskLabel }}</span>
@@ -231,7 +231,7 @@ const estimatedActivityCount = computed(() => Number(
     </div>
     <div
       v-if="!props.oasisTask && props.oasisTaskLastId"
-      class="space-y-2 rounded-lg border border-stone-300/80 bg-stone-100/75 p-3 text-xs text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-300"
+      class="space-y-2 rounded-md border border-stone-300/80 bg-stone-100/75 p-3 text-xs text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-300"
     >
       <p>Last scenario task: {{ props.oasisTaskLastId }}</p>
       <Button
@@ -245,19 +245,19 @@ const estimatedActivityCount = computed(() => Number(
     </div>
     <div
       v-if="props.graphAnalysisResult"
-      class="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-lg border border-stone-300/80 bg-stone-100/75 p-3 text-sm text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-200"
+      class="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border border-stone-300/80 bg-stone-100/75 p-3 text-sm text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-200"
     >
       {{ props.graphAnalysisResult }}
     </div>
     <div
       v-if="props.hasOasisAnalysis"
-      class="rounded-lg border border-emerald-300/70 bg-emerald-100 p-3 text-xs text-emerald-800 dark:border-emerald-700/50 dark:bg-emerald-900/20 dark:text-emerald-300"
+      class="rounded-md border border-emerald-300/70 bg-emerald-100 p-3 text-xs text-emerald-800 dark:border-emerald-700/50 dark:bg-emerald-900/20 dark:text-emerald-300"
     >
       Scenario analysis is ready. Guidance and analysis profiles are now available for continuation workflows.
     </div>
     <div
       v-if="props.oasisPackage"
-      class="space-y-1 rounded-lg border border-amber-700/30 bg-amber-900/10 p-3 text-xs text-amber-800 dark:text-amber-200"
+      class="space-y-1 rounded-md border border-amber-700/30 bg-amber-900/10 p-3 text-xs text-amber-800 dark:text-amber-200"
     >
       <p>Runtime Package: {{ props.oasisPackage.simulation_id }}</p>
       <p>Analysis Profiles: {{ runtimeProfileCount }}</p>
@@ -265,7 +265,7 @@ const estimatedActivityCount = computed(() => Number(
     </div>
     <div
       v-if="props.oasisRunResult"
-      class="space-y-1 rounded-lg border border-stone-300/80 bg-stone-100/75 p-3 text-xs text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-200"
+      class="space-y-1 rounded-md border border-stone-300/80 bg-stone-100/75 p-3 text-xs text-stone-700 dark:border-zinc-700/60 dark:bg-zinc-800/40 dark:text-zinc-200"
     >
       <p>Run: {{ props.oasisRunResult.run_id }}</p>
       <p>Rounds: {{ props.oasisRunResult.metrics?.total_rounds || 0 }}</p>
@@ -274,7 +274,7 @@ const estimatedActivityCount = computed(() => Number(
     </div>
     <div
       v-if="props.oasisReport"
-      class="space-y-1 rounded-lg border border-amber-300/80 bg-amber-100/75 p-3 text-xs text-amber-900 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-200"
+      class="space-y-1 rounded-md border border-amber-300/80 bg-amber-100/75 p-3 text-xs text-amber-900 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-200"
     >
       <p>Report: {{ props.oasisReport.report_id }}</p>
       <p class="font-medium">{{ props.oasisReport.title }}</p>

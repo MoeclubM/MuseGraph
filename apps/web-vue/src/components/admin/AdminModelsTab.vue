@@ -146,7 +146,7 @@ const providerModelManualInputValue = computed({
         <template v-if="pricingForm.billing_mode === 'TOKEN'">
           <Input v-model.number="pricingForm.input_price" type="number" min="0" step="0.000001" placeholder="Input Price" />
           <Input v-model.number="pricingForm.output_price" type="number" min="0" step="0.000001" placeholder="Output Price" />
-          <div class="rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-600 md:col-span-2 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+          <div class="rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-600 md:col-span-2 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
             Token Unit: 1,000,000 (fixed)
           </div>
         </template>
@@ -161,7 +161,7 @@ const providerModelManualInputValue = computed({
           placeholder="Price Per Request"
         />
 
-        <label class="inline-flex items-center gap-2 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 md:col-span-2 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+        <label class="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 md:col-span-2 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
           <Checkbox v-model="pricingForm.is_active" />
           Active
         </label>
@@ -179,10 +179,9 @@ const providerModelManualInputValue = computed({
       </div>
     </Card>
 
-    <Card :padding="false">
-      <div class="px-3 py-3 sm:px-4 sm:py-4">
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+    <Card :stack="false">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
             <thead class="bg-stone-100/80 dark:bg-zinc-800/60">
               <tr class="border-b border-stone-300 dark:border-zinc-700">
                 <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Model</th>
@@ -218,8 +217,7 @@ const providerModelManualInputValue = computed({
                 </td>
               </tr>
             </tbody>
-          </table>
-        </div>
+        </table>
       </div>
     </Card>
   </div>

@@ -35,10 +35,11 @@ from app.schemas.cognee import (
     CogneeStatusResponse,
     CogneeVisualizationResponse,
 )
-from app.services.cognee import (
+from app.services.graph_service import (
     add_and_cognify,
     delete_dataset,
     get_graph_visualization,
+    has_graph_data,
     search_graph,
 )
 from app.services.ai import llm_billing_scope, resolve_component_model
@@ -55,6 +56,7 @@ from app.services.task_state import TaskRecord, TaskStatus, task_manager
 router = APIRouter()
 GRAPH_BUILD_REBUILD = "rebuild"
 GRAPH_BUILD_INCREMENTAL = "incremental"
+_STALE_GRAPH_TASK_SECONDS = 120
 _TERMINAL_TASK_STATUSES = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
 _RERANKER_SEARCH_TYPES = {"RAG_COMPLETION", "GRAPH_COMPLETION", "GRAPH_SUMMARY_COMPLETION"}
 
@@ -435,10 +437,25 @@ def _is_running_task_status(status_value: TaskStatus | str | None) -> bool:
     return normalized in {"pending", "processing"}
 
 
+def _is_stale_graph_task(task: TaskRecord) -> bool:
+    updated_at = task.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    age_seconds = (datetime.now(timezone.utc) - updated_at.astimezone(timezone.utc)).total_seconds()
+    return age_seconds > _STALE_GRAPH_TASK_SECONDS
+
+
 def _latest_running_graph_task(project_id: str) -> TaskRecord | None:
     tasks = task_manager.list_tasks(task_type="graph_build", project_id=project_id, limit=20)
     for task in tasks:
         if _is_running_task_status(task.status):
+            if _is_stale_graph_task(task):
+                task_manager.fail_task(
+                    task.task_id,
+                    "Graph build task became stale with no progress heartbeat.",
+                    "Graph build task timed out",
+                )
+                continue
             return task
     return None
 
@@ -475,6 +492,11 @@ async def _build_graph_freshness_payload(project: TextProject, db: AsyncSession)
     if not project.cognee_dataset_id:
         base_payload["graph_freshness"] = "empty"
         base_payload["graph_reason"] = "dataset_missing"
+        return base_payload
+
+    if not await has_graph_data(project.id, db=db):
+        base_payload["graph_freshness"] = "stale"
+        base_payload["graph_reason"] = "graph_store_empty_or_unreadable"
         return base_payload
 
     source_ids_raw = state.get("source_chapter_ids") if isinstance(state.get("source_chapter_ids"), list) else []

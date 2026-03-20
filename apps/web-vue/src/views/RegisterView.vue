@@ -43,9 +43,9 @@ async function handleRegister() {
     <div class="absolute right-4 top-4">
       <ThemeModeSwitch />
     </div>
-    <div class="w-full max-w-sm rounded-2xl border border-stone-300 bg-[#fbf7ef] p-5 shadow-lg sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/90">
+    <div class="muse-surface w-full max-w-sm rounded-md p-5 sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/90">
       <div class="mb-8 text-center">
-        <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-600">
+        <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-md bg-amber-600">
           <span class="text-xl font-bold text-white">M</span>
         </div>
         <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Create an account</h1>

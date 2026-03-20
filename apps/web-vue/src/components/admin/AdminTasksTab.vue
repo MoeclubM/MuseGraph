@@ -119,13 +119,12 @@ function isTaskCancelling(taskId: string): boolean {
       <Alert v-if="message" variant="success">{{ message }}</Alert>
     </Card>
 
-    <Card :padding="false">
-      <div class="px-4 py-3 text-xs text-stone-500 dark:text-zinc-400">
+    <Card :stack="false">
+      <div class="pb-3 text-xs text-stone-500 dark:text-zinc-400">
         Total: {{ total }}
       </div>
-      <div class="px-3 pb-3 sm:px-4 sm:pb-4">
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
             <thead class="bg-stone-100/80 dark:bg-zinc-800/60">
               <tr class="border-b border-stone-300 dark:border-zinc-700">
                 <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Task</th>
@@ -192,8 +191,7 @@ function isTaskCancelling(taskId: string): boolean {
                 </td>
               </tr>
             </tbody>
-          </table>
-        </div>
+        </table>
       </div>
     </Card>
   </div>

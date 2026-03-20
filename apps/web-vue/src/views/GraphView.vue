@@ -69,7 +69,8 @@ onMounted(loadGraph)
 <template>
   <div class="flex h-screen flex-col bg-[#f7f3e8] dark:bg-zinc-900">
     <!-- Top bar -->
-    <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-stone-300/80 bg-[#f7f3e8]/90 px-4 py-2 backdrop-blur-sm dark:border-zinc-700/50 dark:bg-zinc-900/80">
+    <div class="px-4 pt-4">
+      <div class="muse-surface flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-md px-4 py-3">
       <div class="flex min-w-0 items-center gap-3">
         <Button variant="ghost" size="sm" @click="router.push(`/projects/${projectId}`)">
           <ArrowLeft class="w-4 h-4" />
@@ -86,10 +87,11 @@ onMounted(loadGraph)
           <Maximize2 v-else class="w-4 h-4" />
         </Button>
       </div>
+      </div>
     </div>
 
     <!-- Content -->
-    <div class="flex flex-1 overflow-hidden">
+    <div class="flex flex-1 overflow-hidden px-4 pb-4 pt-4">
       <!-- Graph -->
       <div class="flex-1 relative">
         <div v-if="loading" class="absolute inset-0 flex items-center justify-center">
@@ -138,7 +140,7 @@ onMounted(loadGraph)
               <div
                 v-for="node in graphData.nodes"
                 :key="node.id"
-                class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-stone-200 dark:hover:bg-zinc-800 transition-colors"
+                class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-stone-200 dark:hover:bg-zinc-800"
               >
                 <span
                   class="w-2.5 h-2.5 rounded-full shrink-0"

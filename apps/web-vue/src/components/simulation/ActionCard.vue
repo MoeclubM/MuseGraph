@@ -70,7 +70,7 @@ function getInitials(name: string) {
 <template>
   <div
     :class="[
-      'rounded-lg border-l-4 p-3 transition-all hover:bg-stone-200/60 dark:hover:bg-zinc-800/40',
+      'rounded-md border-l-4 p-3 transition-all hover:bg-stone-200/60 dark:hover:bg-zinc-800/40',
       actionStyle.border,
       actionStyle.bg,
     ]"

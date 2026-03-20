@@ -10,21 +10,36 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => !!token.value)
   const isAdmin = computed(() => !!user.value?.is_admin)
 
+  function clearLocalSession() {
+    token.value = null
+    user.value = null
+    localStorage.removeItem('token')
+    localStorage.removeItem('user')
+  }
+
   function init() {
     const savedToken = localStorage.getItem('token')
     const savedUser = localStorage.getItem('user')
+    const currentPath = window.location.pathname || '/'
+    const isGuestPath = currentPath === '/login' || currentPath === '/register' || currentPath === '/admin/login'
     if (savedToken) {
-      token.value = savedToken
-      if (savedUser) {
+      if (!isGuestPath) {
+        token.value = savedToken
+      }
+      if (savedUser && !isGuestPath) {
         try {
           user.value = JSON.parse(savedUser)
         } catch {
           user.value = null
         }
       }
-      fetchMe().catch(() => {
-        logout()
-      })
+      fetchMe({ silentAuthFailure: true })
+        .then(() => {
+          token.value = savedToken
+        })
+        .catch(() => {
+          clearLocalSession()
+        })
     }
   }
 
@@ -44,8 +59,8 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.setItem('user', JSON.stringify(res.user))
   }
 
-  async function fetchMe() {
-    const me = await authApi.getMe()
+  async function fetchMe(options?: { silentAuthFailure?: boolean }) {
+    const me = await authApi.getMe(options)
     user.value = me
     localStorage.setItem('user', JSON.stringify(me))
   }
@@ -65,10 +80,7 @@ export const useAuthStore = defineStore('auth', () => {
     } catch {
       // ignore
     }
-    token.value = null
-    user.value = null
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
+    clearLocalSession()
   }
 
   return {

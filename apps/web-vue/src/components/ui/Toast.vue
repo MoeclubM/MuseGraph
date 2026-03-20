@@ -19,20 +19,20 @@ const icon = computed(() => {
 
 const colorClasses = computed(() => {
   const colors: Record<ToastType, string> = {
-    success: 'bg-emerald-900/80 border-emerald-700 text-emerald-100',
-    error: 'bg-red-900/80 border-red-700 text-red-100',
-    warning: 'bg-amber-900/80 border-amber-700 text-amber-100',
-    info: 'bg-stone-900/80 border-stone-700 text-stone-100',
+    success: 'bg-emerald-100 border-emerald-300/80 text-emerald-900 dark:bg-emerald-900/20 dark:border-emerald-700/50 dark:text-emerald-200',
+    error: 'bg-red-100 border-red-300/80 text-red-800 dark:bg-red-900/20 dark:border-red-700/50 dark:text-red-200',
+    warning: 'bg-amber-100 border-amber-300/80 text-amber-900 dark:bg-amber-900/20 dark:border-amber-700/50 dark:text-amber-200',
+    info: 'bg-stone-100 border-stone-300/80 text-stone-800 dark:bg-zinc-800 dark:border-zinc-700/60 dark:text-stone-100',
   }
   return colors[props.type]
 })
 
 const iconColor = computed(() => {
   const colors: Record<ToastType, string> = {
-    success: 'text-emerald-400',
-    error: 'text-red-400',
-    warning: 'text-amber-400',
-    info: 'text-stone-300',
+    success: 'text-emerald-700 dark:text-emerald-300',
+    error: 'text-red-700 dark:text-red-300',
+    warning: 'text-amber-700 dark:text-amber-300',
+    info: 'text-stone-600 dark:text-zinc-300',
   }
   return colors[props.type]
 })
@@ -40,7 +40,7 @@ const iconColor = computed(() => {
 
 <template>
   <div
-    :class="[colorClasses, 'flex items-center gap-3 px-4 py-3 rounded-lg border shadow-lg backdrop-blur-sm']"
+    :class="[colorClasses, 'flex items-center gap-3 px-4 py-3 rounded-md border shadow-none']"
   >
     <component :is="icon" class="w-5 h-5 shrink-0" :class="iconColor" />
     <span class="text-sm flex-1">{{ message }}</span>

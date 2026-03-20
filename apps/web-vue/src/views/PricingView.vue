@@ -65,14 +65,16 @@ onMounted(() => {
 
 <template>
   <AppLayout>
-    <div class="mx-auto w-full max-w-6xl space-y-5">
-      <div class="flex items-center justify-between gap-3">
-        <div>
-          <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Pricing</h1>
-          <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">Models are billed per token or per request. Recharge before use.</p>
+    <div class="muse-page-shell muse-page-shell-wide">
+      <section class="muse-page-header">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Pricing</h1>
+            <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">Models are billed per token or per request. Recharge before use.</p>
+          </div>
+          <Button v-if="authStore.isAuthenticated" variant="secondary" @click="loadPricingPage">Refresh</Button>
         </div>
-        <Button v-if="authStore.isAuthenticated" variant="secondary" @click="loadPricingPage">Refresh</Button>
-      </div>
+      </section>
 
       <div v-if="authStore.isAuthenticated" class="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Card class="border-amber-400/50">
@@ -84,7 +86,7 @@ onMounted(() => {
                 Today: {{ formatUsd2(dailyUsage) }} · This month: {{ formatUsd2(monthlyUsage) }}
               </p>
             </div>
-            <div class="rounded-lg bg-amber-500/15 p-2 text-amber-700 dark:text-amber-300">
+            <div class="rounded-md bg-amber-500/15 p-2 text-amber-700 dark:text-amber-300">
               <Wallet class="h-5 w-5" />
             </div>
           </div>
@@ -108,11 +110,11 @@ onMounted(() => {
         <div class="h-8 w-8 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />
       </div>
 
-      <div v-else-if="loadError" class="rounded-xl border border-red-400/40 bg-red-100/50 p-4 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
+      <div v-else-if="loadError" class="rounded-md border border-red-400/40 bg-red-100/50 p-4 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
         {{ loadError }}
       </div>
 
-      <div v-else-if="rules.length === 0" class="rounded-xl border border-stone-300/90 bg-stone-100/70 p-8 sm:p-10 text-center text-sm text-stone-600 dark:border-zinc-700 dark:bg-zinc-800/50 dark:text-zinc-400">
+      <div v-else-if="rules.length === 0" class="rounded-md border border-stone-300/90 bg-stone-100/70 p-8 sm:p-10 text-center text-sm text-stone-600 dark:border-zinc-700 dark:bg-zinc-800/50 dark:text-zinc-400">
         No pricing rules are available yet.
       </div>
 

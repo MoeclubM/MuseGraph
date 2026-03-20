@@ -62,7 +62,7 @@ watch(
 <template>
   <div
     ref="logsContainer"
-    class="bg-stone-100/75 dark:bg-zinc-900 rounded-lg border border-stone-300/70 dark:border-zinc-700/60 p-1 font-mono text-xs overflow-y-auto custom-scrollbar"
+    class="bg-stone-100/75 dark:bg-zinc-900 rounded-md border border-stone-300/70 dark:border-zinc-700/60 p-1 font-mono text-xs overflow-y-auto custom-scrollbar"
     :style="{ maxHeight }"
   >
     <div v-if="logs.length === 0" class="p-4 text-stone-500 dark:text-zinc-500 text-center">

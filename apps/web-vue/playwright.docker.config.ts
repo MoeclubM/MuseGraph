@@ -12,7 +12,7 @@ export default defineConfig({
   retries: 0,
   reporter: [['list'], ['html', { open: 'never' }]],
   use: {
-    baseURL: process.env.PW_BASE_URL || 'http://127.0.0.1:3000',
+    baseURL: process.env.PW_BASE_URL || 'http://127.0.0.1:3010',
     trace: 'on',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',

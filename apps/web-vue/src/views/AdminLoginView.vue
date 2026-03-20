@@ -46,9 +46,9 @@ async function handleLogin() {
     <div class="absolute right-4 top-4">
       <ThemeModeSwitch />
     </div>
-    <div class="w-full max-w-sm rounded-2xl border border-stone-300 bg-[#fbf7ef] p-5 shadow-lg sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/80 dark:shadow-2xl">
+    <div class="muse-surface w-full max-w-sm rounded-md p-5 sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/80">
       <div class="mb-6 text-center">
-        <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-600">
+        <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-md bg-amber-600">
           <Shield class="h-6 w-6 text-white" />
         </div>
         <h1 class="text-xl font-semibold text-stone-900 dark:text-stone-100">Admin Sign In</h1>

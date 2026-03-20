@@ -21,7 +21,7 @@ const forwarded = useForwardProps(delegatedProps)
         'inline-flex h-[calc(100%-1px)] items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-transparent px-3 py-1.5 text-sm font-medium transition-[color,box-shadow]',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60',
         'disabled:pointer-events-none disabled:opacity-50',
-        'data-[state=active]:bg-stone-50 data-[state=active]:text-amber-700 data-[state=active]:shadow-sm',
+        'data-[state=active]:bg-stone-50 data-[state=active]:text-amber-700',
         'dark:data-[state=active]:bg-zinc-700 dark:data-[state=active]:text-amber-300',
         props.class
       )

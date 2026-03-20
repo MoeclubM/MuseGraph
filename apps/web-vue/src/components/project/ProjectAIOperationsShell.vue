@@ -48,7 +48,7 @@ function switchToGraphTab() {
         </p>
       </div>
       <Tabs v-model="rightPanelTabValue" class="w-full">
-        <TabsList class="grid h-auto w-full grid-cols-3 gap-1 rounded-xl border border-stone-200/90 bg-stone-100/90 p-1 dark:border-zinc-700/70 dark:bg-zinc-800/80">
+        <TabsList class="grid h-auto w-full grid-cols-3 gap-1 rounded-md border border-stone-200/90 bg-stone-100/90 p-1 dark:border-zinc-700/70 dark:bg-zinc-800/80">
           <TabsTrigger
             v-for="tab in rightPanelTabs"
             :key="tab.key"
