@@ -33,8 +33,8 @@ onMounted(() => {
 
 <template>
   <AppLayout>
-    <div class="space-y-5">
-      <Card>
+    <div class="muse-page-shell muse-page-shell-wide">
+      <section class="muse-page-header">
         <div class="flex items-start justify-between gap-4">
           <div>
             <h1 class="text-xl font-semibold text-stone-800 dark:text-zinc-100">{{ report?.title || 'OASIS Report' }}</h1>
@@ -60,7 +60,7 @@ onMounted(() => {
             </Button>
           </div>
         </div>
-      </Card>
+      </section>
 
       <Card>
         <h2 class="text-sm font-medium text-stone-600 dark:text-zinc-300 uppercase tracking-wider mb-2">Executive Summary</h2>

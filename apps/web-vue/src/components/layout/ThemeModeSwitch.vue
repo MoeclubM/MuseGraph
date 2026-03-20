@@ -12,7 +12,7 @@ const options: Array<{ value: ThemeMode; label: string; icon: typeof Sun }> = [
 </script>
 
 <template>
-  <div class="inline-flex items-center gap-1 rounded-lg border border-stone-300/90 bg-stone-100/90 p-1 dark:border-zinc-700/70 dark:bg-zinc-800/80">
+  <div class="inline-flex items-center gap-1 rounded-md border border-stone-300/90 bg-stone-100/90 p-1 dark:border-zinc-700/70 dark:bg-zinc-800/80">
     <button
       v-for="option in options"
       :key="option.value"

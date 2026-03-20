@@ -65,7 +65,7 @@ function getStepStatus(num: number) {
 
       <!-- Progress line fill -->
       <div
-        class="absolute top-5 left-0 h-0.5 bg-[#FF5722] transition-all duration-500"
+        class="absolute top-5 left-0 h-0.5 bg-amber-600 transition-all duration-500"
         :style="{ width: `${((currentStep - 1) / 4) * 100}%` }"
       />
 
@@ -79,8 +79,8 @@ function getStepStatus(num: number) {
           :class="[
             'w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium transition-all duration-300',
             {
-              'bg-[#FF5722] text-white shadow-lg shadow-orange-500/30': getStepStatus(step.num) === 'completed',
-              'border-2 border-[#FF5722] bg-stone-100 text-[#FF5722] animate-pulse dark:bg-zinc-900': getStepStatus(step.num) === 'active',
+              'bg-amber-600 text-white': getStepStatus(step.num) === 'completed',
+              'border-2 border-amber-600 bg-stone-100 text-amber-700 animate-pulse dark:bg-zinc-900 dark:text-amber-300': getStepStatus(step.num) === 'active',
               'border-2 border-stone-400 bg-stone-100 text-stone-500 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-500': getStepStatus(step.num) === 'pending',
             }
           ]"
@@ -94,7 +94,7 @@ function getStepStatus(num: number) {
           <div
             :class="[
               'text-xs font-medium transition-colors',
-              getStepStatus(step.num) === 'completed' ? 'text-[#FF5722]' :
+              getStepStatus(step.num) === 'completed' ? 'text-amber-700 dark:text-amber-300' :
               getStepStatus(step.num) === 'active' ? 'text-stone-800 dark:text-zinc-100' : 'text-stone-500 dark:text-zinc-500'
             ]"
           >

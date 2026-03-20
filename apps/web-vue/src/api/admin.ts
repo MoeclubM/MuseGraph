@@ -265,7 +265,7 @@ const DEFAULT_OASIS_CONFIG: OasisConfig = {
   llm_retry_interval_seconds: 2,
   llm_prefer_stream: true,
   llm_stream_fallback_nonstream: true,
-  llm_task_concurrency: 1,
+  llm_task_concurrency: 4,
   llm_model_default_concurrency: 8,
   llm_model_concurrency_overrides: {},
 }

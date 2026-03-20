@@ -32,7 +32,7 @@ const paymentKeyInputValue = computed({
 
     <Card class="space-y-3">
       <div class="grid gap-2 md:grid-cols-2">
-        <label class="inline-flex items-center gap-2 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+        <label class="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
           <Checkbox v-model="paymentConfig.enabled" />
           Enable EPay
         </label>

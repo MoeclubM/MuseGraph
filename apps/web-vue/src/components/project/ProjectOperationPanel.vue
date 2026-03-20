@@ -110,7 +110,7 @@ const runDisabled = computed(() =>
         :key="op.value"
         variant="secondary"
         size="sm"
-        class="h-auto justify-start rounded-xl px-3.5 py-2.5 text-sm"
+        class="h-auto justify-start rounded-md px-3.5 py-2.5 text-sm"
         :class="
           props.operationType === op.value
             ? 'border-amber-500 bg-amber-600/20 text-amber-700 dark:text-amber-300'
@@ -149,7 +149,7 @@ const runDisabled = computed(() =>
       </Select>
     </div>
 
-    <div v-if="props.operationType === 'CREATE'" class="space-y-2.5 rounded-xl border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
+    <div v-if="props.operationType === 'CREATE'" class="space-y-2.5 rounded-md border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
       <p class="text-xs font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">Step 0. User Prompt</p>
       <Textarea
         v-model="createUserPromptValue"
@@ -181,7 +181,7 @@ const runDisabled = computed(() =>
       <p v-if="props.createOutlineError" class="text-xs text-red-700 dark:text-red-300">{{ props.createOutlineError }}</p>
     </div>
 
-    <div v-if="props.operationType === 'CONTINUE'" class="space-y-2.5 rounded-xl border border-stone-300/80 dark:border-zinc-700/60 bg-stone-100/75 dark:bg-zinc-800/40 p-4">
+    <div v-if="props.operationType === 'CONTINUE'" class="space-y-2.5 rounded-md border border-stone-300/80 dark:border-zinc-700/60 bg-stone-100/75 dark:bg-zinc-800/40 p-4">
       <p class="text-xs font-medium uppercase tracking-wider text-stone-700 dark:text-zinc-300">Continue Prerequisites</p>
       <Textarea
         v-model="continueUserInstructionValue"
@@ -245,7 +245,7 @@ const runDisabled = computed(() =>
 
     <div v-if="props.operationResult" class="space-y-2">
       <h3 class="text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">Result</h3>
-      <div class="rounded-lg border border-stone-300/70 dark:border-zinc-700/50 bg-stone-100/80 dark:bg-zinc-800/50 p-3 text-sm text-stone-700 dark:text-zinc-200 whitespace-pre-wrap max-h-60 overflow-y-auto">
+      <div class="rounded-md border border-stone-300/70 dark:border-zinc-700/50 bg-stone-100/80 dark:bg-zinc-800/50 p-3 text-sm text-stone-700 dark:text-zinc-200 whitespace-pre-wrap max-h-60 overflow-y-auto">
         {{ props.operationResult }}
       </div>
     </div>
@@ -256,7 +256,7 @@ const runDisabled = computed(() =>
         <div
           v-for="op in props.operations"
           :key="op.id"
-          class="rounded-lg border border-stone-300/70 dark:border-zinc-700/50 bg-stone-100/70 dark:bg-zinc-800/30 px-3 py-2"
+          class="rounded-md border border-stone-300/70 dark:border-zinc-700/50 bg-stone-100/70 dark:bg-zinc-800/30 px-3 py-2"
         >
           <div class="flex items-center justify-between">
             <span class="text-xs font-medium text-stone-700 dark:text-zinc-300">{{ op.type }}</span>

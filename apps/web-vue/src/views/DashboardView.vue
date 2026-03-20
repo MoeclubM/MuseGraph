@@ -77,64 +77,66 @@ onMounted(() => {
 
 <template>
   <AppLayout>
-    <div class="mx-auto w-full max-w-6xl space-y-5">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Dashboard</h1>
-          <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">Balance, token usage, and cost overview.</p>
+    <div class="muse-page-shell muse-page-shell-wide">
+      <section class="muse-page-header">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Dashboard</h1>
+            <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">Balance, token usage, and cost overview.</p>
+          </div>
+          <Button variant="secondary" @click="loadDashboardStats">Refresh</Button>
         </div>
-        <Button variant="secondary" @click="loadDashboardStats">Refresh</Button>
-      </div>
+      </section>
 
       <div v-if="loading" class="flex items-center justify-center py-20">
         <div class="h-8 w-8 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />
       </div>
 
-      <div v-else-if="loadError" class="rounded-xl border border-red-400/40 bg-red-100/50 p-4 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
+      <div v-else-if="loadError" class="rounded-md border border-red-400/40 bg-red-100/50 p-4 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300 sm:p-5">
         {{ loadError }}
       </div>
 
       <template v-else>
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <Card class="border-amber-400/40">
+        <div class="grid grid-cols-1 gap-5 md:grid-cols-3">
+          <Card class="h-full border-amber-400/40">
             <div class="flex items-start justify-between gap-3">
               <div>
                 <p class="text-sm text-stone-600 dark:text-zinc-400">Current Balance</p>
                 <p class="mt-1 text-2xl font-bold text-stone-900 dark:text-stone-100">{{ formatUsd(balance) }}</p>
               </div>
-              <div class="rounded-lg bg-amber-500/15 p-2 text-amber-700 dark:text-amber-300">
+              <div class="rounded-md bg-amber-500/15 p-2 text-amber-700 dark:text-amber-300">
                 <Wallet class="h-5 w-5" />
               </div>
             </div>
           </Card>
 
-          <Card>
+          <Card class="h-full">
             <div class="flex items-start justify-between gap-3">
               <div>
                 <p class="text-sm text-stone-600 dark:text-zinc-400">Total Tokens Used</p>
                 <p class="mt-1 text-2xl font-bold text-stone-900 dark:text-stone-100">{{ formatTokens(totalTokens) }}</p>
               </div>
-              <div class="rounded-lg bg-stone-900/10 p-2 text-stone-700 dark:bg-zinc-700/30 dark:text-zinc-200">
+              <div class="rounded-md bg-stone-900/10 p-2 text-stone-700 dark:bg-zinc-700/30 dark:text-zinc-200">
                 <Coins class="h-5 w-5" />
               </div>
             </div>
           </Card>
 
-          <Card>
+          <Card class="h-full">
             <div class="flex items-start justify-between gap-3">
               <div>
                 <p class="text-sm text-stone-600 dark:text-zinc-400">Total Spend</p>
                 <p class="mt-1 text-2xl font-bold text-stone-900 dark:text-stone-100">{{ formatUsd(totalCost) }}</p>
               </div>
-              <div class="rounded-lg bg-stone-900/10 p-2 text-stone-700 dark:bg-zinc-700/30 dark:text-zinc-200">
+              <div class="rounded-md bg-stone-900/10 p-2 text-stone-700 dark:bg-zinc-700/30 dark:text-zinc-200">
                 <ReceiptText class="h-5 w-5" />
               </div>
             </div>
           </Card>
         </div>
 
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <Card>
+        <div class="grid grid-cols-1 gap-5 md:grid-cols-3">
+          <Card class="h-full">
             <div class="flex items-start justify-between gap-3">
               <div>
                 <p class="text-sm text-stone-600 dark:text-zinc-400">Today's Spend</p>
@@ -144,7 +146,7 @@ onMounted(() => {
             </div>
           </Card>
 
-          <Card>
+          <Card class="h-full">
             <div class="flex items-start justify-between gap-3">
               <div>
                 <p class="text-sm text-stone-600 dark:text-zinc-400">This Month's Spend</p>
@@ -154,7 +156,7 @@ onMounted(() => {
             </div>
           </Card>
 
-          <Card>
+          <Card class="h-full">
             <div class="flex items-start justify-between gap-3">
               <div>
                 <p class="text-sm text-stone-600 dark:text-zinc-400">Total Requests</p>

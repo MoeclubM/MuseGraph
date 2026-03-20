@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.config import PaymentConfig
 from app.services.ai import DEFAULT_MODEL, call_llm
-from app.services.cognee import get_graph_visualization, search_graph
+from app.services.graph_service import get_graph_visualization, search_graph
 from app.services.llm_json import extract_json_object
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ DEFAULT_OASIS_CONFIG: dict[str, Any] = {
     "llm_retry_interval_seconds": 2.0,
     "llm_prefer_stream": True,
     "llm_stream_fallback_nonstream": True,
-    "llm_task_concurrency": 1,
+    "llm_task_concurrency": 4,
     "llm_model_default_concurrency": 8,
     "llm_model_concurrency_overrides": {},
 }

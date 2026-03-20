@@ -13,8 +13,7 @@
     "clean": "turbo run clean && node -e \"require('node:fs').rmSync('node_modules', { recursive: true, force: true })\""
   },
   "devDependencies": {
-    "turbo": "^2.4.0",
-    "typescript": "^5.7.0"
+    "turbo": "^2.8.19"
   },
   "packageManager": "pnpm@10.20.0",
   "engines": {
@@ -28,4 +27,3 @@
     ]
   }
 }
-

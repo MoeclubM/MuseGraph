@@ -60,10 +60,7 @@
     color: var(--muse-text);
     font-family: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
     background-color: var(--muse-bg);
-    background-image:
-      radial-gradient(880px 340px at 0% 0%, rgba(188, 98, 56, 0.075), transparent 58%),
-      radial-gradient(720px 280px at 100% 0%, var(--muse-highlight), transparent 54%),
-      linear-gradient(180deg, var(--muse-bg-soft), var(--muse-bg));
+    background-image: none;
     transition: background-color 0.2s ease, color 0.2s ease;
     @apply antialiased;
   }
@@ -96,9 +93,7 @@
 
 @layer components {
   .muse-shell {
-    background:
-      radial-gradient(920px 340px at 0% 0%, rgba(188, 98, 56, 0.055), transparent 58%),
-      linear-gradient(180deg, var(--muse-bg-soft), var(--muse-bg));
+    background: var(--muse-bg);
   }
 
   .muse-surface {
@@ -156,5 +151,50 @@
     border-color: var(--muse-danger);
     box-shadow: 0 0 0 3px var(--muse-danger-soft);
     outline: none;
+  }
+
+  .muse-page-shell {
+    width: 100%;
+    margin: 0 auto;
+    padding-inline: 0.5rem;
+  }
+
+  .muse-page-shell > * + * {
+    margin-top: 1.5rem;
+  }
+
+  .muse-page-shell-standard {
+    max-width: 64rem;
+  }
+
+  .muse-page-shell-wide {
+    max-width: 72rem;
+  }
+
+  .muse-page-shell-narrow {
+    max-width: 42rem;
+  }
+
+  .muse-page-header {
+    border: 1px solid var(--muse-border);
+    background: var(--muse-panel);
+    border-radius: 0.5rem;
+    padding: 1rem;
+  }
+
+  @media (min-width: 640px) {
+    .muse-page-shell {
+      padding-inline: 0;
+    }
+
+    .muse-page-header {
+      padding: 1.25rem;
+    }
+  }
+
+  @media (min-width: 768px) {
+    .muse-page-shell {
+      padding-inline: 0.25rem;
+    }
   }
 }

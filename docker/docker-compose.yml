@@ -2,12 +2,20 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: musegraph-postgres
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=40
     environment:
       POSTGRES_USER: musegraph
       POSTGRES_PASSWORD: musegraph123
       POSTGRES_DB: musegraph
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -15,13 +23,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     container_name: musegraph-redis
-    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
-    ports:
-      - "16379:6379"
+    command: ["redis-server", "--appendonly", "no", "--save", "", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - redis_data:/data
     healthcheck:
@@ -29,6 +36,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   server:
     build:
@@ -37,7 +45,6 @@ services:
     container_name: musegraph-server
     environment:
       DATABASE_URL: postgresql+asyncpg://musegraph:musegraph123@postgres:5432/musegraph
-      COGNEE_DATABASE_URL: postgresql+asyncpg://musegraph:musegraph123@postgres:5432/musegraph_cognee
       REDIS_URL: redis://redis:6379
       GRAPHITI_DB_PATH: /app/.musegraph/graphiti/graphiti.kuzu
       GRAPHITI_EMBEDDING_DIM: ${GRAPHITI_EMBEDDING_DIM:-1024}
@@ -45,9 +52,8 @@ services:
       SESSION_EXPIRES_HOURS: 168
       FILE_STORAGE_ROOT: /app/.musegraph/storage
       ENABLE_BACKEND_ACCESS_CONTROL: "false"
-      APP_URL: http://localhost:3000
+      APP_URL: http://localhost:3010
       TELEMETRY_DISABLED: "true"
-      GRAPHITI_TELEMETRY_ENABLED: "false"
       GRAPH_BACKEND: ${GRAPH_BACKEND:-graphiti}
       AUTO_SEED_DATA: ${AUTO_SEED_DATA:-true}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@example.com}
@@ -70,7 +76,7 @@ services:
       dockerfile: docker/web-vue.Dockerfile
     container_name: musegraph-web
     ports:
-      - "3000:3000"
+      - "3010:3000"
     depends_on:
       - server
     restart: unless-stopped

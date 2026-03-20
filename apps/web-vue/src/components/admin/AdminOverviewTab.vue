@@ -62,13 +62,12 @@ defineProps<{
     </div>
 
     <div class="grid gap-3 md:grid-cols-2">
-      <Card :padding="false">
-        <div class="border-b border-stone-300/80 px-3 py-3 sm:px-4 dark:border-zinc-700/60">
+      <Card :stack="false">
+        <div class="border-b border-stone-300/80 pb-3 dark:border-zinc-700/60">
           <p class="text-sm font-medium text-stone-700 dark:text-zinc-200">Top Users By Cost</p>
         </div>
-        <div class="px-3 py-3 sm:px-4 sm:py-4">
-          <div class="overflow-x-auto">
-            <table class="w-full text-sm">
+        <div class="overflow-x-auto pt-4">
+          <table class="w-full text-sm">
               <thead class="bg-stone-100/80 dark:bg-zinc-800/60">
                 <tr class="border-b border-stone-300 dark:border-zinc-700">
                   <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">User</th>
@@ -95,18 +94,16 @@ defineProps<{
                   <td colspan="4" class="px-3 py-3 text-center text-xs text-stone-500 dark:text-zinc-400">No usage data</td>
                 </tr>
               </tbody>
-            </table>
-          </div>
+          </table>
         </div>
       </Card>
 
-      <Card :padding="false">
-        <div class="border-b border-stone-300/80 px-3 py-3 sm:px-4 dark:border-zinc-700/60">
+      <Card :stack="false">
+        <div class="border-b border-stone-300/80 pb-3 dark:border-zinc-700/60">
           <p class="text-sm font-medium text-stone-700 dark:text-zinc-200">Top Models By Cost</p>
         </div>
-        <div class="py-3 sm:py-4">
-          <div class="overflow-x-auto">
-            <table class="w-full text-sm">
+        <div class="overflow-x-auto pt-4">
+          <table class="w-full text-sm">
               <thead class="bg-stone-100/80 dark:bg-zinc-800/60">
                 <tr class="border-b border-stone-300 dark:border-zinc-700">
                   <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Model</th>
@@ -130,8 +127,7 @@ defineProps<{
                   <td colspan="4" class="px-3 py-3 text-center text-xs text-stone-500 dark:text-zinc-400">No model data</td>
                 </tr>
               </tbody>
-            </table>
-          </div>
+          </table>
         </div>
       </Card>
     </div>

@@ -1,6 +1,6 @@
 """
-Prediction service - MiroFish-style knowledge graph enhanced prediction.
-Uses Cognee's native search to extract entity relationships and predict
+Prediction service - knowledge-graph enhanced prediction.
+Uses the active graph runtime to extract relationships and predict
 logical continuations before generating text.
 """
 import asyncio
@@ -493,7 +493,7 @@ async def get_graph_context(
         "retrieval_queries": [],
     }
     try:
-        from app.services.cognee import search_graph
+        from app.services.graph_service import search_graph
 
         focus = (focus_text or "").strip()
         hint = _truncate(reference_query_hint, 1000).strip()

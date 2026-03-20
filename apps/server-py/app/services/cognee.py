@@ -2059,8 +2059,6 @@ async def delete_dataset(
 
         await delete_graph_with_graphiti(
             project_id,
-            model=model,
-            embedding_model=embedding_model,
             db=db,
         )
         return

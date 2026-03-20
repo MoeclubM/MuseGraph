@@ -129,8 +129,8 @@ onUnmounted(() => {
 
 <template>
   <AppLayout>
-    <div class="space-y-5">
-      <Card>
+    <div class="muse-page-shell muse-page-shell-wide">
+      <section class="muse-page-header">
         <div class="flex items-start justify-between gap-4">
           <div class="flex-1">
             <h1 class="text-xl font-semibold text-stone-800 dark:text-zinc-100">Scenario Execution Monitor</h1>
@@ -145,7 +145,7 @@ onUnmounted(() => {
               </div>
               <div class="h-2 overflow-hidden rounded-full bg-stone-300 dark:bg-zinc-700">
                 <div
-                  class="h-full bg-gradient-to-r from-[#FF5722] to-orange-400 transition-all duration-500"
+                  class="h-full bg-amber-600 transition-all duration-500"
                   :style="{ width: `${roundProgress}%` }"
                 />
               </div>
@@ -189,9 +189,9 @@ onUnmounted(() => {
             <Button variant="ghost" :loading="loading" @click="loadData">
               <RefreshCw class="h-4 w-4" />
             </Button>
+            </div>
           </div>
-        </div>
-      </Card>
+      </section>
 
       <Card>
         <div class="mb-4 flex flex-wrap items-center justify-between gap-2">

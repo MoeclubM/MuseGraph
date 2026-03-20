@@ -113,10 +113,9 @@ const emit = defineEmits<{
       </div>
     </Card>
 
-    <Card :padding="false">
-      <div class="px-3 py-3 sm:px-4 sm:py-4">
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+    <Card :stack="false">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
             <thead class="bg-stone-100/80 dark:bg-zinc-800/60">
               <tr class="border-b border-stone-300 dark:border-zinc-700">
                 <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Nickname</th>
@@ -233,10 +232,9 @@ const emit = defineEmits<{
                 </tr>
               </template>
             </tbody>
-          </table>
-        </div>
+        </table>
       </div>
-      <div class="flex items-center justify-end gap-2 border-t border-stone-300/80 px-3 py-2 sm:px-4 dark:border-zinc-700/60">
+      <div class="mt-4 flex items-center justify-end gap-2 border-t border-stone-300/80 pt-4 dark:border-zinc-700/60">
         <Button size="sm" variant="secondary" :disabled="page <= 1" @click="emit('prev-page')">Prev</Button>
         <Button size="sm" variant="secondary" :disabled="!usersData || page * pageSize >= usersData.total" @click="emit('next-page')">Next</Button>
       </div>

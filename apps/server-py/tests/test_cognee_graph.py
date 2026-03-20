@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import AsyncClient
 
+from app.routers import cognee_graph
 from app.services.task_state import task_manager
 from tests.conftest import TEST_USER_ID, app as app_instance
 
@@ -92,12 +93,63 @@ def _reset_task_manager():
 
 
 class TestCogneeGraphFlow:
+    def test_latest_running_graph_task_ignores_stale_processing_task(self):
+        task = task_manager.create_task(
+            "graph_build",
+            metadata={"project_id": "project-1", "user_id": TEST_USER_ID},
+        )
+        task.status = cognee_graph.TaskStatus.PROCESSING
+        task.progress = 32
+        task.message = "Graphiti ingesting episodes 4/112..."
+        task.updated_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=300)
+        task_manager._memory.update_task(task)  # type: ignore[attr-defined]
+
+        running = cognee_graph._latest_running_graph_task("project-1")
+
+        assert running is None
+        refreshed = task_manager.get_task(task.task_id)
+        assert refreshed is not None
+        assert refreshed.status == cognee_graph.TaskStatus.FAILED
+        assert refreshed.message == "Graph build task timed out"
+
     @pytest.mark.asyncio
     async def test_list_tasks_invalid_project_id_returns_422(self, client: AsyncClient):
         resp = await client.get("/api/projects/undefined/graphs/tasks")
 
         assert resp.status_code == 422
         assert resp.json()["detail"] == "Invalid project id"
+
+    @pytest.mark.asyncio
+    async def test_get_graph_status_marks_empty_store_as_stale(
+        self,
+        client: AsyncClient,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        project = _make_project(
+            project_id="11111111-1111-4111-8111-111111111111",
+            ontology_schema={"entity_types": [{"name": "Character"}]},
+            cognee_dataset_id="graph-1",
+            oasis_analysis={
+                "_graph_build_state": {
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "chapter_hashes": {"chapter-1": "hash-1"},
+                }
+            },
+        )
+        chapter_row = (str(project.chapters[0].id), datetime.now(timezone.utc))
+        chapter_result = MagicMock()
+        chapter_result.all.return_value = [chapter_row]
+        mock_db.execute.side_effect = [_scalar_one_or_none(project), chapter_result]
+        monkeypatch.setattr(cognee_graph, "has_graph_data", AsyncMock(return_value=False))
+
+        resp = await client.get(f"/api/projects/{project.id}/graphs")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ready"
+        assert body["graph_freshness"] == "stale"
+        assert body["graph_reason"] == "graph_store_empty_or_unreadable"
 
     @pytest.mark.asyncio
     async def test_generate_ontology_success(

@@ -151,4 +151,33 @@ describe('ProjectTaskCenter', () => {
 
     expect(wrapper.emitted('update:expanded')?.[0]).toEqual([true])
   })
+
+  it('renders the full task id without truncation-only styling', () => {
+    const task = buildTask({ task_id: '2b06d808-3a01-495a-aa4a-fb13dfbf9abc', status: 'processing' })
+
+    const wrapper = mount(ProjectTaskCenter, {
+      props: {
+        tasks: [task],
+        loading: false,
+        error: null,
+        expanded: true,
+        filter: 'all',
+        cancellingTaskIds: [],
+        formatDate: () => 'date',
+      },
+      global: {
+        stubs: {
+          teleport: true,
+          Button: ButtonStub,
+          Select: SelectStub,
+          Alert: AlertStub,
+        },
+      },
+    })
+
+    const taskIdNode = wrapper.find('[title="2b06d808-3a01-495a-aa4a-fb13dfbf9abc"]')
+    expect(taskIdNode.exists()).toBe(true)
+    expect(taskIdNode.text()).toContain('#2b06d808-3a01-495a-aa4a-fb13dfbf9abc')
+    expect(taskIdNode.classes()).not.toContain('truncate')
+  })
 })

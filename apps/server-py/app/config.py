@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     GRAPHITI_EMBEDDING_DIM: int = 1024
 
     # App
-    APP_URL: str = "http://localhost:3000"
+    APP_URL: str = "http://localhost:3010"
     AUTO_SEED_DATA: bool = False
 
     TELEMETRY_DISABLED: bool = True

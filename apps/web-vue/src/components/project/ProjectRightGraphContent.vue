@@ -183,7 +183,7 @@ const emit = defineEmits<{
   />
 
   <div v-if="rightPanelTab === 'graph' && graphData.nodes.length > 0" class="space-y-4">
-    <div class="h-72 overflow-hidden rounded-lg">
+    <div class="h-72 overflow-hidden rounded-md">
       <GraphPanel :data="graphData" />
     </div>
     <Button

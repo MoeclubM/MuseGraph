@@ -53,7 +53,7 @@ const emit = defineEmits<{
         <Input v-model="providerForm.api_key" type="password" placeholder="API key" />
         <Input v-model="providerForm.base_url" placeholder="Base URL" />
         <Input v-model.number="providerForm.priority" type="number" placeholder="Priority" />
-        <label class="inline-flex items-center gap-2 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+        <label class="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
           <Checkbox v-model="providerForm.is_active" />
           Active
         </label>
@@ -64,10 +64,9 @@ const emit = defineEmits<{
       </div>
     </Card>
 
-    <Card :padding="false">
-      <div class="px-3 py-3 sm:px-4 sm:py-4">
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+    <Card :stack="false">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
             <thead class="bg-stone-100/80 dark:bg-zinc-800/60">
               <tr class="border-b border-stone-300 dark:border-zinc-700">
                 <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Name</th>
@@ -93,8 +92,7 @@ const emit = defineEmits<{
                 </td>
               </tr>
             </tbody>
-          </table>
-        </div>
+        </table>
       </div>
     </Card>
   </div>

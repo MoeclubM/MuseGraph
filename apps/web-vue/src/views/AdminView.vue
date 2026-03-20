@@ -131,7 +131,7 @@ const oasisConfig = ref<OasisConfig>({
   llm_retry_interval_seconds: 2,
   llm_prefer_stream: true,
   llm_stream_fallback_nonstream: true,
-  llm_task_concurrency: 1,
+  llm_task_concurrency: 4,
   llm_model_default_concurrency: 8,
   llm_model_concurrency_overrides: {},
 })
@@ -224,11 +224,46 @@ const knownModels = computed(() =>
     new Set([
       ...providers.value.flatMap((p) => p.models || []),
       ...providers.value.flatMap((p) => p.embedding_models || []),
-      ...pricingRules.value.map((r) => r.model),
     ])
   ).sort()
 )
 const totalKnownModels = computed(() => knownModels.value.length)
+
+const providerNamesByModel = computed<Record<string, string>>(() => {
+  const entries = new Map<string, string[]>()
+  for (const provider of providers.value) {
+    for (const model of [...(provider.models || []), ...(provider.embedding_models || [])]) {
+      const current = entries.get(model) || []
+      if (!current.includes(provider.name)) current.push(provider.name)
+      entries.set(model, current)
+    }
+  }
+  return Object.fromEntries(
+    Array.from(entries.entries()).map(([model, names]) => [model, names.join(', ')])
+  )
+})
+
+const modelTypesByModel = computed<Record<string, string>>(() => {
+  const entries = new Map<string, { llm: boolean; embedding: boolean }>()
+  for (const provider of providers.value) {
+    for (const model of provider.models || []) {
+      const current = entries.get(model) || { llm: false, embedding: false }
+      current.llm = true
+      entries.set(model, current)
+    }
+    for (const model of provider.embedding_models || []) {
+      const current = entries.get(model) || { llm: false, embedding: false }
+      current.embedding = true
+      entries.set(model, current)
+    }
+  }
+  return Object.fromEntries(
+    Array.from(entries.entries()).map(([model, usage]) => [
+      model,
+      usage.llm && usage.embedding ? 'LLM + Embedding' : usage.embedding ? 'Embedding' : 'LLM',
+    ])
+  )
+})
 
 function formatModelConcurrencyOverrides(overrides: Record<string, number>): string {
   const normalized: Record<string, number> = {}
@@ -273,19 +308,11 @@ function pricingByModel(model: string): PricingRule | undefined {
 }
 
 function providerNameForModel(model: string): string {
-  const names = providers.value
-    .filter((p) => (p.models || []).includes(model) || (p.embedding_models || []).includes(model))
-    .map((p) => p.name)
-  return names.length ? names.join(', ') : '—'
+  return providerNamesByModel.value[model]
 }
 
 function modelTypeForModel(model: string): string {
-  const inLlm = providers.value.some((p) => (p.models || []).includes(model))
-  const inEmbedding = providers.value.some((p) => (p.embedding_models || []).includes(model))
-  if (inLlm && inEmbedding) return 'LLM + Embedding'
-  if (inEmbedding) return 'Embedding'
-  if (inLlm) return 'LLM'
-  return '—'
+  return modelTypesByModel.value[model]
 }
 
 function formatPricing(rule?: PricingRule): string {
@@ -550,6 +577,7 @@ async function saveProvider() {
 async function removeProvider(id: string) {
   await deleteProvider(id)
   await refreshProviders()
+  pricingRules.value = await getPricing()
 }
 
 type ProviderModelKind = 'chat' | 'embedding'
@@ -955,23 +983,23 @@ onMounted(loadAll)
 
 <template>
   <AdminLayout>
-    <div class="space-y-6">
-      <section class="rounded-xl border border-stone-300/80 bg-stone-50/80 px-4 py-4 shadow-sm dark:border-zinc-700/60 dark:bg-zinc-800/50">
+    <div class="muse-page-shell muse-page-shell-wide">
+      <section class="muse-page-header">
         <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div class="space-y-1">
             <h1 class="text-xl font-semibold text-stone-800 dark:text-zinc-100">Admin Panel</h1>
             <p class="text-sm text-stone-500 dark:text-zinc-400">Manage users, providers, pricing, payment settings, and runtime controls.</p>
           </div>
           <div class="grid grid-cols-2 gap-2 text-xs md:grid-cols-3">
-            <div class="rounded-lg border border-stone-300/70 bg-stone-100/80 px-3 py-2 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
+            <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-3 py-2 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
               <p class="text-[11px] uppercase tracking-wide text-stone-500 dark:text-zinc-500">Providers</p>
               <p class="mt-0.5 text-sm font-semibold text-stone-700 dark:text-zinc-100">{{ providers.length }}</p>
             </div>
-            <div class="rounded-lg border border-stone-300/70 bg-stone-100/80 px-3 py-2 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
+            <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-3 py-2 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
               <p class="text-[11px] uppercase tracking-wide text-stone-500 dark:text-zinc-500">Models</p>
               <p class="mt-0.5 text-sm font-semibold text-stone-700 dark:text-zinc-100">{{ totalKnownModels }}</p>
             </div>
-            <div class="rounded-lg border border-stone-300/70 bg-stone-100/80 px-3 py-2 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
+            <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-3 py-2 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
               <p class="text-[11px] uppercase tracking-wide text-stone-500 dark:text-zinc-500">Pricing Rules</p>
               <p class="mt-0.5 text-sm font-semibold text-stone-700 dark:text-zinc-100">{{ pricingRules.length }}</p>
             </div>
@@ -980,18 +1008,20 @@ onMounted(loadAll)
       </section>
 
       <Tabs v-model="tab" class="space-y-4">
-        <TabsList class="grid h-auto w-full grid-cols-2 gap-1 bg-stone-100/80 p-1 md:grid-cols-6 dark:bg-zinc-800/80">
-          <TabsTrigger
-            v-for="item in tabItems"
-            :key="item.value"
-            :value="item.value"
-            class="h-auto py-2"
-          >
-            <component :is="item.icon" class="h-3.5 w-3.5" />
-            <span>{{ item.label }}</span>
-            <span class="hidden text-[10px] text-stone-500 dark:text-zinc-400 md:inline">{{ item.hint }}</span>
-          </TabsTrigger>
-        </TabsList>
+        <div class="muse-surface rounded-md p-1">
+          <TabsList class="grid h-auto w-full grid-cols-2 gap-1 bg-transparent p-0 md:grid-cols-6">
+            <TabsTrigger
+              v-for="item in tabItems"
+              :key="item.value"
+              :value="item.value"
+              class="h-auto rounded-md py-2"
+            >
+              <component :is="item.icon" class="h-3.5 w-3.5" />
+              <span>{{ item.label }}</span>
+              <span class="hidden text-[10px] text-stone-500 dark:text-zinc-400 md:inline">{{ item.hint }}</span>
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         <Card v-if="loading">
           <p class="text-sm text-stone-600 dark:text-zinc-300">Loading admin data...</p>

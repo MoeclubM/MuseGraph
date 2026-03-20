@@ -111,6 +111,19 @@ describe('Auth API', () => {
       expect(result).toEqual(mockUser)
     })
 
+    it('should pass silent auth header when requested', async () => {
+      vi.mocked(api.get).mockResolvedValue({ data: mockUser })
+
+      const result = await getMe({ silentAuthFailure: true })
+
+      expect(api.get).toHaveBeenCalledWith('/api/auth/me', {
+        headers: {
+          'X-Muse-Silent-Auth': '1',
+        },
+      })
+      expect(result).toEqual(mockUser)
+    })
+
     it('should propagate error on failure', async () => {
       vi.mocked(api.get).mockRejectedValue(new Error('Unauthorized'))
 

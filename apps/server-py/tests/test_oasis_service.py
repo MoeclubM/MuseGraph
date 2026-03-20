@@ -173,7 +173,7 @@ class TestHelperFunctions:
         assert cfg["llm_retry_interval_seconds"] == 2.0
         assert cfg["llm_prefer_stream"] is True
         assert cfg["llm_stream_fallback_nonstream"] is True
-        assert cfg["llm_task_concurrency"] == 1
+        assert cfg["llm_task_concurrency"] == 4
         assert cfg["llm_model_default_concurrency"] == 8
         assert cfg["llm_model_concurrency_overrides"] == {}
 
