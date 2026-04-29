@@ -1,4 +1,4 @@
-﻿"""Core end-to-end API flow tests aligned with current product scope."""
+"""Core end-to-end API flow tests aligned with current product scope."""
 
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ class TestE2EGraphTaskFlow:
             id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
             chapters=[_chapter("ch-1", "hello world")],
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
             ontology_schema={},
         )
         g = _get_endpoint_globals(app, "generate_project_ontology_task")
@@ -101,7 +101,7 @@ class TestE2EGraphTaskFlow:
                     "user_id": user_id,
                 },
             )
-            return g["CogneeTaskStartResponse"](status="ok", task=g["_task_to_schema"](task))
+            return g["GraphTaskStartResponse"](status="ok", task=g["_task_to_schema"](task))
 
         mock_db.execute.return_value = _scalar_one_or_none(project)
         orig_start = g["_start_project_task"]
@@ -244,4 +244,5 @@ class TestE2ESimulationFlow:
         status_resp = await client.get("/api/simulation/sim-e2e-1/run-status")
         assert status_resp.status_code == 200
         assert status_resp.json()["data"]["status"] == "completed"
+
 

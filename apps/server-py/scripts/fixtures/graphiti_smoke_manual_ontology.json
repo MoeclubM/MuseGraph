@@ -1,0 +1,85 @@
+{
+  "entity_types": [
+    {
+      "name": "PERSON",
+      "description": "A named individual involved in the narrative.",
+      "examples": ["Mira Chen", "Jonas Vale", "Elian Ward"]
+    },
+    {
+      "name": "ORGANIZATION",
+      "description": "A named institution, authority, or group.",
+      "examples": ["Northbridge Institute", "Civic Archive"]
+    },
+    {
+      "name": "LOCATION",
+      "description": "A specific place or facility.",
+      "examples": ["Lantern Harbor Observatory", "Saint Rowan Bridge"]
+    },
+    {
+      "name": "ARTIFACT",
+      "description": "A concrete object of narrative importance.",
+      "examples": ["tide engine", "ancient survey map", "crystal batteries"]
+    },
+    {
+      "name": "EVENT",
+      "description": "A notable incident or coordinated action.",
+      "examples": ["Eclipse Festival", "harbor closure", "battery theft"]
+    },
+    {
+      "name": "DOCUMENT",
+      "description": "A written record or archival material.",
+      "examples": ["letters", "survey map"]
+    }
+  ],
+  "edge_types": [
+    {
+      "name": "ASKED_TO_INSPECT",
+      "source_type": "PERSON",
+      "target_type": "ARTIFACT",
+      "description": "A person assigned another person to inspect an artifact."
+    },
+    {
+      "name": "DISCOVERED",
+      "source_type": "PERSON",
+      "target_type": "ARTIFACT",
+      "description": "A person discovered an artifact or important object."
+    },
+    {
+      "name": "EXCHANGED",
+      "source_type": "PERSON",
+      "target_type": "DOCUMENT",
+      "description": "A person exchanged or maintained a document."
+    },
+    {
+      "name": "LOCATED_IN",
+      "source_type": "ARTIFACT",
+      "target_type": "LOCATION",
+      "description": "An artifact was located in a place."
+    },
+    {
+      "name": "ESCORTED_TO",
+      "source_type": "PERSON",
+      "target_type": "LOCATION",
+      "description": "A person escorted someone to a location."
+    },
+    {
+      "name": "STOLE",
+      "source_type": "PERSON",
+      "target_type": "ARTIFACT",
+      "description": "A person stole an artifact."
+    },
+    {
+      "name": "HIRED",
+      "source_type": "PERSON",
+      "target_type": "PERSON",
+      "description": "A person hired another person."
+    },
+    {
+      "name": "DEPOSITED_IN",
+      "source_type": "PERSON",
+      "target_type": "ORGANIZATION",
+      "description": "A person deposited an artifact or document in an organization."
+    }
+  ],
+  "analysis_summary": "Manual ontology for Graphiti smoke validation."
+}

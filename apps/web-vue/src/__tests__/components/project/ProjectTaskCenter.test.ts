@@ -80,7 +80,7 @@ describe('ProjectTaskCenter', () => {
 
     const terminateButtons = wrapper
       .findAll('button')
-      .filter((button) => button.text().includes('Terminate'))
+      .filter((button) => button.text().includes('Cancel'))
     expect(terminateButtons).toHaveLength(1)
 
     await terminateButtons[0].trigger('click')

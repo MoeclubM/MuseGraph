@@ -36,20 +36,27 @@ interface ProviderModelListPayload {
   provider_id: string
   models?: string[]
   embedding_models?: string[]
+  reranker_models?: string[]
 }
 
-type ProviderModelKind = 'chat' | 'embedding'
+type ProviderModelKind = 'chat' | 'embedding' | 'reranker'
 
 function providerModelPath(providerId: string, kind: ProviderModelKind): string {
+  if (kind === 'reranker') {
+    return `/api/admin/providers/${providerId}/reranker-models`
+  }
   return kind === 'embedding'
     ? `/api/admin/providers/${providerId}/embedding-models`
     : `/api/admin/providers/${providerId}/models`
 }
 
 function normalizeProviderModelList(payload: ProviderModelListPayload, kind: ProviderModelKind): string[] {
+  if (kind === 'reranker') {
+    return payload.reranker_models ?? payload.models ?? payload.embedding_models ?? []
+  }
   return kind === 'embedding'
-    ? (payload.embedding_models ?? payload.models ?? [])
-    : (payload.models ?? payload.embedding_models ?? [])
+    ? (payload.embedding_models ?? payload.models ?? payload.reranker_models ?? [])
+    : (payload.models ?? payload.embedding_models ?? payload.reranker_models ?? [])
 }
 
 export async function getStats(): Promise<StatsResponse> {
@@ -173,6 +180,22 @@ export async function discoverProviderEmbeddingModels(
   }
 }
 
+export async function discoverProviderRerankerModels(
+  providerId: string,
+  persist = false
+): Promise<{ discovered: string[]; reranker_models: string[]; persisted: boolean }> {
+  const { data } = await api.post<{ provider_id: string; provider_name: string; discovered: string[]; reranker_models?: string[]; models?: string[]; persisted: boolean }>(
+    `${providerModelPath(providerId, 'reranker')}/discover`,
+    null,
+    { params: { persist } },
+  )
+  return {
+    discovered: data.discovered,
+    reranker_models: data.reranker_models ?? data.models ?? [],
+    persisted: data.persisted,
+  }
+}
+
 export async function addProviderModel(providerId: string, model: string): Promise<string[]> {
   const { data } = await api.post<ProviderModelListPayload>(providerModelPath(providerId, 'chat'), { model })
   return normalizeProviderModelList(data, 'chat')
@@ -200,6 +223,23 @@ export async function removeProviderEmbeddingModel(providerId: string, model: st
     params: { model },
   })
   return normalizeProviderModelList(data, 'embedding')
+}
+
+export async function getProviderRerankerModels(providerId: string): Promise<string[]> {
+  const { data } = await api.get<ProviderModelListPayload>(providerModelPath(providerId, 'reranker'))
+  return normalizeProviderModelList(data, 'reranker')
+}
+
+export async function addProviderRerankerModel(providerId: string, model: string): Promise<string[]> {
+  const { data } = await api.post<ProviderModelListPayload>(providerModelPath(providerId, 'reranker'), { model })
+  return normalizeProviderModelList(data, 'reranker')
+}
+
+export async function removeProviderRerankerModel(providerId: string, model: string): Promise<string[]> {
+  const { data } = await api.delete<ProviderModelListPayload>(providerModelPath(providerId, 'reranker'), {
+    params: { model },
+  })
+  return normalizeProviderModelList(data, 'reranker')
 }
 
 export async function getPricing(): Promise<PricingRule[]> {
@@ -265,6 +305,8 @@ const DEFAULT_OASIS_CONFIG: OasisConfig = {
   llm_retry_interval_seconds: 2,
   llm_prefer_stream: true,
   llm_stream_fallback_nonstream: true,
+  llm_openai_api_style: 'responses',
+  llm_reasoning_effort: 'model_default',
   llm_task_concurrency: 4,
   llm_model_default_concurrency: 8,
   llm_model_concurrency_overrides: {},
@@ -311,6 +353,14 @@ function normalizeOasisConfig(payload: RawOasisConfig | null | undefined): Oasis
       typeof payload?.llm_stream_fallback_nonstream === 'boolean'
         ? payload.llm_stream_fallback_nonstream
         : DEFAULT_OASIS_CONFIG.llm_stream_fallback_nonstream,
+    llm_openai_api_style:
+      typeof payload?.llm_openai_api_style === 'string' && payload.llm_openai_api_style.trim()
+        ? payload.llm_openai_api_style.trim()
+        : DEFAULT_OASIS_CONFIG.llm_openai_api_style,
+    llm_reasoning_effort:
+      typeof payload?.llm_reasoning_effort === 'string' && payload.llm_reasoning_effort.trim()
+        ? payload.llm_reasoning_effort.trim()
+        : DEFAULT_OASIS_CONFIG.llm_reasoning_effort,
     llm_task_concurrency: Number(
       payload?.llm_task_concurrency ?? DEFAULT_OASIS_CONFIG.llm_task_concurrency
     ),

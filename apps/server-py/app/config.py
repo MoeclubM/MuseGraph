@@ -4,7 +4,6 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://musegraph:musegraph123@localhost:5432/musegraph"
-    COGNEE_DATABASE_URL: str = ""
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
@@ -16,7 +15,7 @@ class Settings(BaseSettings):
     # File storage (local persistent path)
     FILE_STORAGE_ROOT: str = ".musegraph/storage"
 
-    # Optional legacy Neo4j config (Cognee) and local Graphiti store path
+    # Optional Neo4j config and local Graphiti store path
     NEO4J_URL: str = ""
     NEO4J_USERNAME: str = ""
     NEO4J_PASSWORD: str = ""

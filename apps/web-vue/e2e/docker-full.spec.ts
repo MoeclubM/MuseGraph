@@ -258,11 +258,12 @@ async function tuneOasisRuntimeInAdminApi(request: APIRequestContext, token: str
   const current = await adminApi<Record<string, unknown>>(request, token, 'GET', '/api/admin/oasis-config')
   await adminApi(request, token, 'PUT', '/api/admin/oasis-config', {
     ...current,
-    llm_request_timeout_seconds: 180,
-    llm_retry_count: 2,
+    llm_request_timeout_seconds: 90,
+    llm_retry_count: 1,
     llm_retry_interval_seconds: 1,
     llm_prefer_stream: false,
     llm_stream_fallback_nonstream: true,
+    llm_openai_api_style: 'chat_completions',
   })
 }
 
@@ -332,10 +333,15 @@ async function runCreateOperation(page: Page, request: APIRequestContext, token:
     '1. Rush-hour congestion escalates into a public issue.\n2. Operators publish a pilot plan and explain resource limits.\n3. Community representatives push for coordination and accountability.'
   )
   e2eLog('AI Create: clicking draft generation')
-  await clickAndWait(page.getByRole('button', { name: /Generate Draft From Outline/i }))
+  await clickAndWait(page.getByRole('button', { name: /Step 3\. Generate Draft|Generate Draft From Outline/i }))
   e2eLog('AI Create: waiting for operation completion via API')
   await waitForOperationStatus(page, request, token, 'CREATE', 300000)
   e2eLog('AI Create: operation completed')
+  e2eLog('AI Create: waiting for project content readiness')
+  await waitForProjectContentReady(page, request, token, 180000)
+  e2eLog('AI Create: reloading workspace to refresh generated content')
+  await page.reload({ waitUntil: 'networkidle' })
+  await expect(page).toHaveURL(/\/projects\/.+/)
 }
 
 async function runContinueOperation(page: Page, request: APIRequestContext, token: string, model: string) {
@@ -433,24 +439,75 @@ async function waitForOperationStatus(
   timeoutMs: number
 ) {
   const projectId = await currentProjectId(page)
+  const startedAt = Date.now()
+  const intervals = [1000, 2000, 3000, 5000]
+  let attempt = 0
+  let lastState = 'missing'
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const response = await request.fetch(`/api/projects/${projectId}/operations`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok()) {
+      lastState = `error:${response.status()}`
+    } else {
+      const payload = (await response.json()) as Array<{
+        type?: string
+        status?: string
+        output?: string | null
+        error?: string | null
+        message?: string | null
+      }>
+      const match = payload.find((item) => String(item.type || '').toUpperCase() === type)
+      if (!match) {
+        lastState = 'missing'
+      } else {
+        const status = String(match.status || '').toUpperCase()
+        if (status === 'FAILED') {
+          const detail = String(match.error || match.message || '').trim()
+          throw new Error(detail ? `${type} failed: ${detail}` : `${type} failed`)
+        }
+        if (status === 'COMPLETED' && String(match.output || '').trim()) {
+          return
+        }
+        lastState = status || 'pending'
+      }
+    }
+
+    await page.waitForTimeout(intervals[Math.min(attempt, intervals.length - 1)])
+    attempt += 1
+  }
+
+  throw new Error(`Timed out waiting for ${type}, last state: ${lastState}`)
+}
+
+async function waitForProjectContentReady(
+  page: Page,
+  request: APIRequestContext,
+  token: string,
+  timeoutMs: number
+) {
+  const projectId = await currentProjectId(page)
   await expect
     .poll(
       async () => {
-        const response = await request.fetch(`/api/projects/${projectId}/operations`, {
+        const response = await request.fetch(`/api/projects/${projectId}`, {
           headers: { Authorization: `Bearer ${token}` },
         })
         if (!response.ok()) return `error:${response.status()}`
-        const payload = (await response.json()) as Array<{ type?: string; status?: string; output?: string | null }>
-        const match = payload.find((item) => String(item.type || '').toUpperCase() === type)
-        if (!match) return 'missing'
-        const status = String(match.status || '').toUpperCase()
-        if (status === 'FAILED') return 'FAILED'
-        if (status === 'COMPLETED' && String(match.output || '').trim()) return 'COMPLETED'
-        return status || 'pending'
+        const payload = (await response.json()) as {
+          content?: string | null
+          chapters?: Array<{ content?: string | null }>
+        }
+        const projectContent = String(payload.content || '').trim()
+        const chapterReady = Array.isArray(payload.chapters)
+          ? payload.chapters.some((chapter) => String(chapter?.content || '').trim().length > 0)
+          : false
+        return projectContent.length > 0 || chapterReady ? 'READY' : 'EMPTY'
       },
       { timeout: timeoutMs, intervals: [1000, 2000, 3000, 5000] }
     )
-    .toBe('COMPLETED')
+    .toBe('READY')
 }
 
 async function waitForGraphReady(page: Page, request: APIRequestContext, token: string, timeoutMs: number) {
@@ -510,8 +567,9 @@ async function selectModelByLabel(page: Page, label: string, model: string) {
 }
 
 async function clickAndWait(locator: Locator) {
+  await expect(locator).toBeVisible({ timeout: 60000 })
   await locator.scrollIntoViewIfNeeded()
-  await locator.click()
+  await locator.click({ timeout: 20000 })
 }
 
 async function logout(page: Page) {

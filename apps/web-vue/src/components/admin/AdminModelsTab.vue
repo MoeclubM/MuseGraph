@@ -8,7 +8,13 @@ import Input from '@/components/ui/Input.vue'
 import Select from '@/components/ui/Select.vue'
 import Checkbox from '@/components/ui/Checkbox.vue'
 
-type ProviderModelKind = 'chat' | 'embedding'
+type ProviderModelKind = 'chat' | 'embedding' | 'reranker'
+type ModelRow = {
+  providerId: string
+  providerName: string
+  kind: ProviderModelKind
+  model: string
+}
 
 interface PricingForm {
   id: string
@@ -36,8 +42,7 @@ const props = defineProps<{
   pricingFormError: string
   formatPricing: (rule?: PricingRule) => string
   pricingByModel: (model: string) => PricingRule | undefined
-  providerNameForModel: (model: string) => string
-  modelTypeForModel: (model: string) => string
+  modelRows: ModelRow[]
 }>()
 
 const emit = defineEmits<{
@@ -50,7 +55,7 @@ const emit = defineEmits<{
   'add-model-discovered': []
   'update:providerModelManualInput': [value: string]
   'add-model-manual': []
-  'remove-model': [model: string]
+  'remove-model-binding': [row: ModelRow]
   'new-pricing': [model: string]
   'edit-pricing': [rule: PricingRule]
   'update:showPricingForm': [value: boolean]
@@ -97,6 +102,7 @@ const providerModelManualInputValue = computed({
         <Select v-model="providerModelFormKindValue">
           <option value="chat">LLM</option>
           <option value="embedding">Embedding</option>
+          <option value="reranker">Reranker</option>
         </Select>
         <div class="flex gap-2">
           <Button size="sm" variant="secondary" class="flex-1" @click="emit('refresh-discover', providerModelFormKind, false)">Discover</Button>
@@ -111,17 +117,17 @@ const providerModelManualInputValue = computed({
             <option v-for="m in discoveredModelsForCurrentKind" :key="m" :value="m">{{ m }}</option>
           </Select>
           <Button size="sm" variant="secondary" @click="emit('add-model-discovered')">
-            {{ providerModelFormKind === 'embedding' ? 'Add Embedding' : 'Add Model' }}
+            {{ providerModelFormKind === 'embedding' ? 'Add Embedding' : providerModelFormKind === 'reranker' ? 'Add Reranker' : 'Add Model' }}
           </Button>
         </div>
         <div class="flex gap-2">
           <Input
             v-model="providerModelManualInputValue"
             class="flex-1"
-            :placeholder="providerModelFormKind === 'embedding' ? 'Manual embedding model id' : 'Manual model id'"
+            :placeholder="providerModelFormKind === 'embedding' ? 'Manual embedding model id' : providerModelFormKind === 'reranker' ? 'Manual reranker model id' : 'Manual model id'"
           />
           <Button size="sm" variant="secondary" @click="emit('add-model-manual')">
-            {{ providerModelFormKind === 'embedding' ? 'Add Embedding' : 'Add Model' }}
+            {{ providerModelFormKind === 'embedding' ? 'Add Embedding' : providerModelFormKind === 'reranker' ? 'Add Reranker' : 'Add Model' }}
           </Button>
         </div>
       </div>
@@ -194,25 +200,27 @@ const providerModelManualInputValue = computed({
             </thead>
             <tbody>
               <tr
-                v-for="model in knownModels"
-                :key="model"
+                v-for="row in modelRows"
+                :key="`${row.providerId}:${row.kind}:${row.model}`"
                 class="border-b border-stone-200/80 transition-colors hover:bg-stone-100/70 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
               >
-                <td class="px-3 py-2 font-mono text-xs text-stone-700 dark:text-zinc-200">{{ model }}</td>
-                <td class="px-3 py-2 text-stone-600 dark:text-zinc-300">{{ providerNameForModel(model) }}</td>
-                <td class="px-3 py-2 text-stone-600 dark:text-zinc-300">{{ modelTypeForModel(model) }}</td>
+                <td class="px-3 py-2 font-mono text-xs text-stone-700 dark:text-zinc-200">{{ row.model }}</td>
+                <td class="px-3 py-2 text-stone-600 dark:text-zinc-300">{{ row.providerName }}</td>
+                <td class="px-3 py-2 text-stone-600 dark:text-zinc-300">
+                  {{ row.kind === 'chat' ? 'LLM' : row.kind === 'embedding' ? 'Embedding' : 'Reranker' }}
+                </td>
                 <td class="px-3 py-2">
                   <span class="inline-flex rounded-full border border-stone-300 bg-stone-100 px-2 py-0.5 text-xs text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-                    {{ pricingByModel(model)?.billing_mode || 'N/A' }}
+                    {{ pricingByModel(row.model)?.billing_mode || 'N/A' }}
                   </span>
                 </td>
-                <td class="px-3 py-2 text-stone-600 dark:text-zinc-300">{{ formatPricing(pricingByModel(model)) }}</td>
+                <td class="px-3 py-2 text-stone-600 dark:text-zinc-300">{{ formatPricing(pricingByModel(row.model)) }}</td>
                 <td class="px-3 py-2 text-right">
                   <div class="flex flex-wrap justify-end gap-2">
-                    <Button size="sm" variant="secondary" @click="pricingByModel(model) ? emit('edit-pricing', pricingByModel(model)!) : emit('new-pricing', model)">
-                      {{ pricingByModel(model) ? 'Edit' : 'Set' }}
+                    <Button size="sm" variant="secondary" @click="pricingByModel(row.model) ? emit('edit-pricing', pricingByModel(row.model)!) : emit('new-pricing', row.model)">
+                      {{ pricingByModel(row.model) ? 'Edit' : 'Set' }}
                     </Button>
-                    <Button size="sm" variant="danger" @click="emit('remove-model', model)">Delete</Button>
+                    <Button size="sm" variant="danger" @click="emit('remove-model-binding', row)">Remove</Button>
                   </div>
                 </td>
               </tr>

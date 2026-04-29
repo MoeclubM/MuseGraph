@@ -79,7 +79,7 @@ def upgrade() -> None:
         sa.Column("title", sa.String(255), nullable=False),
         sa.Column("description", sa.Text, nullable=True),
         sa.Column("content", sa.Text, nullable=True),
-        sa.Column("cognee_dataset_id", sa.String(255), nullable=True),
+        sa.Column("graph_id", sa.String(255), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )

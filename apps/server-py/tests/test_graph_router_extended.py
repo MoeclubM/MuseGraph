@@ -1,4 +1,4 @@
-﻿"""Tests for cognee graph router endpoints."""
+"""Tests for graph router endpoints."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _close_and_stub_task(coro):
     return MagicMock()
 
 
-class TestCogneeGraphStatus:
+class TestGraphGraphStatus:
     """Test graph status endpoints."""
 
     @pytest.mark.asyncio
@@ -39,7 +39,7 @@ class TestCogneeGraphStatus:
         project = SimpleNamespace(
             id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
-            cognee_dataset_id=None,
+            graph_id=None,
             ontology_schema=None,
             oasis_analysis=None,
         )
@@ -57,7 +57,7 @@ class TestCogneeGraphStatus:
         project = SimpleNamespace(
             id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
             ontology_schema={"entity_types": []},
             oasis_analysis={"test": "data"},
         )
@@ -68,7 +68,7 @@ class TestCogneeGraphStatus:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ready"
-        assert data["dataset_id"] == "dataset-1"
+        assert data["graph_id"] == "dataset-1"
 
     @pytest.mark.asyncio
     async def test_get_graph_status_unauthorized(self, client: AsyncClient, mock_db: AsyncMock):
@@ -84,7 +84,7 @@ class TestCogneeGraphStatus:
         assert resp.status_code == 403
 
 
-class TestCogneeGraphAdd:
+class TestGraphGraphAdd:
     """Test adding content to graph."""
 
     @pytest.mark.asyncio
@@ -121,7 +121,7 @@ class TestCogneeGraphAdd:
         assert resp.status_code == 400
 
 
-class TestCogneeGraphSearch:
+class TestGraphGraphSearch:
     """Test graph search endpoints."""
 
     @pytest.mark.asyncio
@@ -141,12 +141,12 @@ class TestCogneeGraphSearch:
         assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_search_graph_no_dataset(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
-        """Test searching graph without dataset returns 400."""
+    async def test_search_graph_without_graph(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
+        """Test searching graph without graph data returns 400."""
         project = SimpleNamespace(
             id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
-            cognee_dataset_id=None,
+            graph_id=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -158,7 +158,7 @@ class TestCogneeGraphSearch:
         assert resp.status_code == 400
 
 
-class TestCogneeGraphVisualization:
+class TestGraphGraphVisualization:
     """Test graph visualization endpoint."""
 
     @pytest.mark.asyncio
@@ -174,21 +174,21 @@ class TestCogneeGraphVisualization:
 
         assert resp.status_code == 403
 
-    @pytest.mark.skip(reason="Requires async cognee mock which is not available")
+    @pytest.mark.skip(reason="Requires async graph mock which is not available")
     @pytest.mark.asyncio
     async def test_get_visualization_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         """Test getting visualization successfully."""
         project = SimpleNamespace(
             id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
         async def mock_viz_func(project_id, **_kwargs):
             return {"nodes": [], "edges": []}
 
-        with patch("app.routers.cognee_graph.get_graph_visualization", side_effect=mock_viz_func):
+        with patch("app.routers.graph.get_graph_visualization", side_effect=mock_viz_func):
             resp = await client.get("/api/projects/11111111-1111-4111-8111-111111111111/graphs/visualization")
 
             assert resp.status_code == 200
@@ -197,7 +197,7 @@ class TestCogneeGraphVisualization:
             assert "edges" in data
 
 
-class TestCogneeGraphDelete:
+class TestGraphGraphDelete:
     """Test graph deletion endpoint."""
 
     @pytest.mark.asyncio
@@ -219,11 +219,11 @@ class TestCogneeGraphDelete:
         project = SimpleNamespace(
             id="11111111-1111-4111-8111-111111111111",
             user_id=fake_user.id,
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
-        with patch("app.routers.cognee_graph.delete_dataset") as mock_delete:
+        with patch("app.routers.graph.delete_graph_data") as mock_delete:
             mock_delete.return_value = None
 
             resp = await client.delete("/api/projects/11111111-1111-4111-8111-111111111111/graphs")
@@ -334,7 +334,7 @@ class TestOasisAnalyze:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1", oasis_analysis=None,
+            graph_id="dataset-1", oasis_analysis=None,
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -373,7 +373,7 @@ class TestOasisAnalyze:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1", oasis_analysis=None,
+            graph_id="dataset-1", oasis_analysis=None,
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -407,7 +407,7 @@ class TestOasisPrepare:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
             oasis_analysis={"agents": [], "scenarios": []},
             simulation_requirement="test req", component_models=None,
         )
@@ -441,7 +441,7 @@ class TestOasisPrepare:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1", oasis_analysis={"agents": []},
+            graph_id="dataset-1", oasis_analysis={"agents": []},
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.side_effect = [
@@ -474,7 +474,7 @@ class TestOasisPrepare:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1", oasis_analysis={"agents": []},
+            graph_id="dataset-1", oasis_analysis={"agents": []},
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -521,7 +521,7 @@ class TestOasisPrepareTask:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1", oasis_analysis=None,
+            graph_id="dataset-1", oasis_analysis=None,
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -559,7 +559,7 @@ class TestOasisRun:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
             oasis_analysis={"agents": [], "latest_package": {"config": {}}},
             simulation_requirement=None, component_models=None,
         )
@@ -629,7 +629,7 @@ class TestOasisRun:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1", oasis_analysis=None,
+            graph_id="dataset-1", oasis_analysis=None,
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -705,7 +705,7 @@ class TestOasisRunTask:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1", oasis_analysis=None,
+            graph_id="dataset-1", oasis_analysis=None,
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -738,7 +738,7 @@ class TestOasisRunTask:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1", oasis_analysis=None,
+            graph_id="dataset-1", oasis_analysis=None,
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -785,7 +785,7 @@ class TestOasisReport:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
             oasis_analysis={
                 "agents": [],
                 "latest_package": {"config": {}, "agents": []},
@@ -862,7 +862,7 @@ class TestOasisReport:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1", oasis_analysis={},
+            graph_id="dataset-1", oasis_analysis={},
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -938,7 +938,7 @@ class TestOasisReport:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
             oasis_analysis={
                 "agents": [],
                 "latest_package": {"config": {}, "agents": []},
@@ -1016,7 +1016,7 @@ class TestOasisReportTask:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema={"entity_types": ["Person"]},
-            cognee_dataset_id="dataset-1", oasis_analysis=None,
+            graph_id="dataset-1", oasis_analysis=None,
             simulation_requirement=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -1107,10 +1107,10 @@ class TestGraphSearchExtended:
     """Test POST /api/projects/{id}/graphs/search - extended."""
 
     @pytest.mark.asyncio
-    async def test_search_no_dataset_returns_400(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
+    async def test_search_without_graph_returns_400(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
             id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id,
-            cognee_dataset_id=None,
+            graph_id=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -1125,7 +1125,7 @@ class TestGraphSearchExtended:
     async def test_search_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
             id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id,
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
         mock_results = [{"content": "result1"}]
@@ -1146,7 +1146,7 @@ class TestGraphVisualizationSuccess:
     async def test_visualization_success(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
             id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id,
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
         mock_viz = {
@@ -1166,7 +1166,7 @@ class TestGraphVisualizationSuccess:
     async def test_visualization_runtime_error_returns_502(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
         project = SimpleNamespace(
             id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id,
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -1199,14 +1199,14 @@ class TestAddToGraphOntologyFromBody:
                     updated_at=datetime.now(timezone.utc),
                 )
             ], ontology_schema=None,
-            cognee_dataset_id=None, component_models=None,
+            graph_id=None, component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
         body_ontology = {"entity_types": ["Character"]}
 
         with patch.object(_cg_mod, "build_graph_input_with_ontology", return_value="graph input"), \
              patch.object(_cg_mod, "resolve_component_model", return_value="gpt-4"), \
-             patch.object(_cg_mod, "add_and_cognify", new_callable=AsyncMock, return_value="dataset-new"):
+             patch.object(_cg_mod, "build_graph", new_callable=AsyncMock, return_value="dataset-new"):
             resp = await client.post(
                 "/api/projects/11111111-1111-4111-8111-111111111111/graphs",
                 json={"text": "Test content", "ontology": body_ontology},
@@ -1214,7 +1214,8 @@ class TestAddToGraphOntologyFromBody:
             assert resp.status_code == 201
             data = resp.json()
             assert data["status"] == "ok"
-            assert data["dataset_id"] == "dataset-new"
+            assert data["graph_id"] == "dataset-new"
             assert project.ontology_schema == body_ontology
+
 
 

@@ -108,7 +108,7 @@ class TestAuthLogout:
 
 
 class TestLlmJsonExtract:
-    """Cover app/services/llm_json.py lines 34-35: fallback brace extraction."""
+    """Cover app/services/llm_json.py strict extraction behavior."""
 
     def test_extract_plain_json(self):
         from app.services.llm_json import extract_json_object
@@ -121,11 +121,11 @@ class TestLlmJsonExtract:
         assert extract_json_object(raw) == {"a": 1}
 
     def test_extract_embedded_braces(self):
-        """Lines 34-35: fallback to first { ... last } extraction."""
+        """Embedded JSON in plain text is rejected."""
         from app.services.llm_json import extract_json_object
         raw = 'Here is the result: {"name": "test", "count": 42} -- done'
         result = extract_json_object(raw)
-        assert result == {"name": "test", "count": 42}
+        assert result is None
 
     def test_extract_embedded_braces_invalid_json(self):
         from app.services.llm_json import extract_json_object

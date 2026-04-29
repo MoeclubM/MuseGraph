@@ -79,6 +79,22 @@ class TestOntologyService:
         result = _sanitize_ontology(data)
         assert len(result["entity_types"]) == 1
 
+    def test_build_ontology_source_excerpt_respects_budget(self):
+        """Test ontology excerpt keeps long content within prompt budget."""
+        from app.services.ontology import _build_ontology_source_excerpt
+
+        text = "\n\n".join(
+            f"Section {index}: " + ("Mira repaired the tide engine. " * 120)
+            for index in range(1, 9)
+        )
+
+        result = _build_ontology_source_excerpt(text, max_chars=8000)
+
+        assert len(result) <= 8000
+        assert "Section 1" in result
+        assert result != text
+        assert "[...]" in result
+
     @pytest.mark.asyncio
     async def test_generate_ontology_empty_text(self):
         """Test generating ontology with empty text raises ValueError."""
@@ -118,6 +134,8 @@ class TestOntologyService:
             assert "entity_types" in result
             assert mock_llm.await_args_list[0].kwargs["prefer_stream_override"] is False
             assert mock_llm.await_args_list[0].kwargs["stream_fallback_nonstream_override"] is False
+            assert mock_llm.await_args_list[0].kwargs["minimum_timeout_seconds"] == 300
+            assert mock_llm.await_args_list[0].kwargs["response_schema"].__name__ == "OntologyResponse"
 
     @pytest.mark.asyncio
     async def test_generate_ontology_llm_failure_raises_runtime_error(self):
@@ -141,8 +159,8 @@ class TestOntologyService:
                 )
 
     @pytest.mark.asyncio
-    async def test_generate_ontology_infers_edge_types_when_missing(self):
-        """Test missing edge source/target types are inferred from entities."""
+    async def test_generate_ontology_retries_when_edge_types_are_missing(self):
+        """Test invalid ontology content triggers a retry instead of internal repair."""
         from app.services.ontology import generate_ontology
 
         mock_db = AsyncMock()
@@ -152,9 +170,14 @@ class TestOntologyService:
         mock_db.execute.return_value = mock_result
 
         with patch("app.services.ontology.call_llm") as mock_llm:
-            mock_llm.return_value = {
-                "content": '{"entity_types": [{"name": "Person"}, {"name": "Organization"}], "edge_types": [{"name": "works_for"}], "analysis_summary": "ok"}'
-            }
+            mock_llm.side_effect = [
+                {
+                    "content": '{"entity_types": [{"name": "Person"}, {"name": "Organization"}], "edge_types": [{"name": "works_for"}], "analysis_summary": "ok"}'
+                },
+                {
+                    "content": '{"entity_types": [{"name": "Person"}, {"name": "Organization"}], "edge_types": [{"name": "works_for", "source_type": "Person", "target_type": "Organization"}], "analysis_summary": "ok"}'
+                },
+            ]
 
             result = await generate_ontology(
                 text="Tom works for Acme.",
@@ -164,8 +187,11 @@ class TestOntologyService:
             assert result["edge_types"][0]["name"] == "WORKS_FOR"
             assert result["edge_types"][0]["source_type"] == "PERSON"
             assert result["edge_types"][0]["target_type"] == "ORGANIZATION"
+            assert mock_llm.await_count == 2
             assert mock_llm.await_args_list[0].kwargs["prefer_stream_override"] is False
             assert mock_llm.await_args_list[0].kwargs["stream_fallback_nonstream_override"] is False
+            assert mock_llm.await_args_list[1].kwargs["minimum_timeout_seconds"] == 300
+            assert mock_llm.await_args_list[0].kwargs["response_schema"].__name__ == "OntologyResponse"
 
     @pytest.mark.asyncio
     async def test_generate_ontology_invalid_json_raises(self):
@@ -177,11 +203,10 @@ class TestOntologyService:
         mock_result.scalars.return_value.all.return_value = []
         mock_db.execute.return_value = mock_result
 
-        with patch("app.services.ontology.call_llm") as mock_llm, \
-             patch("app.services.ontology._repair_ontology_json", new_callable=AsyncMock, return_value=None):
+        with patch("app.services.ontology.call_llm") as mock_llm:
             mock_llm.return_value = {"content": "not json"}
 
-            with pytest.raises(ValueError, match="llm_response_not_json_or_invalid_schema_after_repair"):
+            with pytest.raises(ValueError, match="llm_response_not_json_or_invalid_schema"):
                 await generate_ontology(
                     text="Tom works for Acme.",
                     db=mock_db,

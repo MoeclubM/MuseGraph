@@ -5,6 +5,7 @@ import type {
   Operation,
   ProjectCharacter,
   ProjectGlossaryTerm,
+  ProjectSearchResult,
   ProjectWorldbookEntry,
   SimulationRuntime,
 } from '@/types'
@@ -21,6 +22,12 @@ interface OperationTypeItem {
 
 const props = defineProps<{
   rightPanelTab: string
+  projectSearchQuery: string
+  projectSearchLoading: boolean
+  projectSearchError: string | null
+  projectSearchResults: ProjectSearchResult[]
+  handleProjectSearch: () => unknown
+  openProjectSearchResult: (result: ProjectSearchResult) => unknown
   selectedCharactersCount: number
   characterSelectionCountLabel: string
   charactersLoading: boolean
@@ -128,6 +135,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  'update:projectSearchQuery': [value: string]
   'update:operationType': [value: string]
   'update:operationModel': [value: string]
   'update:continuationApplyMode': [value: 'append' | 'replace' | 'new_chapter']
@@ -148,6 +156,12 @@ const emit = defineEmits<{
 <template>
   <div v-show="rightPanelTab === 'ai'" class="space-y-5">
     <ProjectKnowledgeBasePanel
+      :project-search-query="projectSearchQuery"
+      :project-search-loading="projectSearchLoading"
+      :project-search-error="projectSearchError"
+      :project-search-results="projectSearchResults"
+      :handle-project-search="handleProjectSearch"
+      :open-project-search-result="openProjectSearchResult"
       :selected-characters-count="selectedCharactersCount"
       :character-selection-count-label="characterSelectionCountLabel"
       :characters-loading="charactersLoading"
@@ -205,6 +219,7 @@ const emit = defineEmits<{
       :handle-delete-worldbook-entry="handleDeleteWorldbookEntry"
       :cancel-worldbook-form="cancelWorldbookForm"
       :handle-submit-worldbook-entry="handleSubmitWorldbookEntry"
+      @update:project-search-query="emit('update:projectSearchQuery', $event)"
     />
 
     <ProjectOperationPanel

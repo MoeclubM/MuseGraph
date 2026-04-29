@@ -28,6 +28,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 WORKDIR /app
 
 COPY --from=builder /wheels /wheels
+COPY apps/server-py/seed.py /app/seed.py
 
 RUN python -m pip install --no-cache-dir /wheels/* \
     && rm -rf /wheels

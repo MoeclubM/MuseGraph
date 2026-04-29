@@ -4,7 +4,6 @@ import { Sparkles } from 'lucide-vue-next'
 import type { ModelInfo } from '@/api/projects'
 import type { Operation } from '@/types'
 import Button from '@/components/ui/Button.vue'
-import Alert from '@/components/ui/Alert.vue'
 import Select from '@/components/ui/Select.vue'
 import Textarea from '@/components/ui/Textarea.vue'
 
@@ -123,9 +122,6 @@ const runDisabled = computed(() =>
         {{ op.label }}
       </Button>
     </div>
-    <p v-if="!props.isWorkspaceEmpty" class="text-xs text-amber-700 dark:text-amber-300">
-      CREATE mode is only available when workspace text length is 0.
-    </p>
 
     <div class="space-y-2">
       <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">Operation Model</label>
@@ -149,8 +145,8 @@ const runDisabled = computed(() =>
       </Select>
     </div>
 
-    <div v-if="props.operationType === 'CREATE'" class="space-y-2.5 rounded-md border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
-      <p class="text-xs font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">Step 0. User Prompt</p>
+    <div v-if="props.operationType === 'CREATE'" class="space-y-3 rounded-md border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
+      <p class="text-xs font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">Step 1. Describe Draft Goal</p>
       <Textarea
         v-model="createUserPromptValue"
         :rows="4"
@@ -158,7 +154,7 @@ const runDisabled = computed(() =>
         class="min-h-24"
       />
       <div class="flex items-center justify-between">
-        <p class="text-xs font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">Step A. Outline First</p>
+        <p class="text-xs font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">Step 2. Review Outline</p>
         <Button
           variant="secondary"
           size="sm"
@@ -175,29 +171,29 @@ const runDisabled = computed(() =>
         placeholder="Generated outline will appear here. You can edit before drafting."
         class="min-h-44"
       />
-      <p class="text-xs text-stone-600 dark:text-zinc-300/90">
-        CREATE is locked to empty workspace. Outline stage uses user prompt directly (without RAG).
-      </p>
       <p v-if="props.createOutlineError" class="text-xs text-red-700 dark:text-red-300">{{ props.createOutlineError }}</p>
     </div>
 
-    <div v-if="props.operationType === 'CONTINUE'" class="space-y-2.5 rounded-md border border-stone-300/80 dark:border-zinc-700/60 bg-stone-100/75 dark:bg-zinc-800/40 p-4">
-      <p class="text-xs font-medium uppercase tracking-wider text-stone-700 dark:text-zinc-300">Continue Prerequisites</p>
+    <div v-if="props.operationType === 'CONTINUE'" class="space-y-3 rounded-md border border-stone-300/80 bg-stone-100/75 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/40">
+      <p class="text-xs font-medium uppercase tracking-wider text-stone-700 dark:text-zinc-300">Step 1. Describe Continuation</p>
       <Textarea
         v-model="continueUserInstructionValue"
         :rows="4"
         placeholder="Describe what should happen next and any writing constraints."
         class="min-h-24"
       />
-      <Button
-        variant="secondary"
-        size="sm"
-        :loading="props.continueOutlineLoading"
-        :disabled="!props.graphReady || !props.continueUserInstruction.trim() || props.modelsLoading"
-        @click="emit('generateContinueOutline')"
-      >
-        1. Generate Continuation Outline
-      </Button>
+      <div class="flex items-center justify-between">
+        <p class="text-xs font-medium uppercase tracking-wider text-stone-700 dark:text-zinc-300">Step 2. Review Outline</p>
+        <Button
+          variant="secondary"
+          size="sm"
+          :loading="props.continueOutlineLoading"
+          :disabled="!props.graphReady || !props.continueUserInstruction.trim() || props.modelsLoading"
+          @click="emit('generateContinueOutline')"
+        >
+          Generate Outline
+        </Button>
+      </div>
       <Textarea
         v-model="continueOutlineValue"
         :rows="7"
@@ -205,25 +201,7 @@ const runDisabled = computed(() =>
         class="min-h-36"
       />
       <p v-if="props.continueOutlineError" class="text-xs text-red-700 dark:text-red-300">{{ props.continueOutlineError }}</p>
-      <div class="space-y-1 text-xs">
-        <p :class="props.graphReady ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">
-          {{ props.graphReady ? '✓' : '•' }} RAG graph context available
-        </p>
-        <p :class="props.continueUserInstruction.trim() ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">
-          {{ props.continueUserInstruction.trim() ? '✓' : '•' }} Continuation instruction provided
-        </p>
-        <p :class="props.continueOutline.trim() ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">
-          {{ props.continueOutline.trim() ? '✓' : '•' }} Continuation outline generated and reviewed
-        </p>
-      </div>
-      <p class="text-[11px] text-stone-500 dark:text-zinc-400">
-        Continue mode can auto-create a new chapter from LLM output.
-      </p>
     </div>
-
-    <Alert variant="warning">
-      Upload is only available in the left File Manager. Continue/analysis runs with selected chapter scope and RAG.
-    </Alert>
 
     <Button
       variant="secondary"
@@ -236,7 +214,7 @@ const runDisabled = computed(() =>
       {{ props.operationPrimaryLabel }}
     </Button>
     <p v-if="props.operationType !== 'CREATE' && !props.graphReady" class="text-xs text-amber-700 dark:text-amber-300">
-      Build graph first. This operation requires RAG context.
+      Build the graph first.
     </p>
 
     <Alert v-if="props.operationError" variant="destructive" class="text-sm">

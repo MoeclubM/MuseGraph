@@ -39,9 +39,9 @@
 ### 3.2 图谱构建与增量
 1. `MuseGraph`：
    - 构建模式 `rebuild/incremental`，含章节哈希与删除检测：
-     `apps/server-py/app/routers/cognee_graph.py:692`
+     `apps/server-py/app/routers/graph.py:692`
    - 分段入库 + cognify + memify 超时保护：
-     `apps/server-py/app/services/cognee.py:1183`
+     `apps/server-py/app/services/graph_service.py:1183`
 2. `MiroFish`：
    - 构建流程分阶段显式进度（分块/上传/等待处理/取结果）：
      `C:/Users/QwQ/Documents/GitHub/MiroFish/backend/app/api/graph.py:381`
@@ -94,12 +94,12 @@
 
 ## 7. 本轮新增落地（已完成）
 1. 图谱/OASIS 任务新增幂等指纹生成与复用在途任务：
-   - 指纹构建：`apps/server-py/app/routers/cognee_graph.py:130`
-   - 启动前幂等复用：`apps/server-py/app/routers/cognee_graph.py:694`
+   - 指纹构建：`apps/server-py/app/routers/graph.py:130`
+   - 启动前幂等复用：`apps/server-py/app/routers/graph.py:694`
 2. 任务管理器新增按 `idempotency_key` 查找在途任务能力：
    `apps/server-py/app/services/task_state.py:561`
 3. 新增回归测试覆盖“复用在途任务，不重复创建 runner”：
-   `apps/server-py/tests/test_cognee_graph_extended.py:713`
+   `apps/server-py/tests/test_graph_router_extended.py:713`
 
 ---
 
@@ -114,9 +114,9 @@
 
 ## 9. 验证记录
 1. 语法校验：
-   - `python -m py_compile app/services/task_state.py app/routers/cognee_graph.py tests/test_cognee_graph_extended.py`
+   - `python -m py_compile app/services/task_state.py app/routers/graph.py tests/test_graph_router_extended.py`
 2. 回归测试（任务启动与幂等）：
-   - `pytest tests/test_cognee_graph_extended.py -q -k "prepare_task_starts or report_task_starts or run_task_starts or reuses_inflight"`
+   - `pytest tests/test_graph_router_extended.py -q -k "prepare_task_starts or report_task_starts or run_task_starts or reuses_inflight"`
    - 结果：`4 passed`
 
 ---
@@ -169,7 +169,7 @@
 1. `产品层`：Ai-Novel 最完整（页面域和业务域覆盖最广）。
 2. `流程层`：MiroFish 的阶段化流程表达最强（用户认知成本最低）。
 3. `任务编排层`：Ai-Novel 最成熟（幂等、扇出、去重、队列语义完整）。
-4. `图谱引擎层`：MuseGraph 具备最强可演进基础（Cognee + 增量计划 + 新鲜度）。
+4. `图谱引擎层`：MuseGraph 具备最强可演进基础（图谱引擎 + 增量计划 + 新鲜度）。
 5. `写作检索层`：AI_NovelGenerator 的“检索词生成->过滤->生成->回写”闭环最清晰。
 6. `工程质量层`：Ai-Novel 测试与迁移体系最厚；MuseGraph 次之；MiroFish 与 AI_NovelGenerator 偏功能验证导向。
 
@@ -177,7 +177,7 @@
 
 ## 12. 对 MuseGraph 的最终“最优拼装方案”
 1. 以 MuseGraph 作为底盘：
-   - 保留 `FastAPI + Cognee + 增量图谱 + 商业化计费` 主链路。
+   - 保留 `FastAPI + 图谱引擎 + 增量图谱 + 商业化计费` 主链路。
 2. 融合 Ai-Novel 的任务治理：
    - 建立“内容变更统一扇出总线”。
    - 为所有可重入长任务定义 `idempotency_key` 规范和重试链。
@@ -204,7 +204,7 @@
    - `admin.py=31`
    - `projects.py=27`
    - `simulation.py=23`
-   - `cognee_graph.py=22`
+   - `graph.py=22`
    - `report.py=16`
 2. 路由域覆盖：
    - 账户与登录、项目与章节、角色卡/术语/世界书、图谱与 OASIS、报告与模拟、支付与计费、后台模型与任务管理。

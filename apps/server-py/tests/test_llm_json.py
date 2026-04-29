@@ -68,15 +68,14 @@ That's it.'''
         assert result is not None
         assert result["status"] == "ok"
 
-    def test_extract_json_embedded_in_text(self):
-        """Test extracting JSON embedded in text."""
+    def test_extract_json_embedded_in_text_returns_none(self):
+        """Only direct JSON or fenced JSON is accepted."""
         from app.services.llm_json import extract_json_object
 
         raw = 'The result is {"embedded": true} and that is it.'
         result = extract_json_object(raw)
 
-        assert result is not None
-        assert result["embedded"] is True
+        assert result is None
 
     def test_extract_json_invalid_json(self):
         """Test extracting invalid JSON returns None."""
@@ -127,8 +126,8 @@ not valid json
 
         assert result is None
 
-    def test_extract_json_with_surrounding_text(self):
-        """Test extracting JSON with text before and after."""
+    def test_extract_json_with_surrounding_text_returns_none(self):
+        """Only direct JSON or fenced JSON is accepted."""
         from app.services.llm_json import extract_json_object
 
         raw = '''Before text.
@@ -136,8 +135,7 @@ not valid json
 After text.'''
         result = extract_json_object(raw)
 
-        assert result is not None
-        assert result["key"] == "value"
+        assert result is None
 
     def test_extract_json_unicode(self):
         """Test extracting JSON with unicode characters."""

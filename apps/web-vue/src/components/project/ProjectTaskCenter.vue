@@ -39,6 +39,7 @@ function isTaskCancelling(taskId: string): boolean {
 
 function taskTypeLabel(taskType: string): string {
   const labels: Record<string, string> = {
+    project_sync: 'Project Sync',
     ontology_generate: 'Ontology',
     graph_build: 'Graph Build',
     oasis_analyze: 'OASIS Analyze',
@@ -95,9 +96,9 @@ function toggleExpanded() {
     <div class="fixed bottom-4 right-4 z-[95] flex flex-col items-end gap-2">
       <div
         v-if="expanded"
-        class="muse-surface w-[min(92vw,428px)] max-h-[72vh] overflow-hidden rounded-md dark:border-zinc-700/70"
+        class="muse-surface w-[min(92vw,428px)] max-h-[72vh] overflow-hidden rounded-lg dark:border-zinc-700/70"
       >
-        <div class="flex items-center justify-between gap-2 border-b border-stone-300/70 px-3 py-2 dark:border-zinc-700/60">
+        <div class="flex items-center justify-between gap-2 border-b border-stone-300/70 px-4 py-3 dark:border-zinc-700/60">
           <div>
             <p class="text-xs font-semibold uppercase tracking-wider text-stone-700 dark:text-zinc-200">
               Task Center
@@ -127,16 +128,16 @@ function toggleExpanded() {
           </div>
         </div>
 
-        <div class="max-h-[58vh] overflow-y-auto px-3 py-2 space-y-2">
+        <div class="max-h-[58vh] space-y-3 overflow-y-auto p-4">
           <Alert v-if="error" variant="destructive" class="text-xs">
             {{ error }}
           </Alert>
 
-          <div v-if="filteredTaskList.length" class="space-y-1.5">
+          <div v-if="filteredTaskList.length" class="space-y-2">
             <div
               v-for="task in filteredTaskList"
               :key="task.task_id"
-              class="rounded-md border border-stone-300/70 bg-stone-100/80 p-2 space-y-1.5 dark:border-zinc-700/50 dark:bg-zinc-800/45"
+              class="space-y-2 rounded-lg border border-stone-300/70 bg-stone-100/80 p-3 dark:border-zinc-700/50 dark:bg-zinc-800/45"
             >
               <div class="flex items-center justify-between gap-2">
                 <span class="text-xs font-medium text-stone-700 dark:text-zinc-200">
@@ -177,7 +178,7 @@ function toggleExpanded() {
                   :disabled="isTaskCancelling(task.task_id)"
                   @click="emit('cancel', task)"
                 >
-                  Terminate
+                  Cancel
                 </Button>
               </div>
             </div>

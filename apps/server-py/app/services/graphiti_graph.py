@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import html
 import json
 import logging
 import os
@@ -11,7 +13,7 @@ from contextlib import suppress
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, get_origin
+from typing import Any
 
 from pydantic import BaseModel, Field, create_model
 from sqlalchemy import select
@@ -21,13 +23,22 @@ from app.config import settings
 from app.models.config import AIProviderConfig
 from app.models.project import TextProject
 from app.services.ai import _load_llm_runtime_config, resolve_component_model
-from app.services.llm_json import extract_json_object, normalize_json_content
-from app.services.provider_models import get_provider_chat_models, get_provider_embedding_models
+from app.services.llm_json import extract_json_object
+from app.services.llm_runtime import (
+    DEFAULT_LLM_REASONING_EFFORT,
+    model_supports_reasoning_effort,
+    normalize_reasoning_effort,
+)
+from app.services.provider_models import (
+    get_provider_chat_models,
+    get_provider_embedding_models,
+    get_provider_reranker_models,
+)
 
 logger = logging.getLogger(__name__)
 
-_GRAPHITI_CHUNK_SIZE = 8000
-_GRAPHITI_CHUNK_OVERLAP = 240
+_GRAPHITI_CHUNK_SIZE = 4000
+_GRAPHITI_CHUNK_OVERLAP = 160
 _GRAPHITI_MAX_VIS_NODES = 320
 _GRAPHITI_MAX_VIS_EDGES = 900
 _GRAPHITI_LLM_MAX_TOKENS = 4096
@@ -38,6 +49,7 @@ _GRAPHITI_SETUP_COMPLETE: set[str] = set()
 
 @dataclass
 class _GraphitiRuntimeSelection:
+    llm_provider_type: str
     llm_model: str
     llm_api_key: str
     llm_base_url: str
@@ -45,461 +57,30 @@ class _GraphitiRuntimeSelection:
     embedding_api_key: str
     embedding_base_url: str
     reranker_model: str
+    reranker_api_key: str
+    reranker_base_url: str
     timeout_seconds: int
     retry_count: int
     max_coroutines: int
+    reasoning_effort: str | None
 
 
-def _iter_graphiti_table_rows(text: str) -> list[list[str]]:
-    rows: list[list[str]] = []
-    for raw_line in re.split(r"[\r\n]+", str(text or "")):
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "|" not in line:
-            continue
-        cells = [cell.strip().strip("`") for cell in line.strip("|").split("|")]
-        if not any(cells):
-            continue
-        compact = [re.sub(r"\s+", "", cell) for cell in cells]
-        if compact and all(re.fullmatch(r":?-{2,}:?", cell or "") for cell in compact):
-            continue
-        rows.append(cells)
-    return rows
+@dataclass
+class GraphBuildPartialFailure(RuntimeError):
+    graph_id: str
+    total_chunks: int
+    selected_chunk_indices: list[int]
+    completed_chunk_indices: list[int]
+    failed_chunk_indices: list[int]
+    failed_errors: dict[str, str]
 
-
-def _normalize_extracted_entities_text_payload(text: Any) -> list[dict[str, Any]]:
-    source = str(text or "").strip()
-    if not source:
-        return []
-
-    items: list[dict[str, Any]] = []
-    seen: set[tuple[str, int]] = set()
-
-    def add_item(name: str, entity_type_id: int | None) -> None:
-        normalized_name = str(name or "").strip().strip('"').strip("'")
-        if not normalized_name or entity_type_id is None:
-            return
-        key = (normalized_name.casefold(), int(entity_type_id))
-        if key in seen:
-            return
-        seen.add(key)
-        items.append({"name": normalized_name, "entity_type_id": int(entity_type_id)})
-
-    for cells in _iter_graphiti_table_rows(source):
-        header = " ".join(cells).lower()
-        if "entity" in header and ("type" in header or "entity_type_id" in header):
-            continue
-        name = str(cells[0] if cells else "").strip()
-        entity_type_id: int | None = None
-        for cell in reversed(cells[1:]):
-            match = re.search(r"(?<!\d)(\d{1,6})(?!\d)", str(cell))
-            if match:
-                entity_type_id = int(match.group(1))
-                break
-        add_item(name, entity_type_id)
-
-    if items:
-        return items
-
-    for raw_line in re.split(r"[\r\n]+", source):
-        line = re.sub(r"^[\-\*\u2022\d\.\)\s]+", "", str(raw_line or "").strip())
-        if not line or line.startswith("#"):
-            continue
-        match = re.match(
-            r"^(?P<name>.+?)(?:\s*[\|\-:]\s*|\s*\()\D*(?P<entity_type_id>\d{1,6})\D*\)?$",
-            line,
+    def __post_init__(self) -> None:
+        failed_count = len(self.failed_chunk_indices)
+        selected_count = len(self.selected_chunk_indices)
+        RuntimeError.__init__(
+            self,
+            f"Graph build partially failed. {failed_count}/{max(1, selected_count)} selected chunks failed.",
         )
-        if match:
-            add_item(match.group("name"), int(match.group("entity_type_id")))
-
-    return items
-
-
-def _normalize_extracted_edges_text_payload(text: Any) -> list[dict[str, Any]]:
-    source = str(text or "").strip()
-    if not source:
-        return []
-
-    items: list[dict[str, Any]] = []
-
-    def normalize_relation(value: str) -> str:
-        relation = re.sub(r"[^A-Za-z0-9]+", "_", str(value or "").strip()).strip("_").upper()
-        return relation or "RELATED_TO"
-
-    def add_item(source_name: str, target_name: str, relation_type: str, fact: str, valid_at: str | None = None, invalid_at: str | None = None) -> None:
-        src = str(source_name or "").strip().strip('"').strip("'")
-        tgt = str(target_name or "").strip().strip('"').strip("'")
-        rel = normalize_relation(relation_type)
-        description = str(fact or "").strip().strip('"').strip("'")
-        if not src or not tgt:
-            return
-        if not description:
-            description = f"{src} {rel.replace('_', ' ').lower()} {tgt}"
-        payload: dict[str, Any] = {
-            "source_entity_name": src,
-            "target_entity_name": tgt,
-            "relation_type": rel,
-            "fact": description,
-        }
-        if valid_at:
-            payload["valid_at"] = str(valid_at).strip()
-        if invalid_at:
-            payload["invalid_at"] = str(invalid_at).strip()
-        items.append(payload)
-
-    for cells in _iter_graphiti_table_rows(source):
-        header = [str(cell).strip().lower() for cell in cells]
-        if any("source" in cell for cell in header) and any("target" in cell for cell in header):
-            continue
-        if len(cells) >= 4:
-            if "target" in header[1] or "relation" in header[2]:
-                add_item(cells[0], cells[1], cells[2], cells[3], cells[4] if len(cells) > 4 else None, cells[5] if len(cells) > 5 else None)
-            else:
-                add_item(cells[0], cells[2], cells[1], cells[3], cells[4] if len(cells) > 4 else None, cells[5] if len(cells) > 5 else None)
-
-    return items
-
-
-def _normalize_graphiti_plain_text_payload(
-    response_model: type[BaseModel] | None,
-    text: Any,
-) -> Any:
-    if response_model is None:
-        return text
-
-    model_name = getattr(response_model, "__name__", "")
-    field_names = list(getattr(response_model, "model_fields", {}).keys())
-
-    if model_name == "ExtractedEntities":
-        return {"extracted_entities": _normalize_extracted_entities_text_payload(text)}
-
-    if model_name == "ExtractedEdges":
-        return {"edges": _normalize_extracted_edges_text_payload(text)}
-
-    if model_name == "SummarizedEntities":
-        return {"summaries": _normalize_graphiti_structured_payload(response_model, {"summaries": text}).get("summaries", [])}
-
-    if model_name == "EdgeDuplicate":
-        return _normalize_graphiti_structured_payload(response_model, text)
-
-    if len(field_names) == 1:
-        return {field_names[0]: str(text or "").strip()}
-
-    return text
-
-
-def _normalize_graphiti_structured_payload(
-    response_model: type[BaseModel] | None,
-    payload: Any,
-) -> Any:
-    if response_model is None:
-        return payload
-
-    model_fields = getattr(response_model, "model_fields", {})
-    field_names = list(model_fields.keys())
-    model_name = getattr(response_model, "__name__", "")
-
-    def _normalize_entity_items(items: list[Any]) -> list[Any]:
-        normalized_entities = []
-        for item in items:
-            if isinstance(item, dict) and "name" not in item:
-                for alias in ("entity_name", "node_name", "entity"):
-                    alias_value = str(item.get(alias) or "").strip()
-                    if alias_value:
-                        copied = dict(item)
-                        copied.pop(alias, None)
-                        copied["name"] = alias_value
-                        item = copied
-                        break
-            normalized_entities.append(item)
-        return normalized_entities
-
-    def _normalize_edge_items(items: list[Any]) -> list[Any]:
-        normalized_edges = []
-        for item in items:
-            if isinstance(item, dict):
-                nested_payload: dict[str, Any] | None = None
-                for nested_key in ("fact", "edge", "relationship", "relation"):
-                    candidate = item.get(nested_key)
-                    if isinstance(candidate, dict):
-                        nested_payload = dict(candidate)
-                        break
-                if nested_payload is None and len(item) == 1:
-                    only_value = next(iter(item.values()))
-                    if isinstance(only_value, dict):
-                        nested_payload = dict(only_value)
-
-                aliased = dict(nested_payload or {})
-                for key, value in item.items():
-                    if key in {"fact", "edge", "relationship", "relation"} and isinstance(value, dict):
-                        continue
-                    if key not in aliased:
-                        aliased[key] = value
-                if "source_entity_name" not in aliased:
-                    for alias in ("source_name", "source_entity", "source"):
-                        alias_value = str(aliased.get(alias) or "").strip()
-                        if alias_value:
-                            aliased.pop(alias, None)
-                            aliased["source_entity_name"] = alias_value
-                            break
-                if "target_entity_name" not in aliased:
-                    for alias in ("target_name", "target_entity", "target"):
-                        alias_value = str(aliased.get(alias) or "").strip()
-                        if alias_value:
-                            aliased.pop(alias, None)
-                            aliased["target_entity_name"] = alias_value
-                            break
-                if "relation_type" not in aliased:
-                    for alias in ("edge_type", "relation", "relation_name", "name"):
-                        alias_value = str(aliased.get(alias) or "").strip()
-                        if alias_value:
-                            aliased.pop(alias, None)
-                            aliased["relation_type"] = alias_value
-                            break
-                if "fact" not in aliased:
-                    for alias in ("relationship_fact", "relation_fact", "description", "summary", "statement"):
-                        alias_value = str(aliased.get(alias) or "").strip()
-                        if alias_value:
-                            aliased.pop(alias, None)
-                            aliased["fact"] = alias_value
-                            break
-                if "fact" not in aliased:
-                    source_name = str(aliased.get("source_entity_name") or "").strip()
-                    relation_type = str(aliased.get("relation_type") or "").strip()
-                    target_name = str(aliased.get("target_entity_name") or "").strip()
-                    if source_name and relation_type and target_name:
-                        aliased["fact"] = (
-                            f"{source_name} {relation_type.replace('_', ' ').lower()} {target_name}"
-                        )
-                item = aliased
-            normalized_edges.append(item)
-        return normalized_edges
-
-    def _normalize_node_resolution_items(items: list[Any]) -> list[Any]:
-        normalized = []
-        for item in items:
-            if isinstance(item, dict) and "name" not in item:
-                alias = "entity_name" if str(item.get("entity_name") or "").strip() else "node_name"
-                alias_value = str(item.get(alias) or "").strip()
-                if alias_value:
-                    copied = dict(item)
-                    copied.pop(alias, None)
-                    copied["name"] = alias_value
-                    item = copied
-            normalized.append(item)
-        return normalized
-
-    def _normalize_summary_items(items: list[Any]) -> list[Any]:
-        normalized = []
-        for item in items:
-            if isinstance(item, dict):
-                if "name" in item and "summary" in item:
-                    normalized.append(item)
-                    continue
-                if len(item) == 1:
-                    only_key, only_value = next(iter(item.items()))
-                    if isinstance(only_value, str):
-                        normalized.append({"name": str(only_key), "summary": only_value})
-                        continue
-                alias_name = str(item.get("entity_name") or item.get("node_name") or "").strip()
-                alias_summary = str(item.get("text") or item.get("description") or "").strip()
-                if alias_name and alias_summary:
-                    normalized.append({"name": alias_name, "summary": alias_summary})
-                    continue
-            normalized.append(item)
-        return normalized
-
-    def _normalize_summary_text_payload(value: Any) -> list[dict[str, str]]:
-        text = str(value or "").strip()
-        if not text:
-            return []
-        normalized: list[dict[str, str]] = []
-        for raw_line in re.split(r"[\r\n]+", text):
-            line = str(raw_line or "").strip()
-            if not line:
-                continue
-            line = re.sub(r"^[\-\*\u2022\d\.\)\s]+", "", line).strip()
-            match = re.match(
-                r'^(?:\*\*(?P<bold>[^*]+)\*\*|(?P<plain>[^:：\-]{2,80}))\s*[:：\-]\s*(?P<summary>.+)$',
-                line,
-            )
-            if not match:
-                continue
-            name = str(match.group("bold") or match.group("plain") or "").strip().strip("*").strip('"').strip("'")
-            summary = str(match.group("summary") or "").strip().strip('"').strip("'")
-            if name and summary:
-                normalized.append({"name": name, "summary": summary})
-        return normalized
-
-    def _normalize_int_list(value: Any) -> list[int]:
-        if isinstance(value, str):
-            stripped = value.strip()
-            if not stripped:
-                return []
-            if stripped.startswith("[") and stripped.endswith("]"):
-                try:
-                    return _normalize_int_list(json.loads(stripped))
-                except Exception:
-                    pass
-            normalized: list[int] = []
-            for match in re.finditer(r"(?<!\d)-?\d+(?!\d)", stripped):
-                try:
-                    normalized.append(int(match.group(0)))
-                except Exception:
-                    continue
-            return normalized
-        if not isinstance(value, list):
-            return []
-        normalized: list[int] = []
-        for item in value:
-            if isinstance(item, bool):
-                continue
-            if isinstance(item, int):
-                normalized.append(item)
-                continue
-            if isinstance(item, float) and item.is_integer():
-                normalized.append(int(item))
-                continue
-            if isinstance(item, str):
-                stripped = item.strip()
-                if stripped.lstrip("-").isdigit():
-                    normalized.append(int(stripped))
-        return normalized
-
-    def _normalize_edge_duplicate_payload(value: Any) -> dict[str, list[int]]:
-        candidate = value
-        if isinstance(candidate, str):
-            text = candidate.strip()
-            if not text:
-                return {"duplicate_facts": [], "contradicted_facts": []}
-            payload: dict[str, Any] = {}
-            duplicate_match = re.search(
-                r"(?:duplicate_facts|duplicates?)\s*[:=]\s*(?P<value>\[[^\]]*\]|[^\r\n]+)",
-                text,
-                flags=re.IGNORECASE,
-            )
-            contradiction_match = re.search(
-                r"(?:contradicted_facts|contradictions?|invalidated_facts)\s*[:=]\s*(?P<value>\[[^\]]*\]|[^\r\n]+)",
-                text,
-                flags=re.IGNORECASE,
-            )
-            if duplicate_match:
-                payload["duplicate_facts"] = duplicate_match.group("value")
-            if contradiction_match:
-                payload["contradicted_facts"] = contradiction_match.group("value")
-            if payload:
-                candidate = payload
-            else:
-                return {"duplicate_facts": [], "contradicted_facts": []}
-        if isinstance(candidate, list):
-            candidate = next(
-                (item for item in candidate if isinstance(item, dict)),
-                None,
-            )
-        if not isinstance(candidate, dict):
-            return {"duplicate_facts": [], "contradicted_facts": []}
-
-        duplicate_facts = candidate.get("duplicate_facts")
-        if duplicate_facts is None:
-            for alias in ("duplicates", "duplicate_idxs", "duplicate_indices", "duplicate_ids"):
-                if alias in candidate:
-                    duplicate_facts = candidate.get(alias)
-                    break
-
-        contradicted_facts = candidate.get("contradicted_facts")
-        if contradicted_facts is None:
-            for alias in (
-                "contradictions",
-                "contradicted_idxs",
-                "contradicted_indices",
-                "invalidated_facts",
-            ):
-                if alias in candidate:
-                    contradicted_facts = candidate.get(alias)
-                    break
-
-        return {
-            "duplicate_facts": _normalize_int_list(duplicate_facts),
-            "contradicted_facts": _normalize_int_list(contradicted_facts),
-        }
-
-    if model_name == "EdgeDuplicate":
-        return _normalize_edge_duplicate_payload(payload)
-
-    if isinstance(payload, list) and len(field_names) == 1:
-        if model_name == "ExtractedEntities":
-            return {"extracted_entities": _normalize_entity_items(payload)}
-        if model_name == "ExtractedEdges":
-            return {"edges": _normalize_edge_items(payload)}
-        if model_name == "NodeResolutions":
-            return {"entity_resolutions": _normalize_node_resolution_items(payload)}
-        if model_name == "SummarizedEntities":
-            return {"summaries": _normalize_summary_items(payload)}
-        return {field_names[0]: payload}
-
-    if isinstance(payload, str) and payload.strip():
-        return _normalize_graphiti_plain_text_payload(response_model, payload)
-
-    if not isinstance(payload, dict):
-        return payload
-
-    if model_name == "ExtractedEntities" and isinstance(payload.get("extracted_entities"), list):
-        return {"extracted_entities": _normalize_entity_items(payload["extracted_entities"])}
-
-    if model_name == "ExtractedEntities" and isinstance(payload.get("extracted_entities"), str):
-        return {"extracted_entities": _normalize_extracted_entities_text_payload(payload.get("extracted_entities"))}
-
-    if model_name == "ExtractedEntities" and "extracted_entities" not in payload:
-        candidate = payload.get("nodes")
-        if not isinstance(candidate, list):
-            candidate = payload.get("entities")
-        if isinstance(candidate, list):
-            return {"extracted_entities": _normalize_entity_items(candidate)}
-
-    if model_name == "ExtractedEdges" and isinstance(payload.get("edges"), list):
-        return {"edges": _normalize_edge_items(payload["edges"])}
-
-    if model_name == "ExtractedEdges" and isinstance(payload.get("edges"), str):
-        return {"edges": _normalize_extracted_edges_text_payload(payload.get("edges"))}
-
-    if model_name == "ExtractedEdges" and "edges" not in payload:
-        for key in ("relationships", "relations"):
-            candidate = payload.get(key)
-            if isinstance(candidate, list):
-                return {"edges": _normalize_edge_items(candidate)}
-
-    if model_name == "NodeResolutions" and isinstance(payload.get("entity_resolutions"), list):
-        return {"entity_resolutions": _normalize_node_resolution_items(payload["entity_resolutions"])}
-
-    if model_name == "SummarizedEntities" and isinstance(payload.get("summaries"), list):
-        return {"summaries": _normalize_summary_items(payload["summaries"])}
-
-    if model_name == "SummarizedEntities" and isinstance(payload.get("summaries"), str):
-        return {"summaries": _normalize_summary_text_payload(payload.get("summaries"))}
-
-    if model_name == "SummarizedEntities" and "summaries" not in payload:
-        if payload and all(isinstance(value, str) for value in payload.values()):
-            return {
-                "summaries": [
-                    {"name": str(name), "summary": str(summary)}
-                    for name, summary in payload.items()
-                ]
-            }
-
-    if len(field_names) == 1 and field_names[0] not in payload and len(payload) == 1:
-        only_value = next(iter(payload.values()))
-        if isinstance(only_value, (list, dict, str)):
-            return {field_names[0]: only_value}
-
-    if len(field_names) == 1 and field_names[0] not in payload:
-        field_annotation = getattr(model_fields[field_names[0]], "annotation", None)
-        if get_origin(field_annotation) is list:
-            if model_name == "SummarizedEntities":
-                return {field_names[0]: _normalize_summary_text_payload(payload)}
-            if model_name == "NodeResolutions":
-                return {field_names[0]: _normalize_node_resolution_items([payload])}
-            return {field_names[0]: [payload]}
-
-    return payload
 
 
 def _is_graphiti_store_io_error(exc: Exception) -> bool:
@@ -547,30 +128,18 @@ def _parse_graphiti_response_content(
     response_model: type[BaseModel] | None,
     raw_content: str,
 ) -> Any:
+    if response_model is None:
+        return str(raw_content or "").strip()
+
     text = str(raw_content or "").strip()
     if not text:
         raise ValueError("Empty response content from Graphiti LLM provider")
 
-    parsed_payload = None
-    for candidate in (normalize_json_content(text), text):
-        if not candidate:
-            continue
-        try:
-            parsed_payload = json.loads(candidate)
-            break
-        except Exception:
-            continue
-
+    parsed_payload = extract_json_object(text)
     if parsed_payload is None:
-        parsed_payload = extract_json_object(text)
-
-    if parsed_payload is None:
-        # Some providers still return plain text for single-field structured prompts.
-        if response_model is not None:
-            return _normalize_graphiti_plain_text_payload(response_model, text)
         raise ValueError("Unable to parse Graphiti LLM response as JSON")
 
-    return _normalize_graphiti_structured_payload(response_model, parsed_payload)
+    return parsed_payload
 
 
 def _validate_graphiti_response_payload(
@@ -612,13 +181,44 @@ def _graphiti_exception_status_code(exc: Exception) -> int | None:
     return None
 
 
+def _looks_like_graphiti_html_error(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    if "<!doctype html" in text or "<html" in text or "<body" in text or "text/html" in text:
+        return True
+    return bool(re.search(r"<[^>]+>", text))
+
+
+def _sanitize_graphiti_error_message(exc: Exception) -> str:
+    status_code = _graphiti_exception_status_code(exc)
+    raw = str(exc or "").strip()
+    if not raw:
+        if status_code is not None:
+            return f"Provider request failed with HTTP {status_code}"
+        return f"{type(exc).__name__}: provider request failed"
+    if not _looks_like_graphiti_html_error(raw):
+        return raw
+    cleaned = html.unescape(re.sub(r"<[^>]+>", " ", raw))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if status_code is not None:
+        if cleaned:
+            return f"Provider returned HTTP {status_code}: {cleaned[:240]}"
+        return f"Provider returned HTTP {status_code} with an HTML error page"
+    if cleaned:
+        return f"Provider returned an HTML error page: {cleaned[:240]}"
+    return "Provider returned an HTML error page"
+
+
 def _is_retryable_graphiti_llm_error(exc: Exception) -> bool:
     import openai
 
     if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError, asyncio.TimeoutError, TimeoutError)):
         return True
     status_code = _graphiti_exception_status_code(exc)
-    if isinstance(status_code, int) and status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
+    if isinstance(status_code, int) and status_code != 200:
+        return True
+    if _looks_like_graphiti_html_error(exc):
         return True
     text = f"{type(exc).__name__}: {exc}".lower()
     retryable_markers = (
@@ -640,40 +240,68 @@ def _graphiti_retry_delay_seconds(attempt_number: int) -> float:
     return min(8.0, max(0.5, float(attempt_number) * 1.5))
 
 
-def _graphiti_episode_timeout_seconds(timeout_seconds: int | None) -> int:
+def _graphiti_request_timeout_seconds(timeout_seconds: int | None) -> int:
     try:
         requested = int(timeout_seconds or 180)
     except Exception:
         requested = 180
-    return max(60, min(600, requested + 30))
+    requested = max(60, min(1800, requested))
+    return max(120, min(1800, requested + max(120, requested // 2)))
+
+
+def _graphiti_episode_timeout_seconds(timeout_seconds: int | None) -> int:
+    request_timeout_seconds = _graphiti_request_timeout_seconds(timeout_seconds)
+    return max(180, min(1800, request_timeout_seconds + max(120, request_timeout_seconds // 2)))
+
+
+def _graphiti_episode_worker_count(selected_count: int, max_coroutines: int) -> int:
+    safe_selected_count = max(1, int(selected_count or 1))
+    safe_max_coroutines = max(1, min(64, int(max_coroutines or 1)))
+    scaled_workers = 1 + max(0, safe_selected_count - 1) // 8
+    return max(1, min(safe_selected_count, safe_max_coroutines, scaled_workers))
 
 
 def _build_graph_id() -> str:
     return f"graphiti_{uuid.uuid4().hex[:16]}"
 
 
+def _project_graph_id(project: Any) -> str:
+    return str(
+        getattr(project, "graph_id", "") or ""
+    ).strip()
+
+
 def _split_text(text: str, *, chunk_size: int = _GRAPHITI_CHUNK_SIZE, overlap: int = _GRAPHITI_CHUNK_OVERLAP) -> list[str]:
     source = str(text or "").strip()
     if not source:
         return []
-    if len(source) <= chunk_size:
+    safe_chunk_size = max(240, min(12000, int(chunk_size or _GRAPHITI_CHUNK_SIZE)))
+    safe_overlap = max(0, min(safe_chunk_size // 4, int(overlap or _GRAPHITI_CHUNK_OVERLAP)))
+    if len(source) <= safe_chunk_size:
         return [source]
 
     chunks: list[str] = []
     cursor = 0
     total_length = len(source)
     while cursor < total_length:
-        end = min(cursor + chunk_size, total_length)
+        end = min(cursor + safe_chunk_size, total_length)
         if end < total_length:
-            boundary = source.rfind("\n\n", cursor + max(1, int(chunk_size * 0.6)), end)
+            search_start = cursor + max(1, int(safe_chunk_size * 0.55))
+            boundary = -1
+            boundary_len = 0
+            for marker in ("\n\n", "\n", "。", "！", "？", ".", "!", "?", "；", ";", "，", ",", "、", " "):
+                marker_boundary = source.rfind(marker, search_start, end)
+                if marker_boundary > boundary and marker_boundary > cursor:
+                    boundary = marker_boundary
+                    boundary_len = 0 if marker.isspace() else len(marker)
             if boundary > cursor:
-                end = boundary
+                end = boundary + boundary_len
         piece = source[cursor:end].strip()
         if piece:
             chunks.append(piece)
         if end >= total_length:
             break
-        next_cursor = max(end - overlap, cursor + 1)
+        next_cursor = max(end - safe_overlap, cursor + 1)
         if next_cursor <= cursor:
             next_cursor = end
         cursor = next_cursor
@@ -773,7 +401,13 @@ def _prepare_graphiti_ontology(
             description,
             [item for item in (edge_def.get("attributes") or []) if isinstance(item, dict)],
         )
-        for pair in (edge_def.get("source_targets") or []):
+        raw_pairs = [item for item in (edge_def.get("source_targets") or []) if isinstance(item, dict)]
+        if not raw_pairs:
+            raw_source_type = str(edge_def.get("source_type") or "").strip()
+            raw_target_type = str(edge_def.get("target_type") or "").strip()
+            if raw_source_type and raw_target_type:
+                raw_pairs = [{"source": raw_source_type, "target": raw_target_type}]
+        for pair in raw_pairs:
             if not isinstance(pair, dict):
                 continue
             raw_source = str(pair.get("source") or "").strip()
@@ -812,9 +446,14 @@ def _select_provider_for_model(
     configs: list[AIProviderConfig],
     *,
     model: str,
-    embedding: bool,
+    kind: str,
 ) -> tuple[AIProviderConfig | None, str | None]:
-    getter = get_provider_embedding_models if embedding else get_provider_chat_models
+    if kind == "embedding":
+        getter = get_provider_embedding_models
+    elif kind == "reranker":
+        getter = get_provider_reranker_models
+    else:
+        getter = get_provider_chat_models
     for provider in configs:
         provider_models = getter(provider)
         for candidate in provider_models:
@@ -844,12 +483,24 @@ def _require_openai_compatible_provider(provider: AIProviderConfig, *, purpose: 
     )
 
 
+def _require_graphiti_llm_provider(provider: AIProviderConfig) -> str:
+    provider_type = str(getattr(provider, "provider", "") or "").strip().lower()
+    if provider_type in {"openai_compatible", "anthropic_compatible"}:
+        return provider_type
+    provider_name = str(getattr(provider, "name", "") or provider_type or "provider")
+    raise RuntimeError(
+        "Graphiti local backend currently requires an OpenAI-compatible or Anthropic-compatible LLM provider. "
+        f"Provider '{provider_name}' uses '{provider_type}'."
+    )
+
+
 async def _resolve_graphiti_runtime(
     *,
     project_id: str,
     db: AsyncSession | None,
     model: str | None = None,
     embedding_model: str | None = None,
+    reranker_model: str | None = None,
 ) -> _GraphitiRuntimeSelection:
     if db is None:
         raise RuntimeError("Database session is required for Graphiti runtime configuration.")
@@ -873,7 +524,11 @@ async def _resolve_graphiti_runtime(
         embedding_model or resolve_component_model(project, "graph_embedding", fallback_model="")
     ).strip()
 
-    llm_provider, llm_model = _select_provider_for_model(configs, model=requested_model, embedding=False)
+    requested_reranker_model = str(
+        reranker_model or resolve_component_model(project, "graph_reranker", fallback_model="")
+    ).strip()
+
+    llm_provider, llm_model = _select_provider_for_model(configs, model=requested_model, kind="chat")
     if llm_provider is None:
         llm_provider = next((item for item in configs if _first_valid_model(get_provider_chat_models(item))), None)
         llm_model = _first_valid_model(get_provider_chat_models(llm_provider)) if llm_provider else None
@@ -881,7 +536,7 @@ async def _resolve_graphiti_runtime(
         raise RuntimeError("No chat model configured in active providers for Graphiti graph build.")
 
     embedding_provider, selected_embedding_model = (
-        _select_provider_for_model(configs, model=requested_embedding_model, embedding=True)
+        _select_provider_for_model(configs, model=requested_embedding_model, kind="embedding")
         if requested_embedding_model
         else (None, None)
     )
@@ -900,27 +555,55 @@ async def _resolve_graphiti_runtime(
     if embedding_provider is None or not selected_embedding_model:
         raise RuntimeError("No embedding model configured in active providers for Graphiti.")
 
-    _require_openai_compatible_provider(llm_provider, purpose="LLM")
+    reranker_provider, selected_reranker_model = (
+        _select_provider_for_model(configs, model=requested_reranker_model, kind="reranker")
+        if requested_reranker_model
+        else (None, None)
+    )
+    if reranker_provider is None:
+        preferred_reranker = _first_valid_model(get_provider_reranker_models(llm_provider))
+        if preferred_reranker:
+            reranker_provider = llm_provider
+            selected_reranker_model = preferred_reranker
+        else:
+            for item in configs:
+                fallback_reranker = _first_valid_model(get_provider_reranker_models(item))
+                if fallback_reranker:
+                    reranker_provider = item
+                    selected_reranker_model = fallback_reranker
+                    break
+    if reranker_provider is None or not selected_reranker_model:
+        raise RuntimeError("No reranker model configured in active providers for Graphiti.")
+
+    llm_provider_type = _require_graphiti_llm_provider(llm_provider)
     _require_openai_compatible_provider(embedding_provider, purpose="embedding")
+    _require_openai_compatible_provider(reranker_provider, purpose="reranker")
 
     llm_api_key = _require_provider_api_key(llm_provider, purpose="LLM")
     embedding_api_key = _require_provider_api_key(embedding_provider, purpose="embedding")
+    reranker_api_key = _require_provider_api_key(reranker_provider, purpose="reranker")
 
     llm_base_url = str(getattr(llm_provider, "base_url", "") or "").strip()
     embedding_base_url = str(getattr(embedding_provider, "base_url", "") or "").strip()
+    reranker_base_url = str(getattr(reranker_provider, "base_url", "") or "").strip()
     max_coroutines = max(1, min(64, int(runtime_cfg.get("llm_task_concurrency", 4) or 4)))
+    reasoning_effort = normalize_reasoning_effort(runtime_cfg.get("llm_reasoning_effort"))
 
     return _GraphitiRuntimeSelection(
+        llm_provider_type=llm_provider_type,
         llm_model=llm_model,
         llm_api_key=llm_api_key,
         llm_base_url=llm_base_url,
         embedding_model=selected_embedding_model,
         embedding_api_key=embedding_api_key,
         embedding_base_url=embedding_base_url,
-        reranker_model=llm_model,
+        reranker_model=selected_reranker_model,
+        reranker_api_key=reranker_api_key,
+        reranker_base_url=reranker_base_url,
         timeout_seconds=max(5, min(1800, int(runtime_cfg.get("llm_request_timeout_seconds", 180) or 180))),
         retry_count=max(0, min(10, int(runtime_cfg.get("llm_retry_count", 2) or 2))),
         max_coroutines=max_coroutines,
+        reasoning_effort=None if reasoning_effort == DEFAULT_LLM_REASONING_EFFORT else reasoning_effort,
     )
 
 
@@ -1005,10 +688,56 @@ def _patch_graphiti_driver_compatibility(driver: Any) -> Any:
     if not hasattr(driver, "_database"):
         driver._database = ""
     original_build_indices = getattr(driver, "build_indices_and_constraints", None)
+    original_execute_query = getattr(driver, "execute_query", None)
+
+    def _is_kuzu_existing_index_error(query: Any, exc: Exception) -> bool:
+        message = str(exc).lower()
+        query_text = str(query or "").lower()
+        return (
+            "create_fts_index" in query_text
+            and ("already exists" in message or "equivalent" in message)
+        )
 
     def _clone(*, database: str) -> Any:
         driver._database = str(database or "")
         return driver
+
+    async def _execute_query(
+        cypher_query_: str,
+        **kwargs: Any,
+    ) -> tuple[list[dict[str, Any]] | list[list[dict[str, Any]]], None, None]:
+        params = {k: v for k, v in kwargs.items() if v is not None}
+        params.pop("database_", None)
+        params.pop("routing_", None)
+
+        client = getattr(driver, "client", None)
+        client_execute = getattr(client, "execute", None)
+        if not callable(client_execute):
+            if not callable(original_execute_query):
+                raise AttributeError("Graphiti driver is missing execute_query")
+            return await original_execute_query(cypher_query_, **kwargs)
+
+        try:
+            results = await client_execute(cypher_query_, parameters=params)
+        except Exception as exc:
+            if _is_kuzu_existing_index_error(cypher_query_, exc):
+                return [], None, None
+            logger.error(
+                "Error executing Kuzu query: %s\n%s\n%s",
+                exc,
+                cypher_query_,
+                {k: (v[:5] if isinstance(v, list) else v) for k, v in params.items()},
+            )
+            raise
+
+        if not results:
+            return [], None, None
+
+        if isinstance(results, list):
+            dict_results = [list(result.rows_as_dict()) for result in results]
+        else:
+            dict_results = list(results.rows_as_dict())
+        return dict_results, None, None  # type: ignore[return-value]
 
     async def _build_indices_and_constraints(delete_existing: bool = False) -> None:
         if not callable(getattr(driver, "execute_query", None)):
@@ -1036,6 +765,7 @@ def _patch_graphiti_driver_compatibility(driver: Any) -> Any:
                 raise
 
     driver.clone = _clone
+    driver.execute_query = _execute_query
     driver.build_indices_and_constraints = _build_indices_and_constraints
     return driver
 
@@ -1053,27 +783,28 @@ def _patch_graphiti_llm_client(openai_generic_client_cls: type[Any]) -> type[Any
 
             from graphiti_core.llm_client.errors import RateLimitError
 
-            openai_messages = []
+            openai_input = []
+            instructions_parts: list[str] = []
             for message in messages:
                 message.content = self._clean_input(message.content)
-                if message.role == "user":
-                    openai_messages.append({"role": "user", "content": message.content})
-                elif message.role == "system":
-                    openai_messages.append({"role": "system", "content": message.content})
+                if message.role == "system":
+                    if message.content:
+                        instructions_parts.append(message.content)
+                    continue
+                if message.role in {"user", "assistant", "developer"} and message.content:
+                    openai_input.append(
+                        {
+                            "role": message.role,
+                            "content": [{"type": "input_text", "text": message.content}],
+                        }
+                    )
 
             try:
-                schema_name = getattr(response_model, "__name__", "structured_response")
-                response_formats: list[dict[str, Any] | None] = [{"type": "json_object"}]
+                response_formats: list[dict[str, Any]] = [{"name": "json_object", "mode": "json_object"}]
                 if response_model is not None:
                     response_formats = [
-                        {
-                            "type": "json_schema",
-                            "json_schema": {
-                                "name": schema_name,
-                                "schema": response_model.model_json_schema(),
-                            },
-                        },
-                        {"type": "json_object"},
+                        {"name": "json_schema", "mode": "parse"},
+                        {"name": "json_object", "mode": "json_object"},
                     ]
 
                 effective_max_tokens = _graphiti_effective_max_tokens(max_tokens or self.max_tokens)
@@ -1084,22 +815,43 @@ def _patch_graphiti_llm_client(openai_generic_client_cls: type[Any]) -> type[Any
                         int(getattr(getattr(self, "config", None), "timeout_seconds", 180) or 180),
                     ),
                 )
+                instructions = "\n\n".join(part for part in instructions_parts if part).strip() or None
 
                 last_exc: Exception | None = None
                 for attempt_index, response_format in enumerate(response_formats, start=1):
                     request_kwargs: dict[str, Any] = {
                         "model": self.model or "gpt-4.1-mini",
-                        "messages": openai_messages,
+                        "input": openai_input or "",
                         "temperature": self.temperature,
-                        "max_tokens": effective_max_tokens,
+                        "max_output_tokens": effective_max_tokens,
                         "timeout": timeout_seconds,
                     }
-                    if response_format is not None:
-                        request_kwargs["response_format"] = response_format
+                    reasoning_effort = str(
+                        getattr(getattr(self, "config", None), "reasoning_effort", "") or ""
+                    ).strip().lower()
+                    if reasoning_effort and model_supports_reasoning_effort(request_kwargs["model"]):
+                        request_kwargs["reasoning"] = {"effort": reasoning_effort}
+                    if instructions:
+                        request_kwargs["instructions"] = instructions
                     try:
-                        response = await self.client.chat.completions.create(**request_kwargs)
-                        raw_content = response.choices[0].message.content or ""
-                        parsed_payload = _parse_graphiti_response_content(response_model, raw_content)
+                        if response_format.get("mode") == "parse" and response_model is not None:
+                            response = await self.client.responses.parse(
+                                **request_kwargs,
+                                text_format=response_model,
+                            )
+                            parsed_payload = response.output_parsed
+                            if isinstance(parsed_payload, BaseModel):
+                                parsed_payload = parsed_payload.model_dump(mode="python")
+                            if parsed_payload is None:
+                                raw_content = getattr(response, "output_text", "") or ""
+                                parsed_payload = _parse_graphiti_response_content(response_model, raw_content)
+                        else:
+                            response = await self.client.responses.create(
+                                **request_kwargs,
+                                text={"format": {"type": "json_object"}},
+                            )
+                            raw_content = getattr(response, "output_text", "") or ""
+                            parsed_payload = _parse_graphiti_response_content(response_model, raw_content)
                         return _validate_graphiti_response_payload(response_model, parsed_payload)
                     except openai.RateLimitError as exc:
                         raise RateLimitError from exc
@@ -1109,13 +861,9 @@ def _patch_graphiti_llm_client(openai_generic_client_cls: type[Any]) -> type[Any
                             break
                     if attempt_index >= len(response_formats):
                         break
-                    current_format_name = str(
-                        (response_format or {}).get("type") if isinstance(response_format, dict) else "none"
-                    )
+                    current_format_name = str(response_format.get("name") or "none")
                     next_format = response_formats[attempt_index]
-                    next_format_name = str(
-                        (next_format or {}).get("type") if isinstance(next_format, dict) else "none"
-                    )
+                    next_format_name = str(next_format.get("name") or "none")
                     logger.warning(
                         "Graphiti structured-output request failed; retrying with fallback format. "
                         "model=%s response_model=%s base_url=%s format=%s next_format=%s "
@@ -1151,6 +899,83 @@ def _patch_graphiti_llm_client(openai_generic_client_cls: type[Any]) -> type[Any
     return MuseGraphGraphitiClient
 
 
+def _patch_graphiti_reranker_client(openai_reranker_client_cls: type[Any]) -> type[Any]:
+    class MuseGraphOpenAIRerankerClient(openai_reranker_client_cls):
+        async def rank(self, query: str, passages: list[str]) -> list[tuple[str, float]]:
+            import numpy as np
+            import openai
+            from graphiti_core.helpers import semaphore_gather
+            from graphiti_core.llm_client import RateLimitError
+            from graphiti_core.prompts import Message
+
+            openai_messages_list: Any = [
+                [
+                    Message(
+                        role="system",
+                        content="You are an expert tasked with determining whether the passage is relevant to the query",
+                    ),
+                    Message(
+                        role="user",
+                        content=f"""
+                           Respond with "True" if PASSAGE is relevant to QUERY and "False" otherwise.
+                           <PASSAGE>
+                           {passage}
+                           </PASSAGE>
+                           <QUERY>
+                           {query}
+                           </QUERY>
+                           """,
+                    ),
+                ]
+                for passage in passages
+            ]
+            reasoning_effort = str(getattr(getattr(self, "config", None), "reasoning_effort", "") or "").strip().lower()
+
+            async def _request_rank(openai_messages: Any) -> Any:
+                request_kwargs: dict[str, Any] = {
+                    "model": self.config.model or "gpt-4.1-nano",
+                    "messages": openai_messages,
+                    "temperature": 0,
+                    "max_tokens": 1,
+                    "logit_bias": {"6432": 1, "7983": 1},
+                    "logprobs": True,
+                    "top_logprobs": 2,
+                }
+                if reasoning_effort and model_supports_reasoning_effort(request_kwargs["model"]):
+                    request_kwargs["reasoning_effort"] = reasoning_effort
+                return await self.client.chat.completions.create(**request_kwargs)
+
+            try:
+                responses = await semaphore_gather(*[_request_rank(openai_messages) for openai_messages in openai_messages_list])
+                responses_top_logprobs = [
+                    response.choices[0].logprobs.content[0].top_logprobs
+                    if response.choices[0].logprobs is not None
+                    and response.choices[0].logprobs.content is not None
+                    else []
+                    for response in responses
+                ]
+                scores: list[float] = []
+                for top_logprobs in responses_top_logprobs:
+                    if len(top_logprobs) == 0:
+                        continue
+                    norm_logprobs = np.exp(top_logprobs[0].logprob)
+                    if top_logprobs[0].token.strip().split(" ")[0].lower() == "true":
+                        scores.append(norm_logprobs)
+                    else:
+                        scores.append(1 - norm_logprobs)
+
+                results = [(passage, score) for passage, score in zip(passages, scores, strict=True)]
+                results.sort(reverse=True, key=lambda x: x[1])
+                return results
+            except openai.RateLimitError as exc:
+                raise RateLimitError from exc
+            except Exception as exc:
+                logger.error("Error in generating reranker response: %s", exc)
+                raise
+
+    return MuseGraphOpenAIRerankerClient
+
+
 async def _create_graphiti(*, runtime: _GraphitiRuntimeSelection, project_id: str | None = None) -> Any:
     (
         Graphiti,
@@ -1178,7 +1003,17 @@ async def _create_graphiti(*, runtime: _GraphitiRuntimeSelection, project_id: st
         max_tokens=llm_max_tokens,
         small_model=runtime.reranker_model,
     )
-    llm_config.timeout_seconds = runtime.timeout_seconds
+    llm_config.timeout_seconds = _graphiti_request_timeout_seconds(runtime.timeout_seconds)
+    llm_config.reasoning_effort = runtime.reasoning_effort
+    reranker_config = LLMConfig(
+        api_key=runtime.reranker_api_key,
+        model=runtime.reranker_model,
+        base_url=runtime.reranker_base_url or None,
+        temperature=0,
+        max_tokens=llm_max_tokens,
+    )
+    reranker_config.timeout_seconds = _graphiti_request_timeout_seconds(runtime.timeout_seconds)
+    reranker_config.reasoning_effort = runtime.reasoning_effort
     embedder_config = OpenAIEmbedderConfig(
         api_key=runtime.embedding_api_key,
         base_url=runtime.embedding_base_url or None,
@@ -1186,19 +1021,35 @@ async def _create_graphiti(*, runtime: _GraphitiRuntimeSelection, project_id: st
         embedding_dim=_embedding_dimension(),
     )
     graphiti_llm_client_cls = _patch_graphiti_llm_client(OpenAIGenericClient)
+    graphiti_reranker_client_cls = _patch_graphiti_reranker_client(OpenAIRerankerClient)
     driver = _open_kuzu_driver(
         KuzuDriver,
         db_path=db_path,
         project_id=project_id,
         max_concurrent_queries=runtime.max_coroutines,
     )
-    llm_client = graphiti_llm_client_cls(config=llm_config, max_tokens=llm_max_tokens)
-    llm_client.MAX_RETRIES = 0
+    if runtime.llm_provider_type == "anthropic_compatible":
+        import anthropic
+        from graphiti_core.llm_client.anthropic_client import AnthropicClient
+
+        anthropic_client = anthropic.AsyncAnthropic(
+            api_key=runtime.llm_api_key,
+            base_url=runtime.llm_base_url or None,
+            max_retries=1,
+        )
+        llm_client = AnthropicClient(
+            config=llm_config,
+            client=anthropic_client,
+            max_tokens=llm_max_tokens,
+        )
+    else:
+        llm_client = graphiti_llm_client_cls(config=llm_config, max_tokens=llm_max_tokens)
+        llm_client.MAX_RETRIES = 0
     return Graphiti(
         graph_driver=driver,
         llm_client=llm_client,
         embedder=OpenAIEmbedder(config=embedder_config),
-        cross_encoder=OpenAIRerankerClient(config=llm_config),
+        cross_encoder=graphiti_reranker_client_cls(config=reranker_config),
         max_coroutines=runtime.max_coroutines,
     )
 
@@ -1289,11 +1140,29 @@ async def setup_graphiti(project_id: str | None = None) -> None:
             _recipes,
         ) = _import_graphiti_runtime()
         os.environ["GRAPHITI_TELEMETRY_ENABLED"] = _graphiti_telemetry_enabled()
-        driver = _open_kuzu_driver(KuzuDriver, db_path=db_path, project_id=project_id)
+        try:
+            driver = KuzuDriver(db=db_path)
+        except Exception as exc:
+            if project_id and _is_graphiti_store_io_error(exc):
+                logger.warning(
+                    "Graphiti store is unreadable during setup; clearing local store and retrying once. "
+                    "project_id=%s db_path=%s",
+                    project_id,
+                    db_path,
+                    exc_info=True,
+                )
+                _clear_graphiti_store(project_id)
+                driver = KuzuDriver(db=db_path)
+            else:
+                raise
         try:
             await driver.build_indices_and_constraints()
         finally:
-            await driver.close()
+            try:
+                await driver.close()
+            finally:
+                del driver
+                gc.collect()
         _GRAPHITI_SETUP_COMPLETE.add(db_path)
 
 
@@ -1306,6 +1175,9 @@ async def build_graph(
     progress_callback: Any | None = None,
     model: str | None = None,
     embedding_model: str | None = None,
+    graph_id_override: str | None = None,
+    chunk_indices: list[int] | None = None,
+    continue_on_error: bool = False,
 ) -> str:
     chunks = _split_text(text)
     if not chunks:
@@ -1313,7 +1185,7 @@ async def build_graph(
 
     await setup_graphiti(project_id)
     project = await _load_project(project_id, db)
-    graph_id = str(getattr(project, "cognee_dataset_id", "") or "").strip() or _build_graph_id()
+    graph_id = str(graph_id_override or "").strip() or _project_graph_id(project) or _build_graph_id()
     runtime = await _resolve_graphiti_runtime(
         project_id=project_id,
         db=db,
@@ -1346,33 +1218,120 @@ async def build_graph(
         emit(25, "Preparing Graphiti local runtime...")
         await graphiti.build_indices_and_constraints()
         total_chunks = len(chunks)
+        normalized_chunk_indices = [
+            index
+            for index in (chunk_indices or list(range(1, total_chunks + 1)))
+            if 1 <= int(index) <= total_chunks
+        ]
+        seen_chunk_indices: set[int] = set()
+        selected_chunk_indices: list[int] = []
+        for raw_index in normalized_chunk_indices:
+            index = int(raw_index)
+            if index in seen_chunk_indices:
+                continue
+            selected_chunk_indices.append(index)
+            seen_chunk_indices.add(index)
+        if not selected_chunk_indices:
+            raise ValueError("No graph chunks selected for build")
+        completed_chunk_indices: list[int] = []
+        failed_chunk_indices: list[int] = []
+        failed_errors: dict[str, str] = {}
         base_reference_time = datetime.now(timezone.utc)
-        for index, chunk in enumerate(chunks, start=1):
-            await _run_graphiti_episode(
-                graphiti=graphiti,
-                runtime=runtime,
-                index=index,
+        selected_chunk_count = len(selected_chunk_indices)
+        episode_worker_count = _graphiti_episode_worker_count(selected_chunk_count, runtime.max_coroutines)
+        queue: asyncio.Queue[int] = asyncio.Queue()
+        for index in selected_chunk_indices:
+            queue.put_nowait(index)
+        state_lock = asyncio.Lock()
+        first_error: Exception | None = None
+
+        if episode_worker_count > 1:
+            emit(30, f"Graphiti parallel ingest enabled ({episode_worker_count} workers)...")
+
+        async def _worker() -> None:
+            nonlocal first_error
+            while True:
+                if first_error is not None and not continue_on_error:
+                    return
+                try:
+                    index = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+
+                chunk = chunks[index - 1]
+                try:
+                    await _run_graphiti_episode(
+                        graphiti=graphiti,
+                        runtime=runtime,
+                        index=index,
+                        total_chunks=total_chunks,
+                        emit=emit,
+                        episode_kwargs={
+                            "name": f"{str(getattr(project, 'title', '') or 'MuseGraph Graph')} {index}/{total_chunks}",
+                            "episode_body": chunk,
+                            "source": EpisodeType.text,
+                            "source_description": "MuseGraph graph build chunk",
+                            "reference_time": base_reference_time + timedelta(seconds=index - 1),
+                            "group_id": graph_id,
+                            "entity_types": entity_types,
+                            "edge_types": edge_types,
+                            "edge_type_map": edge_type_map,
+                            "saga": f"graph_build_{graph_id}",
+                        },
+                    )
+                    async with state_lock:
+                        completed_chunk_indices.append(index)
+                        completed_count = len(completed_chunk_indices)
+                    progress = 30 + int((completed_count / max(1, selected_chunk_count)) * 70)
+                    emit(progress, f"Graphiti ingested {completed_count}/{selected_chunk_count} selected chunks...")
+                except Exception as exc:
+                    if not continue_on_error:
+                        async with state_lock:
+                            if first_error is None:
+                                first_error = exc
+                        return
+                    async with state_lock:
+                        failed_chunk_indices.append(index)
+                        failed_errors[str(index)] = _sanitize_graphiti_error_message(exc)
+                        completed_count = len(completed_chunk_indices)
+                    emit(
+                        30 + int((completed_count / max(1, selected_chunk_count)) * 70),
+                        f"Chunk {index}/{total_chunks} failed. Continuing with remaining chunks...",
+                    )
+                finally:
+                    queue.task_done()
+
+        workers = [asyncio.create_task(_worker()) for _ in range(episode_worker_count)]
+        try:
+            await asyncio.gather(*workers)
+        finally:
+            for worker_task in workers:
+                if not worker_task.done():
+                    worker_task.cancel()
+            if workers:
+                await asyncio.gather(*workers, return_exceptions=True)
+
+        completed_chunk_indices.sort()
+        failed_chunk_indices.sort()
+        if first_error is not None:
+            raise first_error
+        if failed_chunk_indices:
+            raise GraphBuildPartialFailure(
+                graph_id=graph_id,
                 total_chunks=total_chunks,
-                emit=emit,
-                episode_kwargs={
-                    "name": f"{str(getattr(project, 'title', '') or 'MuseGraph Graph')} {index}/{total_chunks}",
-                    "episode_body": chunk,
-                    "source": EpisodeType.text,
-                    "source_description": "MuseGraph graph build chunk",
-                    "reference_time": base_reference_time + timedelta(seconds=index - 1),
-                    "group_id": graph_id,
-                    "entity_types": entity_types,
-                    "edge_types": edge_types,
-                    "edge_type_map": edge_type_map,
-                    "saga": f"graph_build_{graph_id}",
-                },
+                selected_chunk_indices=selected_chunk_indices,
+                completed_chunk_indices=completed_chunk_indices,
+                failed_chunk_indices=failed_chunk_indices,
+                failed_errors=failed_errors,
             )
-            progress = 30 + int((index / total_chunks) * 70)
-            emit(progress, f"Graphiti ingesting episodes {index}/{total_chunks}...")
         emit(100, "Graph build complete")
         return graph_id
     finally:
-        await graphiti.close()
+        try:
+            await graphiti.close()
+        finally:
+            del graphiti
+            gc.collect()
 
 
 async def search_graph(
@@ -1384,7 +1343,7 @@ async def search_graph(
     db: AsyncSession | None = None,
 ) -> list[dict[str, Any]]:
     project = await _load_project(project_id, db)
-    graph_id = str(getattr(project, "cognee_dataset_id", "") or "").strip()
+    graph_id = _project_graph_id(project)
     if not graph_id:
         raise RuntimeError(f"Project {project_id} does not have a graph id.")
 
@@ -1465,7 +1424,11 @@ async def search_graph(
             )
         return items
     finally:
-        await graphiti.close()
+        try:
+            await graphiti.close()
+        finally:
+            del graphiti
+            gc.collect()
 
 
 def _strip_visualization_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
@@ -1517,7 +1480,7 @@ def _record_to_dict(record: Any) -> dict[str, Any]:
 
 async def get_graph_visualization(project_id: str, *, db: AsyncSession | None = None) -> dict[str, Any]:
     project = await _load_project(project_id, db)
-    graph_id = str(getattr(project, "cognee_dataset_id", "") or "").strip()
+    graph_id = _project_graph_id(project)
     if not graph_id:
         return {"nodes": [], "edges": []}
 
@@ -1605,12 +1568,16 @@ async def get_graph_visualization(project_id: str, *, db: AsyncSession | None = 
 
         return {"nodes": nodes, "edges": edges}
     finally:
-        await graphiti.close()
+        try:
+            await graphiti.close()
+        finally:
+            del graphiti
+            gc.collect()
 
 
 async def has_graph_data(project_id: str, *, db: AsyncSession | None = None) -> bool:
     project = await _load_project(project_id, db)
-    graph_id = str(getattr(project, "cognee_dataset_id", "") or "").strip()
+    graph_id = _project_graph_id(project)
     if not graph_id:
         return False
 
@@ -1655,7 +1622,11 @@ async def has_graph_data(project_id: str, *, db: AsyncSession | None = None) -> 
         logger.warning("Failed to check Graphiti store health for project %s", project_id, exc_info=True)
         return False
     finally:
-        await driver.close()
+        try:
+            await driver.close()
+        finally:
+            del driver
+            gc.collect()
 
 
 async def delete_graph(
@@ -1668,8 +1639,9 @@ async def delete_graph(
     # Keep a compatible signature with the previous graph backend dispatch.
     _ = (model, embedding_model)
     project = await _load_project(project_id, db)
-    graph_id = str(getattr(project, "cognee_dataset_id", "") or "").strip()
+    graph_id = _project_graph_id(project)
     if not graph_id:
         return
 
     _clear_graphiti_store(project_id)
+

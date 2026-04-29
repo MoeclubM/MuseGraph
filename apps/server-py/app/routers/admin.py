@@ -23,6 +23,7 @@ from app.services.provider_models import (
     get_provider_chat_models,
     get_provider_embedding_models,
     get_provider_models,
+    get_provider_reranker_models,
     set_provider_models,
 )
 from app.services.provider_type import (
@@ -184,6 +185,7 @@ def _collect_provider_model_names(provider: AIProviderConfig) -> set[str]:
     return {
         *get_provider_chat_models(provider),
         *get_provider_embedding_models(provider),
+        *get_provider_reranker_models(provider),
     }
 
 
@@ -195,7 +197,7 @@ async def _propagate_pricing_model_rename(db: AsyncSession, old_model: str, new_
     providers = provider_result.scalars().all()
     for provider in providers:
         changed = False
-        for kind in ("chat", "embedding"):
+        for kind in ("chat", "embedding", "reranker"):
             current_models = get_provider_models(provider, kind)
             if old_model not in current_models:
                 continue
@@ -230,12 +232,23 @@ async def _prune_deleted_provider_model_references(
     provider: AIProviderConfig,
 ) -> None:
     removed_models = _collect_provider_model_names(provider)
+    await _prune_orphan_model_references(db, removed_models=removed_models, excluding_provider_id=provider.id)
+
+
+async def _prune_orphan_model_references(
+    db: AsyncSession,
+    *,
+    removed_models: set[str],
+    excluding_provider_id: str | None = None,
+) -> None:
     if not removed_models:
         return
 
-    other_provider_result = await db.execute(
-        select(AIProviderConfig).where(AIProviderConfig.id != provider.id)
-    )
+    provider_query = select(AIProviderConfig)
+    if excluding_provider_id:
+        provider_query = provider_query.where(AIProviderConfig.id != excluding_provider_id)
+
+    other_provider_result = await db.execute(provider_query)
     remaining_models: set[str] = set()
     for item in other_provider_result.scalars().all():
         remaining_models.update(_collect_provider_model_names(item))
@@ -878,6 +891,7 @@ def _serialize_provider(provider: AIProviderConfig) -> dict[str, Any]:
         "base_url": provider.base_url,
         "models": get_provider_chat_models(provider),
         "embedding_models": get_provider_embedding_models(provider),
+        "reranker_models": get_provider_reranker_models(provider),
         "is_active": provider.is_active,
         "priority": provider.priority,
     }
@@ -932,7 +946,11 @@ async def list_providers(admin: User = Depends(require_admin), db: AsyncSession 
 
 
 def _provider_model_field(kind: str) -> str:
-    return "embedding_models" if kind == "embedding" else "models"
+    if kind == "embedding":
+        return "embedding_models"
+    if kind == "reranker":
+        return "reranker_models"
+    return "models"
 
 
 def _provider_model_response(provider: AIProviderConfig, models: list[str], kind: str) -> dict[str, Any]:
@@ -949,7 +967,7 @@ async def _list_provider_models_by_kind(
     db: AsyncSession,
 ) -> dict[str, Any]:
     provider = await _get_provider_or_404(provider_id, db)
-    current = get_provider_models(provider, "embedding" if kind == "embedding" else "chat")
+    current = get_provider_models(provider, kind)
     return _provider_model_response(provider, current, kind)
 
 
@@ -965,10 +983,10 @@ async def _add_provider_model_by_kind(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model is required")
 
     provider = await _get_provider_or_404(provider_id, db)
-    current = get_provider_models(provider, "embedding" if kind == "embedding" else "chat")
+    current = get_provider_models(provider, kind)
     if model not in current:
         current.append(model)
-    set_provider_models(provider, "embedding" if kind == "embedding" else "chat", current)
+    set_provider_models(provider, kind, current)
     await db.flush()
     return _provider_model_response(provider, current, kind)
 
@@ -981,9 +999,11 @@ async def _remove_provider_model_by_kind(
     db: AsyncSession,
 ) -> dict[str, Any]:
     provider = await _get_provider_or_404(provider_id, db)
-    current = get_provider_models(provider, "embedding" if kind == "embedding" else "chat")
+    current = get_provider_models(provider, kind)
     next_models = [item for item in current if item != model]
-    set_provider_models(provider, "embedding" if kind == "embedding" else "chat", next_models)
+    set_provider_models(provider, kind, next_models)
+    if model in current and model not in next_models:
+        await _prune_orphan_model_references(db, removed_models={model}, excluding_provider_id=provider.id)
     await db.flush()
     return _provider_model_response(provider, next_models, kind)
 
@@ -998,12 +1018,12 @@ async def _discover_provider_models_by_kind(
     provider = await _get_provider_or_404(provider_id, db)
     discovered = await _discover_models_for_provider(provider)
 
-    current = get_provider_models(provider, "embedding" if kind == "embedding" else "chat")
+    current = get_provider_models(provider, kind)
     if persist:
         merged = sorted(set(current).union(discovered))
-        set_provider_models(provider, "embedding" if kind == "embedding" else "chat", merged)
+        set_provider_models(provider, kind, merged)
         await db.flush()
-        current = get_provider_models(provider, "embedding" if kind == "embedding" else "chat")
+        current = get_provider_models(provider, kind)
 
     return {
         "provider_id": provider.id,
@@ -1092,18 +1112,57 @@ async def discover_provider_embedding_models(
     return await _discover_provider_models_by_kind(provider_id, kind="embedding", persist=persist, db=db)
 
 
+@router.get("/providers/{provider_id}/reranker-models")
+async def list_provider_reranker_models(
+    provider_id: str,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _list_provider_models_by_kind(provider_id, kind="reranker", db=db)
+
+
+@router.post("/providers/{provider_id}/reranker-models")
+async def add_provider_reranker_model(
+    provider_id: str,
+    body: dict,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _add_provider_model_by_kind(provider_id, kind="reranker", body=body, db=db)
+
+
+@router.delete("/providers/{provider_id}/reranker-models")
+async def remove_provider_reranker_model(
+    provider_id: str,
+    model: str = Query(..., min_length=1),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _remove_provider_model_by_kind(provider_id, kind="reranker", model=model, db=db)
+
+
+@router.post("/providers/{provider_id}/reranker-models/discover")
+async def discover_provider_reranker_models(
+    provider_id: str,
+    persist: bool = Query(False),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _discover_provider_models_by_kind(provider_id, kind="reranker", persist=persist, db=db)
+
+
 @router.post("/providers")
 async def create_provider(
     body: dict,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    if "models" in body or "embedding_models" in body:
+    if "models" in body or "embedding_models" in body or "reranker_models" in body:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "models/embedding_models must be managed via "
-                "/api/admin/providers/{provider_id}/models or /embedding-models"
+                "models/embedding_models/reranker_models must be managed via "
+                "/api/admin/providers/{provider_id}/models, /embedding-models, or /reranker-models"
             ),
         )
     provider_type = _normalize_provider_type(body.get("provider", ""))
@@ -1112,7 +1171,7 @@ async def create_provider(
         provider=provider_type,
         api_key=body["api_key"],
         base_url=body.get("base_url"),
-        models=dump_provider_models(models=[], embedding_models=[]),
+        models=dump_provider_models(models=[], embedding_models=[], reranker_models=[]),
         is_active=body.get("is_active", True),
         priority=body.get("priority", 0),
     )
@@ -1128,12 +1187,12 @@ async def update_provider(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    if "models" in body or "embedding_models" in body:
+    if "models" in body or "embedding_models" in body or "reranker_models" in body:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "models/embedding_models must be managed via "
-                "/api/admin/providers/{provider_id}/models or /embedding-models"
+                "models/embedding_models/reranker_models must be managed via "
+                "/api/admin/providers/{provider_id}/models, /embedding-models, or /reranker-models"
             ),
         )
     result = await db.execute(select(AIProviderConfig).where(AIProviderConfig.id == provider_id))

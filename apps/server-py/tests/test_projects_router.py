@@ -135,7 +135,7 @@ class TestOperationStream:
             id="proj-1",
             user_id=fake_user.id,
             chapters=[],
-            cognee_dataset_id=None,
+            graph_id=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -265,6 +265,92 @@ class TestProjectModels:
         assert resp.status_code in (404, 405)
 
 
+class TestProjectSearch:
+    @pytest.mark.asyncio
+    async def test_search_project_content_across_workspace(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
+        now = datetime.now(timezone.utc)
+        project = SimpleNamespace(
+            id="proj-1",
+            user_id=fake_user.id,
+            chapters=[
+                SimpleNamespace(
+                    id="ch-1",
+                    project_id="proj-1",
+                    title="Opening",
+                    content="The old lighthouse hides the signal key.",
+                    order_index=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            ],
+            characters=[
+                SimpleNamespace(
+                    id="char-1",
+                    project_id="proj-1",
+                    name="Mira",
+                    role="Keeper",
+                    profile="Lighthouse archivist",
+                    notes=None,
+                    order_index=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            ],
+            glossary_terms=[
+                SimpleNamespace(
+                    id="term-1",
+                    project_id="proj-1",
+                    term="Signal Key",
+                    definition="A brass token that unlocks the beacon room.",
+                    aliases=["beacon token"],
+                    notes=None,
+                    order_index=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            ],
+            worldbook_entries=[
+                SimpleNamespace(
+                    id="world-1",
+                    project_id="proj-1",
+                    title="Coast Town",
+                    category="Location",
+                    content="The lighthouse district controls harbor entry.",
+                    tags=["harbor"],
+                    notes=None,
+                    order_index=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            ],
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(project)
+
+        resp = await client.get("/api/projects/proj-1/search", params={"q": "lighthouse"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [item["item_type"] for item in data] == ["chapter", "character", "worldbook_entry"]
+        assert data[0]["matched_field"] == "content"
+        assert "lighthouse" in data[0]["snippet"].lower()
+
+    @pytest.mark.asyncio
+    async def test_search_project_content_rejects_other_user(self, client: AsyncClient, mock_db: AsyncMock):
+        project = SimpleNamespace(
+            id="proj-1",
+            user_id="different-user-id",
+            chapters=[],
+            characters=[],
+            glossary_terms=[],
+            worldbook_entries=[],
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(project)
+
+        resp = await client.get("/api/projects/proj-1/search", params={"q": "anything"})
+
+        assert resp.status_code == 403
+
+
 # ---------------------------------------------------------------------------
 # Additional tests for missing coverage
 # ---------------------------------------------------------------------------
@@ -302,7 +388,7 @@ class TestUpdateProject:
             component_models=None,
             oasis_analysis=None,
             ontology_schema=None,
-            cognee_dataset_id=None,
+            graph_id=None,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
@@ -338,7 +424,7 @@ class TestUpdateProject:
             component_models=None,
             oasis_analysis=None,
             ontology_schema=None,
-            cognee_dataset_id=None,
+            graph_id=None,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
@@ -382,7 +468,7 @@ class TestCreateOperation:
             user_id=fake_user.id,
             chapters=[],
             component_models={},
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
         )
         op = SimpleNamespace(
             id="op-1",
@@ -436,7 +522,7 @@ class TestCreateOperation:
             user_id=fake_user.id,
             chapters=[SimpleNamespace(id="ch-1", content="existing text", order_index=0, created_at=0)],
             component_models={},
-            cognee_dataset_id=None,
+            graph_id=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
         resp = await client.post(
@@ -453,7 +539,7 @@ class TestCreateOperation:
             user_id=fake_user.id,
             chapters=[SimpleNamespace(id="ch-1", content="existing text", order_index=0, created_at=0)],
             component_models={},
-            cognee_dataset_id=None,
+            graph_id=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
         resp = await client.post(
@@ -476,7 +562,7 @@ class TestCreateOperation:
             user_id=fake_user.id,
             chapters=[SimpleNamespace(id="ch-1", content="existing text", order_index=0, created_at=0)],
             component_models={},
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
         )
         op = SimpleNamespace(
             id="op-continue",
@@ -517,7 +603,7 @@ class TestCreateOperation:
             user_id=fake_user.id,
             chapters=[],
             component_models={},
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
         resp = await client.post(
@@ -618,7 +704,7 @@ class TestCreateOperationUpload:
             user_id=fake_user.id,
             chapters=[],
             component_models={},
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
         )
         op = SimpleNamespace(
             id="op-1",
@@ -683,7 +769,7 @@ class TestCreateOperationUpload:
             user_id=fake_user.id,
             chapters=[],
             component_models={},
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
         )
         chapter_query_result = MagicMock()
         chapter_scalars = MagicMock()
@@ -748,13 +834,17 @@ class TestCreateOperationStream:
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
         mock_db.flush = AsyncMock()
+        mock_db.commit = AsyncMock()
 
         fake_text_operation = MagicMock(return_value=op)
         fake_run_async = AsyncMock(return_value=None)
+        events: list[str] = []
         def _close_task(coro):
+            events.append("create_task")
             coro.close()
             return MagicMock()
         fake_create_task = MagicMock(side_effect=_close_task)
+        mock_db.commit.side_effect = lambda: events.append("commit")
         orig_text_operation = _create_operation_stream_globals["TextOperation"]
         orig_run_async = _create_operation_stream_globals["run_operation_async"]
         orig_asyncio = _create_operation_stream_globals["asyncio"]
@@ -775,6 +865,7 @@ class TestCreateOperationStream:
         data = resp.json()
         assert data["status"] == "PENDING"
         assert fake_run_async.call_args.kwargs["use_rag"] is False
+        assert events == ["commit", "create_task"]
 
     @pytest.mark.asyncio
     async def test_stream_non_create_requires_graph(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
@@ -783,7 +874,7 @@ class TestCreateOperationStream:
             user_id=fake_user.id,
             chapters=[SimpleNamespace(id="ch-1", content="text", order_index=0, created_at=0)],
             component_models={},
-            cognee_dataset_id=None,
+            graph_id=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
         resp = await client.post(
@@ -806,7 +897,7 @@ class TestCreateOperationStream:
             user_id=fake_user.id,
             chapters=[SimpleNamespace(id="ch-1", content="text", order_index=0, created_at=0)],
             component_models={},
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
         )
         op = SimpleNamespace(
             id="op-continue-stream",
@@ -827,13 +918,17 @@ class TestCreateOperationStream:
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
         mock_db.flush = AsyncMock()
+        mock_db.commit = AsyncMock()
 
         fake_text_operation = MagicMock(return_value=op)
         fake_run_async = AsyncMock(return_value=None)
+        events: list[str] = []
         def _close_task(coro):
+            events.append("create_task")
             coro.close()
             return MagicMock()
         fake_create_task = MagicMock(side_effect=_close_task)
+        mock_db.commit.side_effect = lambda: events.append("commit")
         orig_text_operation = _create_operation_stream_globals["TextOperation"]
         orig_run_async = _create_operation_stream_globals["run_operation_async"]
         orig_asyncio = _create_operation_stream_globals["asyncio"]
@@ -852,6 +947,7 @@ class TestCreateOperationStream:
 
         assert resp.status_code == 200
         assert fake_run_async.call_args.kwargs["use_rag"] is True
+        assert events == ["commit", "create_task"]
 
     @pytest.mark.asyncio
     async def test_stream_project_not_found(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
@@ -871,3 +967,4 @@ class TestCreateOperationStream:
             json={"type": "CREATE", "input": "hello"},
         )
         assert resp.status_code == 403
+

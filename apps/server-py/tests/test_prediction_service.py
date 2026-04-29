@@ -283,7 +283,7 @@ class TestGetEnhancedPrompt:
         mock_db = AsyncMock()
 
         project = SimpleNamespace(
-            cognee_dataset_id=None,
+            graph_id=None,
             oasis_analysis=None,
             simulation_requirement=None,
             component_models=None,
@@ -315,13 +315,14 @@ async def test_get_enhanced_prompt_uses_structure_analysis_without_graph(monkeyp
         simulation_requirement="must keep tone realistic",
         component_models={"operation_analyze": "model-analyze"},
         oasis_analysis=None,
-        cognee_dataset_id=None,
+        graph_id=None,
     )
     fake_db = AsyncMock()
     fake_db.execute.return_value = _scalar_one_or_none(fake_project)
 
-    async def _fake_call_llm(*, model: str, prompt: str, db):
+    async def _fake_call_llm(*, model: str, prompt: str, db, **kwargs):
         assert model == "model-analyze"
+        assert kwargs["response_schema"].__name__ == "NarrativeStructureResponse"
         return {
             "content": (
                 '{"narrative_state":{"phase":"rising action","summary":"stake escalates"},'
@@ -359,12 +360,13 @@ async def test_get_enhanced_prompt_returns_base_when_no_context(monkeypatch: pyt
         simulation_requirement="",
         component_models={"operation_analyze": "model-analyze"},
         oasis_analysis=None,
-        cognee_dataset_id=None,
+        graph_id=None,
     )
     fake_db = AsyncMock()
     fake_db.execute.return_value = _scalar_one_or_none(fake_project)
 
-    async def _fake_call_llm(*, model: str, prompt: str, db):
+    async def _fake_call_llm(*, model: str, prompt: str, db, **kwargs):
+        assert kwargs["response_schema"].__name__ == "NarrativeStructureResponse"
         return {"content": '{"narrative_state":{"phase":"","summary":""},"core_entities":[],"active_conflicts":[],"hard_constraints":[],"style_anchors":[],"next_beats":[],"unknowns":[]}'}
 
     monkeypatch.setattr("app.services.ai.call_llm", _fake_call_llm)
@@ -389,12 +391,13 @@ async def test_get_enhanced_prompt_uses_reference_cards_without_graph(monkeypatc
         simulation_requirement="",
         component_models={"operation_analyze": "model-analyze"},
         oasis_analysis=None,
-        cognee_dataset_id=None,
+        graph_id=None,
     )
     fake_db = AsyncMock()
     fake_db.execute.return_value = _scalar_one_or_none(fake_project)
 
-    async def _fake_call_llm(*, model: str, prompt: str, db):
+    async def _fake_call_llm(*, model: str, prompt: str, db, **kwargs):
+        assert kwargs["response_schema"].__name__ == "NarrativeStructureResponse"
         return {"content": '{"narrative_state":{"phase":"","summary":""},"core_entities":[],"active_conflicts":[],"hard_constraints":[],"style_anchors":[],"next_beats":[],"unknowns":[]}'}
 
     monkeypatch.setattr("app.services.ai.call_llm", _fake_call_llm)
@@ -416,3 +419,19 @@ async def test_get_enhanced_prompt_uses_reference_cards_without_graph(monkeypatc
 
     assert prompt != "BASE_PROMPT"
     assert "Reference glossary terms" in prompt
+
+
+@pytest.mark.asyncio
+async def test_get_graph_context_exposes_search_errors(monkeypatch: pytest.MonkeyPatch):
+    async def _raise_search(*args, **kwargs):
+        raise RuntimeError("graph search unavailable")
+
+    monkeypatch.setattr("app.services.graph_service.search_graph", _raise_search)
+
+    with pytest.raises(RuntimeError, match="graph search unavailable"):
+        await prediction.get_graph_context(
+            "p4",
+            focus_text="next scene",
+            db=AsyncMock(),
+        )
+

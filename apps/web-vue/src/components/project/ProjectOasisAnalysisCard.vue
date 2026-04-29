@@ -77,9 +77,10 @@ const oasisReportModelValue = computed({
 const currentTaskLabel = computed(() => {
   const taskType = String(props.oasisTask?.task_type || '').toLowerCase()
 
-  if (taskType === 'oasis_prepare') return 'package_prepare'
-  if (taskType === 'oasis_run') return 'scenario_run'
-  if (taskType === 'oasis_report') return 'analysis_report'
+  if (taskType === 'oasis_analyze') return 'Scenario Analysis'
+  if (taskType === 'oasis_prepare') return 'OASIS Prepare'
+  if (taskType === 'oasis_run') return 'OASIS Run'
+  if (taskType === 'oasis_report') return 'OASIS Report'
 
   return taskType || 'task'
 })
@@ -190,7 +191,7 @@ const estimatedActivityCount = computed(() => Number(
       @click="emit('report')"
     >
       <FileText class="h-4 w-4" />
-      Generate Analysis Report
+      Generate OASIS Report
     </Button>
     <p v-if="!props.graphReady" class="text-xs text-amber-700 dark:text-amber-300">Build the graph before starting scenario analysis.</p>
     <Alert v-if="props.graphAnalysisError" variant="destructive" class="text-sm">

@@ -4,6 +4,7 @@ import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
 import Checkbox from '@/components/ui/Checkbox.vue'
+import Select from '@/components/ui/Select.vue'
 
 defineProps<{
   providers: Provider[]
@@ -17,7 +18,7 @@ defineProps<{
     is_active: boolean
     priority: number
   }
-  providerTypeOptions: string[]
+  providerTypeOptions: { value: string; label: string }[]
 }>()
 
 const emit = defineEmits<{
@@ -40,16 +41,10 @@ const emit = defineEmits<{
       <h3 class="text-sm font-medium text-stone-700 dark:text-zinc-200">Provider Settings</h3>
       <div class="grid gap-2 md:grid-cols-2">
         <Input v-model="providerForm.name" placeholder="Name" />
-        <div class="space-y-1">
-          <Input
-            v-model="providerForm.provider"
-            list="provider-type-options"
-            placeholder="Provider type"
-          />
-          <datalist id="provider-type-options">
-            <option v-for="item in providerTypeOptions" :key="item" :value="item" />
-          </datalist>
-        </div>
+        <Select v-model="providerForm.provider">
+          <option value="" disabled>Select type</option>
+          <option v-for="item in providerTypeOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+        </Select>
         <Input v-model="providerForm.api_key" type="password" placeholder="API key" />
         <Input v-model="providerForm.base_url" placeholder="Base URL" />
         <Input v-model.number="providerForm.priority" type="number" placeholder="Priority" />
@@ -82,7 +77,9 @@ const emit = defineEmits<{
                 class="border-b border-stone-200/80 transition-colors hover:bg-stone-100/70 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
               >
                 <td class="px-3 py-2 text-stone-700 dark:text-zinc-200">{{ p.name }}</td>
-                <td class="px-3 py-2 font-mono text-xs text-stone-600 dark:text-zinc-300">{{ p.provider }}</td>
+                <td class="px-3 py-2 text-stone-600 dark:text-zinc-300">
+                  {{ providerTypeOptions.find((item) => item.value === p.provider)?.label || p.provider }}
+                </td>
                 <td class="px-3 py-2 text-stone-600 dark:text-zinc-300">{{ p.base_url || '—' }}</td>
                 <td class="px-3 py-2 text-right">
                   <div class="flex flex-wrap justify-end gap-2">

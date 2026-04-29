@@ -81,6 +81,17 @@ describe('useProjectKnowledgeBase', () => {
     expect(kb.charactersError.value).toBeNull()
   })
 
+  it('allows clearing all reference card selections', async () => {
+    vi.mocked(projectsApi.listProjectCharacters).mockResolvedValue([charA])
+
+    const { kb } = createComposable()
+    await kb.loadCharacters()
+
+    kb.toggleCharacterScope('char-a', false)
+    expect(kb.selectedCharacterIds.value).toEqual([])
+    expect(kb.allCharactersSelected.value).toBe(false)
+  })
+
   it('validates character name before submit', async () => {
     const { kb, notifyError } = createComposable()
 

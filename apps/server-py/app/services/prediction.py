@@ -12,7 +12,28 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.project import TextProject
-from app.services.llm_json import extract_json_object
+from app.services.llm_json import StrictJsonSchemaModel, extract_json_object
+
+
+class NarrativeState(StrictJsonSchemaModel):
+    phase: str
+    summary: str
+
+
+class NarrativeEntity(StrictJsonSchemaModel):
+    name: str
+    role: str
+    state: str
+
+
+class NarrativeStructureResponse(StrictJsonSchemaModel):
+    narrative_state: NarrativeState
+    core_entities: list[NarrativeEntity]
+    active_conflicts: list[str]
+    hard_constraints: list[str]
+    style_anchors: list[str]
+    next_beats: list[str]
+    unknowns: list[str]
 
 
 def _truncate(value: str | None, limit: int) -> str:
@@ -481,7 +502,7 @@ async def get_graph_context(
     reference_query_hint: str = "",
     retrieval_queries: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Extract entity relationships from the knowledge graph using Cognee search."""
+    """Extract entity relationships from the knowledge graph search results."""
     context: dict[str, Any] = {
         "entities": [],
         "relationships": [],
@@ -492,145 +513,141 @@ async def get_graph_context(
         "reference_hint": "",
         "retrieval_queries": [],
     }
-    try:
-        from app.services.graph_service import search_graph
+    from app.services.graph_service import search_graph
 
-        focus = (focus_text or "").strip()
-        hint = _truncate(reference_query_hint, 1000).strip()
-        focus_query = focus[:1200] if focus else "current narrative context and next logical development"
-        chunk_query = focus[:900] if focus else "most relevant evidence chunks for continuity"
-        summary_query = focus[:900] if focus else "core storyline, timeline, and entity state summaries"
-        graph_query = focus[:900] if focus else "entity relationships and plot structure"
-        if hint:
-            focus_query = _truncate(f"{focus_query}\n\nReference anchors:\n{hint}", 2200)
-            chunk_query = _truncate(f"{chunk_query}\n\nReference anchors:\n{hint}", 1800)
-            summary_query = _truncate(f"{summary_query}\n\nReference anchors:\n{hint}", 1800)
-            graph_query = _truncate(f"{graph_query}\n\nReference anchors:\n{hint}", 1800)
-            context["reference_hint"] = hint
-        search_kwargs = {
-            "db": db,
-            "use_reranker": bool(use_reranker),
-            "reranker_model": reranker_model,
-            "reranker_top_n": reranker_top_n,
-        }
+    focus = (focus_text or "").strip()
+    hint = _truncate(reference_query_hint, 1000).strip()
+    focus_query = focus[:1200] if focus else "current narrative context and next logical development"
+    chunk_query = focus[:900] if focus else "most relevant evidence chunks for continuity"
+    summary_query = focus[:900] if focus else "core storyline, timeline, and entity state summaries"
+    graph_query = focus[:900] if focus else "entity relationships and plot structure"
+    if hint:
+        focus_query = _truncate(f"{focus_query}\n\nReference anchors:\n{hint}", 2200)
+        chunk_query = _truncate(f"{chunk_query}\n\nReference anchors:\n{hint}", 1800)
+        summary_query = _truncate(f"{summary_query}\n\nReference anchors:\n{hint}", 1800)
+        graph_query = _truncate(f"{graph_query}\n\nReference anchors:\n{hint}", 1800)
+        context["reference_hint"] = hint
+    search_kwargs = {
+        "db": db,
+        "use_reranker": bool(use_reranker),
+        "reranker_model": reranker_model,
+        "reranker_top_n": reranker_top_n,
+    }
 
-        query_jobs: list[tuple[str, str]] = []
-        for query in retrieval_queries or []:
-            clean_query = _truncate(query, 360).strip()
-            if not clean_query:
-                continue
-            query_jobs.append(("CHUNKS", clean_query))
-            query_jobs.append(("INSIGHTS", clean_query))
-            if len(query_jobs) >= 12:
-                break
-        if query_jobs:
-            context["retrieval_queries"] = [item[1] for item in query_jobs[::2]]
+    query_jobs: list[tuple[str, str]] = []
+    for query in retrieval_queries or []:
+        clean_query = _truncate(query, 360).strip()
+        if not clean_query:
+            continue
+        query_jobs.append(("CHUNKS", clean_query))
+        query_jobs.append(("INSIGHTS", clean_query))
+        if len(query_jobs) >= 12:
+            break
+    if query_jobs:
+        context["retrieval_queries"] = [item[1] for item in query_jobs[::2]]
 
-        tasks = [
+    tasks = [
+        search_graph(
+            project_id,
+            "key entities, characters, themes, and their relationships",
+            search_type="INSIGHTS",
+            top_k=8,
+            **search_kwargs,
+        ),
+        search_graph(
+            project_id,
+            graph_query,
+            search_type="GRAPH_COMPLETION",
+            top_k=6,
+            **search_kwargs,
+        ),
+        search_graph(
+            project_id,
+            summary_query,
+            search_type="SUMMARIES",
+            top_k=6,
+            **search_kwargs,
+        ),
+        search_graph(
+            project_id,
+            chunk_query,
+            search_type="CHUNKS",
+            top_k=10,
+            **search_kwargs,
+        ),
+        search_graph(
+            project_id,
+            focus_query,
+            search_type="RAG_COMPLETION",
+            top_k=4,
+            **search_kwargs,
+        ),
+    ]
+    for job_type, job_query in query_jobs:
+        tasks.append(
             search_graph(
                 project_id,
-                "key entities, characters, themes, and their relationships",
-                search_type="INSIGHTS",
-                top_k=8,
+                job_query,
+                search_type=job_type,
+                top_k=4 if job_type == "CHUNKS" else 3,
                 **search_kwargs,
-            ),
-            search_graph(
-                project_id,
-                graph_query,
-                search_type="GRAPH_COMPLETION",
-                top_k=6,
-                **search_kwargs,
-            ),
-            search_graph(
-                project_id,
-                summary_query,
-                search_type="SUMMARIES",
-                top_k=6,
-                **search_kwargs,
-            ),
-            search_graph(
-                project_id,
-                chunk_query,
-                search_type="CHUNKS",
-                top_k=10,
-                **search_kwargs,
-            ),
-            search_graph(
-                project_id,
-                focus_query,
-                search_type="RAG_COMPLETION",
-                top_k=4,
-                **search_kwargs,
-            ),
-        ]
-        for job_type, job_query in query_jobs:
-            tasks.append(
-                search_graph(
-                    project_id,
-                    job_query,
-                    search_type=job_type,
-                    top_k=4 if job_type == "CHUNKS" else 3,
-                    **search_kwargs,
-                )
             )
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        base_insights = _normalize_search_rows(results[0])
-        base_relationships = _normalize_search_rows(results[1])
-        base_summaries = _normalize_search_rows(results[2])
-        base_chunks = _normalize_search_rows(results[3])
-        base_rag = _normalize_search_rows(results[4])
-
-        extra_chunk_rows: list[dict[str, Any]] = []
-        extra_insight_rows: list[dict[str, Any]] = []
-        for idx, job in enumerate(query_jobs, start=5):
-            parsed_rows = _normalize_search_rows(results[idx])
-            if not parsed_rows:
-                continue
-            if job[0] == "CHUNKS":
-                extra_chunk_rows.extend(parsed_rows)
-            else:
-                extra_insight_rows.extend(parsed_rows)
-
-        context["insights"] = _rank_search_rows(
-            base_insights + extra_insight_rows,
-            focus_text=focus,
-            limit=10,
-            max_chars=420,
-            require_overlap_for_low_score=True,
-        )
-        context["relationships"] = _rank_search_rows(
-            base_relationships,
-            focus_text=focus,
-            limit=8,
-            max_chars=400,
-            require_overlap_for_low_score=False,
-        )
-        context["summaries"] = _rank_search_rows(
-            base_summaries,
-            focus_text=focus,
-            limit=6,
-            max_chars=360,
-            require_overlap_for_low_score=True,
-        )
-        context["chunks"] = _rank_search_rows(
-            base_chunks + extra_chunk_rows,
-            focus_text=focus,
-            limit=10,
-            max_chars=300,
-            require_overlap_for_low_score=True,
-        )
-        context["rag_completions"] = _rank_search_rows(
-            base_rag,
-            focus_text=focus,
-            limit=4,
-            max_chars=360,
-            require_overlap_for_low_score=False,
         )
 
-    except Exception:
-        pass  # Graph not available, continue without context
+    results = await asyncio.gather(*tasks)
+
+    base_insights = _normalize_search_rows(results[0])
+    base_relationships = _normalize_search_rows(results[1])
+    base_summaries = _normalize_search_rows(results[2])
+    base_chunks = _normalize_search_rows(results[3])
+    base_rag = _normalize_search_rows(results[4])
+
+    extra_chunk_rows: list[dict[str, Any]] = []
+    extra_insight_rows: list[dict[str, Any]] = []
+    for idx, job in enumerate(query_jobs, start=5):
+        parsed_rows = _normalize_search_rows(results[idx])
+        if not parsed_rows:
+            continue
+        if job[0] == "CHUNKS":
+            extra_chunk_rows.extend(parsed_rows)
+        else:
+            extra_insight_rows.extend(parsed_rows)
+
+    context["insights"] = _rank_search_rows(
+        base_insights + extra_insight_rows,
+        focus_text=focus,
+        limit=10,
+        max_chars=420,
+        require_overlap_for_low_score=True,
+    )
+    context["relationships"] = _rank_search_rows(
+        base_relationships,
+        focus_text=focus,
+        limit=8,
+        max_chars=400,
+        require_overlap_for_low_score=False,
+    )
+    context["summaries"] = _rank_search_rows(
+        base_summaries,
+        focus_text=focus,
+        limit=6,
+        max_chars=360,
+        require_overlap_for_low_score=True,
+    )
+    context["chunks"] = _rank_search_rows(
+        base_chunks + extra_chunk_rows,
+        focus_text=focus,
+        limit=10,
+        max_chars=300,
+        require_overlap_for_low_score=True,
+    )
+    context["rag_completions"] = _rank_search_rows(
+        base_rag,
+        focus_text=focus,
+        limit=4,
+        max_chars=360,
+        require_overlap_for_low_score=False,
+    )
 
     return context
 
@@ -796,16 +813,7 @@ async def analyze_structure(
 
     prompt = (
         "You are a narrative planning analyst for long-form generation.\n"
-        "Return JSON only with this schema:\n"
-        "{\n"
-        '  "narrative_state": {"phase": "...", "summary": "..."},\n'
-        '  "core_entities": [{"name":"...", "role":"...", "state":"..."}],\n'
-        '  "active_conflicts": ["..."],\n'
-        '  "hard_constraints": ["..."],\n'
-        '  "style_anchors": ["..."],\n'
-        '  "next_beats": ["..."],\n'
-        '  "unknowns": ["..."]\n'
-        "}\n"
+        "Use the provided response schema.\n"
         "Keep each item concise, concrete, and grounded in provided evidence.\n\n"
         f"Project title: {(project.title or '').strip()}\n"
         f"Project description: {(project.description or '').strip()}\n"
@@ -816,7 +824,14 @@ async def analyze_structure(
     )
 
     try:
-        result = await call_llm(model=model, prompt=prompt, db=db)
+        result = await call_llm(
+            model=model,
+            prompt=prompt,
+            db=db,
+            prefer_stream_override=False,
+            stream_fallback_nonstream_override=False,
+            response_schema=NarrativeStructureResponse,
+        )
         parsed = extract_json_object(str(result.get("content") or ""))
         if not isinstance(parsed, dict):
             return None
@@ -1049,7 +1064,7 @@ async def get_enhanced_prompt(
     if not project:
         return base_prompt
 
-    has_graph = bool(project.cognee_dataset_id)
+    has_graph = bool(project.graph_id)
     has_oasis = isinstance(project.oasis_analysis, dict) and bool(project.oasis_analysis)
     reference_rag_context = build_reference_rag_context(
         reference_cards,

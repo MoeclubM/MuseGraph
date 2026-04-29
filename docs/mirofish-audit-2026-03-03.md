@@ -2,7 +2,7 @@
 
 ## 对照范围
 1. 本体：`MiroFish/backend/app/services/ontology_generator.py` vs `MuseGraph/apps/server-py/app/services/ontology.py`
-2. 图谱：`MiroFish/backend/app/services/graph_builder.py` vs `MuseGraph/apps/server-py/app/services/cognee.py` + `routers/cognee_graph.py`
+2. 图谱：`MiroFish/backend/app/services/graph_builder.py` vs `MuseGraph/apps/server-py/app/services/graph_service.py` + `routers/graph.py`
 3. 模拟：`MiroFish/backend/app/services/simulation_config_generator.py` + `api/simulation.py` vs `MuseGraph/apps/server-py/app/routers/simulation.py` + `services/oasis.py`
 4. 报告：`MiroFish/backend/app/services/report_agent.py` + `api/report.py` vs `MuseGraph/apps/server-py/app/routers/report.py` + `services/oasis.py`
 
@@ -24,7 +24,7 @@
    - 当前为单次 JSON 报告生成。
    - 缺少“先规划大纲 -> 分章节生成 -> 每章可中断/重试/落盘”的完整流水线。
 3. 图谱构建过程可见性不足：
-   - 当前偏黑盒（由 cognee 管线驱动）。
+   - 当前偏黑盒（由图谱管线驱动）。
    - 缺少 MiroFish 那种 episode 级等待、批次级进度和失败定位信息。
 4. 模拟配置可解释性不足：
    - 当前没有单独暴露“配置生成推理链”日志。

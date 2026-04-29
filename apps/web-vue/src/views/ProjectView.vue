@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, computed, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
@@ -15,8 +15,11 @@ import ProjectWorkspaceHeader from '@/components/project/ProjectWorkspaceHeader.
 import { useProjectKnowledgeBase } from '@/composables/useProjectKnowledgeBase'
 import {
   runOperation,
+  startOperation,
   getEmbeddingModels,
   getModels,
+  getRerankerModels,
+  searchProject,
   createProjectChapter,
 } from '@/api/projects'
 import type { ModelInfo } from '@/api/projects'
@@ -28,6 +31,7 @@ import {
   getVisualization,
   listGraphTasks,
   startAnalyzeOasisTask,
+  startAutoSyncGraphTask,
   startBuildGraphTask,
   startGenerateOntologyTask,
   startPrepareOasisTask,
@@ -43,6 +47,7 @@ import type {
   ProjectOntology,
   ProjectOasisAnalysis,
   ProjectChapter,
+  ProjectSearchResult,
   SimulationRuntime,
 } from '@/types'
 import { extractTextFromDocument, GRAPH_DOCUMENT_ACCEPT } from '@/utils/document'
@@ -59,6 +64,8 @@ const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
 const toast = useToast()
+const GRAPH_AUTO_SYNC_COMPONENT_KEY = 'graph_auto_sync'
+const GRAPH_AUTO_SYNC_DISABLED = 'disabled'
 
 const projectId = computed(() => route.params.id as string)
 const content = ref('')
@@ -72,6 +79,10 @@ const inlineRenameSubmitting = ref(false)
 const projectTitleEditing = ref(false)
 const projectTitleDraft = ref('')
 const projectTitleSaving = ref(false)
+const projectSearchQuery = ref('')
+const projectSearchLoading = ref(false)
+const projectSearchError = ref<string | null>(null)
+const projectSearchResults = ref<ProjectSearchResult[]>([])
 const saving = ref(false)
 type OperationType = 'CREATE' | 'CONTINUE' | 'ANALYZE' | 'REWRITE' | 'SUMMARIZE'
 const operationType = ref<OperationType>('CREATE')
@@ -230,6 +241,7 @@ const TASK_DETAIL_POLL_MS = 3000
 
 const models = ref<ModelInfo[]>([])
 const embeddingModels = ref<ModelInfo[]>([])
+const rerankerModels = ref<ModelInfo[]>([])
 const modelsLoading = ref(false)
 const chapterImporting = ref(false)
 const chapterImportMessage = ref<string | null>(null)
@@ -314,8 +326,8 @@ const hasOntology = computed(() => {
 })
 const hasOasisAnalysis = computed(() => !!oasisAnalysisData.value?.scenario_summary)
 const graphReady = computed(() => {
-  if (graphStatus.value?.dataset_id) return true
-  return !!projectStore.currentProject?.cognee_dataset_id
+  if (graphStatus.value?.graph_id) return true
+  return !!projectStore.currentProject?.graph_id
 })
 const draftDirty = computed(() => {
   const chapter = findChapterById(activeChapterId.value)
@@ -374,13 +386,12 @@ const graphFreshnessHint = computed(() => {
   const state = graphFreshnessState.value
   const statusPayload = graphStatus.value
   const reason = String(statusPayload?.graph_reason || '').trim()
+  const resumeFailedChunks = Number(statusPayload?.graph_resume_failed_chunks || 0)
   if (state === 'no_ontology') {
-    return 'Please complete ontology generation before graph build.'
+    return 'Generate ontology before building the graph.'
   }
   if (state === 'empty') {
-    return reason === 'dataset_missing'
-      ? 'No graph dataset found. Build the graph before RAG-dependent operations.'
-      : 'Build graph once to enable RAG and graph-based analysis.'
+    return 'Build the graph once to enable graph search and RAG.'
   }
   if (state === 'syncing') {
     const taskId = String(statusPayload?.graph_syncing_task_id || '').trim()
@@ -389,16 +400,21 @@ const graphFreshnessHint = computed(() => {
       : 'Graph build task is running.'
   }
   if (state === 'stale') {
+    if (reason === 'graph_build_incomplete_resume_available') {
+      return resumeFailedChunks > 0
+        ? `${resumeFailedChunks} graph chunk(s) failed in the previous run. Continue the failed chunks.`
+        : 'The previous graph build stopped early. Continue the failed chunks.'
+    }
     const added = Number(statusPayload?.graph_added_count || 0)
     const modified = Number(statusPayload?.graph_modified_count || 0)
     const removed = Number(statusPayload?.graph_removed_count || 0)
     if (added > 0 || modified > 0 || removed > 0) {
-      return `Changes detected: +${added} / ~${modified} / -${removed}. Run incremental update before RAG operations.`
+      return `Changes detected: +${added} / ~${modified} / -${removed}.`
     }
     if (reason === 'graph_baseline_missing_or_scope_changed' || reason === 'graph_hash_state_missing_or_scope_changed') {
-      return 'Graph baseline is missing or scope changed. Run a rebuild once, then use incremental updates.'
+      return 'Graph baseline is missing or the build scope changed. Run a rebuild once.'
     }
-    return 'Chapters changed after last build. Run incremental update before RAG-dependent operations.'
+    return 'Source chapters changed after the last graph build.'
   }
   const lastBuildAt = String(statusPayload?.graph_last_build_at || '').trim()
   if (lastBuildAt) {
@@ -468,10 +484,19 @@ const operationModel = computed({
 })
 
 const operationPrimaryLabel = computed(() => {
-  if (operationType.value === 'CREATE') return '2. Generate Draft From Outline'
-  if (operationType.value === 'CONTINUE') return 'Run Continue'
+  if (operationType.value === 'CREATE') return 'Step 3. Generate Draft'
+  if (operationType.value === 'CONTINUE') return 'Step 3. Run Continue'
   return `Run ${operationTypes.find((o) => o.value === operationType.value)?.label || operationType.value}`
 })
+
+const operationReferencePayload = computed(() => ({
+  character_ids: selectedCharacterIds.value,
+  glossary_term_ids: selectedGlossaryTermIds.value,
+  worldbook_entry_ids: selectedWorldbookEntryIds.value,
+  include_all_characters: allCharactersSelected.value,
+  include_all_glossary_terms: allGlossaryTermsSelected.value,
+  include_all_worldbook_entries: allWorldbookEntriesSelected.value,
+}))
 
 const ontologyModel = computed({
   get: () => componentModels.value.ontology_generation || '',
@@ -487,6 +512,20 @@ const graphBuildActionLabel = computed(() =>
   graphBuildMode.value === 'incremental'
     ? 'Update Graph Incrementally'
     : 'Build Knowledge Graph (From Zero)'
+)
+const graphAutoSyncEnabled = computed({
+  get: () => componentModels.value[GRAPH_AUTO_SYNC_COMPONENT_KEY] !== GRAPH_AUTO_SYNC_DISABLED,
+  set: (value: boolean) => setComponentModel(GRAPH_AUTO_SYNC_COMPONENT_KEY, value ? 'enabled' : GRAPH_AUTO_SYNC_DISABLED),
+})
+const graphResumeAvailable = computed(() => Boolean(graphStatus.value?.graph_resume_available))
+const graphResumeFailedChunks = computed(() => Math.max(0, Number(graphStatus.value?.graph_resume_failed_chunks || 0)))
+const graphResumeMode = computed<'rebuild' | 'incremental'>(() =>
+  String(graphStatus.value?.graph_resume_mode || '').trim() === 'incremental' ? 'incremental' : 'rebuild'
+)
+const graphResumeActionLabel = computed(() =>
+  graphResumeFailedChunks.value > 0
+    ? `Continue Failed Chunks (${graphResumeFailedChunks.value})`
+    : 'Continue Failed Graph Build'
 )
 
 const graphEmbeddingModel = computed({
@@ -529,7 +568,36 @@ const chapterContextMenuStyle = computed(() => {
 })
 
 function parseError(e: any, fallback: string): string {
-  return e?.response?.data?.detail || e?.response?.data?.message || e?.message || fallback
+  const raw = String(e?.response?.data?.detail || e?.response?.data?.message || e?.message || '').trim()
+  if (!raw) return fallback
+  const lowered = raw.toLowerCase()
+  if (!lowered.includes('<html') && !lowered.includes('<!doctype html') && !lowered.includes('<body')) {
+    return raw
+  }
+  const cleaned = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  return cleaned || fallback
+}
+
+async function handleProjectSearch() {
+  const query = projectSearchQuery.value.trim()
+  if (!query || projectSearchLoading.value) return
+  projectSearchLoading.value = true
+  projectSearchError.value = null
+  try {
+    projectSearchResults.value = await searchProject(projectId.value, query)
+  } catch (e: any) {
+    projectSearchError.value = parseError(e, 'Failed to search project')
+  } finally {
+    projectSearchLoading.value = false
+  }
+}
+
+function openProjectSearchResult(result: ProjectSearchResult) {
+  if (result.item_type === 'chapter') {
+    void handleSelectChapter(result.item_id)
+    return
+  }
+  rightPanelTab.value = 'ai'
 }
 
 function beginProjectTitleEdit() {
@@ -589,6 +657,7 @@ function isPageVisible(): boolean {
 
 function handleVisibilityChange() {
   if (!isPageVisible()) return
+  void loadModels()
   void loadTaskList(true)
   if (pipelineTaskPolling.value && pipelineTask.value?.task_id) {
     void pollPipelineTask(pipelineTask.value.task_id)
@@ -764,7 +833,7 @@ function taskTypeLabel(taskType: string): string {
     oasis_analyze: 'Scenario Analyze',
     oasis_prepare: 'Runtime Prepare',
     oasis_run: 'Simulation Run',
-    oasis_report: 'Simulation Report',
+    oasis_report: 'OASIS Report',
   }
   return labels[taskType] || taskType
 }
@@ -907,6 +976,9 @@ async function pollPipelineTask(taskId: string) {
       } else if (data.task.task_type === 'graph_build') {
         graphLoading.value = false
         graphError.value = data.task.error || data.task.message || 'Graph build task failed'
+        await loadGraphStatus(true)
+        await loadProject()
+        await loadGraphData({ preserveOnError: true })
       }
       pipelineTaskError.value = data.task.error || data.task.message || 'Task failed'
     }
@@ -1486,7 +1558,7 @@ async function loadProjectSimulations() {
 
 async function handleCreateWorkflowSimulation() {
   const project = projectStore.currentProject
-  if (!project || !project.cognee_dataset_id) {
+  if (!project || !project.graph_id) {
     simulationError.value = 'Please build knowledge graph before creating simulation'
     return
   }
@@ -1496,7 +1568,7 @@ async function handleCreateWorkflowSimulation() {
     await persistActiveChapterDraftIfNeeded()
     const result = await createSimulation({
       project_id: project.id,
-      graph_id: project.cognee_dataset_id,
+      graph_id: project.graph_id,
       chapter_ids: selectedChapterIds.value.length ? selectedChapterIds.value : undefined,
     })
     await loadProjectSimulations()
@@ -1539,7 +1611,7 @@ async function loadProject() {
   await projectStore.fetchOperations(projectId.value)
   await Promise.all([loadCharacters(), loadGlossaryTerms(), loadWorldbookEntries()])
   await loadProjectSimulations()
-  if (projectStore.currentProject?.cognee_dataset_id) {
+  if (projectStore.currentProject?.graph_id) {
     await loadGraphData()
   } else {
     graphData.value = { nodes: [], edges: [] }
@@ -1635,26 +1707,27 @@ async function persistActiveChapterDraftIfNeeded(
   return changedChapterIds
 }
 
-function normalizeChapterIds(chapterIds: string[]): string[] {
-  const seen = new Set<string>()
-  const normalized: string[] = []
-  for (const raw of chapterIds) {
-    const id = String(raw || '').trim()
-    if (!id || seen.has(id)) continue
-    seen.add(id)
-    normalized.push(id)
-  }
-  return normalized
-}
-
-async function triggerIncrementalGraphRefresh(chapterIds: string[] = []) {
+async function triggerIncrementalGraphRefresh(_chapterIds: string[] = []) {
+  if (!graphAutoSyncEnabled.value) return
   if (!hasOntology.value) return
   if (graphLoading.value) return
-  const normalized = normalizeChapterIds(chapterIds)
+  const chapters = projectStore.orderedChapters || []
+  const sourceText = chapters.length
+    ? chapters
+      .map((chapter) => (
+        chapter.id === activeChapterId.value
+          ? content.value
+          : (chapter.content || '')
+      ).trim())
+      .filter(Boolean)
+      .join('\n\n')
+      .trim()
+    : (content.value || '').trim()
+  if (!sourceText) return
   graphBuildSummary.value = null
   try {
     const response = await startBuildGraphTask(projectId.value, {
-      chapter_ids: normalized.length ? normalized : undefined,
+      text: sourceText,
       build_mode: 'incremental',
     })
     pipelineTask.value = response.task
@@ -1666,6 +1739,59 @@ async function triggerIncrementalGraphRefresh(chapterIds: string[] = []) {
   } catch (e: any) {
     toast.error(parseError(e, 'Failed to refresh graph incrementally'))
   }
+}
+
+async function handleRunAutoGraphSync() {
+  if (graphLoading.value) return
+  if (!hasOntology.value) {
+    graphError.value = 'Generate ontology before running automatic graph sync.'
+    return
+  }
+  graphBuildSummary.value = null
+  graphError.value = null
+  pipelineTaskError.value = null
+  graphBuildProgress.value = 5
+  graphBuildMessage.value = 'Preparing automatic graph sync...'
+  graphParsingFile.value = null
+  let started = false
+  try {
+    await persistActiveChapterDraftIfNeeded()
+    const response = await startAutoSyncGraphTask(projectId.value)
+    started = true
+    pipelineTask.value = response.task
+    upsertTaskListItem(response.task)
+    syncPipelineProgress(response.task)
+    expandTaskCenterForRunningTask()
+    startPipelineTaskPolling(response.task.task_id)
+    toast.success('Automatic graph sync task started')
+  } catch (e: any) {
+    graphError.value = parseError(e, 'Failed to start automatic graph sync')
+  } finally {
+    graphParsingFile.value = null
+    if (!started) {
+      graphLoading.value = false
+      if (!pipelineTaskPolling.value) {
+        graphBuildProgress.value = 0
+        graphBuildMessage.value = ''
+      }
+    }
+  }
+}
+
+async function waitForOperationCompletion(operationId: string): Promise<Operation> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 12 * 60 * 1000) {
+    await projectStore.fetchOperations(projectId.value)
+    const current = projectStore.operations.find((item) => item.id === operationId)
+    if (current?.status === 'COMPLETED') {
+      return current
+    }
+    if (current?.status === 'FAILED') {
+      throw new Error(current.error || 'Operation failed')
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+  }
+  throw new Error('Operation timed out')
 }
 
 async function handleOperation() {
@@ -1706,10 +1832,7 @@ async function handleOperation() {
     const input =
       op === 'CREATE'
         ? [
-            'Generate a full draft strictly based on the outline below.',
-            'Stay faithful to the user prompt and keep narrative consistency.',
-            '',
-            '[User Prompt]',
+            '[Goal]',
             createUserPrompt.value.trim(),
             '',
             '[Outline]',
@@ -1717,25 +1840,21 @@ async function handleOperation() {
           ].join('\n')
         : op === 'CONTINUE'
           ? [
-              'Continue writing according to the continuation outline and user instruction.',
-              'Use graph retrieval context (RAG) to preserve entities, roles, and relationships.',
-              '',
-              '[User Instruction]',
+              '[Instruction]',
               continueUserInstruction.value.trim(),
               '',
-              '[Continuation Outline]',
+              '[Outline]',
               continueOutline.value.trim(),
             ].join('\n')
         : undefined
-    const result: Operation = await runOperation(projectId.value, {
+    const created = await startOperation(projectId.value, {
       type: op,
       input,
       model: operationModel.value || undefined,
       chapter_ids: selectedChapterIds.value.length ? selectedChapterIds.value : undefined,
-      character_ids: selectedCharacterIds.value.length ? selectedCharacterIds.value : undefined,
-      glossary_term_ids: selectedGlossaryTermIds.value.length ? selectedGlossaryTermIds.value : undefined,
-      worldbook_entry_ids: selectedWorldbookEntryIds.value.length ? selectedWorldbookEntryIds.value : undefined,
+      ...operationReferencePayload.value,
     })
+    const result = await waitForOperationCompletion(created.id)
     operationResult.value = result.output
     let changedChapterIds: string[] = []
     if (result.output && op === 'CONTINUE') {
@@ -1771,11 +1890,9 @@ async function handleGenerateCreateOutline() {
   try {
     await persistActiveChapterDraftIfNeeded()
     const input = [
-      'Generate a detailed writing outline first.',
-      'Output sections: Theme, Plot Arc, Chapter Beats, Character Goals, Risks, Cliffhangers.',
-      'Do not use graph retrieval context in this stage; rely on user prompt only.',
+      'Create a writing outline.',
       '',
-      '[User Prompt]',
+      '[Goal]',
       createUserPrompt.value.trim(),
     ].join('\n')
     const result = await runOperation(projectId.value, {
@@ -1783,9 +1900,7 @@ async function handleGenerateCreateOutline() {
       input,
       model: operationModel.value || undefined,
       chapter_ids: selectedChapterIds.value.length ? selectedChapterIds.value : undefined,
-      character_ids: selectedCharacterIds.value.length ? selectedCharacterIds.value : undefined,
-      glossary_term_ids: selectedGlossaryTermIds.value.length ? selectedGlossaryTermIds.value : undefined,
-      worldbook_entry_ids: selectedWorldbookEntryIds.value.length ? selectedWorldbookEntryIds.value : undefined,
+      ...operationReferencePayload.value,
       use_rag: false,
     })
     createOutline.value = result.output?.trim() || ''
@@ -1820,21 +1935,17 @@ async function handleGenerateContinueOutline() {
     const result = await runOperation(projectId.value, {
       type: 'ANALYZE',
       input: [
-        'Generate a continuation outline before writing the next chapter.',
-        'Use RAG context to summarize prior content and character states first, then output follow-up outline.',
-        'Output sections: Prior Story Summary, Character State Board, Continuation Goal, Story Beats, Risk Checks, Writing Instructions.',
+        'Create a continuation outline.',
         '',
-        '[User Instruction]',
+        '[Instruction]',
         continueUserInstruction.value.trim(),
         '',
-        '[Selected Chapter Scope]',
-        selectedChapters.value.map((chapter) => chapter.title || chapter.id).join(', ') || 'Current chapter only',
+        '[Scope]',
+        selectedChapters.value.map((chapter) => chapter.title || chapter.id).join(', ') || 'Current chapter',
       ].join('\n'),
       model: operationModel.value || undefined,
       chapter_ids: selectedChapterIds.value.length ? selectedChapterIds.value : undefined,
-      character_ids: selectedCharacterIds.value.length ? selectedCharacterIds.value : undefined,
-      glossary_term_ids: selectedGlossaryTermIds.value.length ? selectedGlossaryTermIds.value : undefined,
-      worldbook_entry_ids: selectedWorldbookEntryIds.value.length ? selectedWorldbookEntryIds.value : undefined,
+      ...operationReferencePayload.value,
     })
     continueOutline.value = result.output?.trim() || ''
     if (!continueOutline.value) {
@@ -1899,10 +2010,14 @@ async function handleGenerateOntology() {
   }
 }
 
-async function handleBuildGraph() {
+async function handleBuildGraph(resumeFailed = false) {
   if (graphLoading.value || !graphCanBuild.value) return
   if (!hasOntology.value) {
-    graphError.value = 'Please generate ontology before building the graph'
+    graphError.value = 'Generate ontology before building the graph.'
+    return
+  }
+  if (resumeFailed && !graphResumeAvailable.value) {
+    graphError.value = 'No failed graph chunks are available to continue.'
     return
   }
   graphBuildSummary.value = null
@@ -1910,7 +2025,7 @@ async function handleBuildGraph() {
   graphError.value = null
   pipelineTaskError.value = null
   graphBuildProgress.value = 5
-  graphBuildMessage.value = 'Preparing graph build...'
+  graphBuildMessage.value = resumeFailed ? 'Preparing failed graph chunks...' : 'Preparing graph build...'
   graphParsingFile.value = null
   let started = false
   try {
@@ -1920,7 +2035,8 @@ async function handleBuildGraph() {
       text: sourceText || undefined,
       ontology: ontologyData.value,
       chapter_ids: selectedChapterIds.value.length ? selectedChapterIds.value : undefined,
-      build_mode: graphBuildMode.value,
+      build_mode: resumeFailed ? graphResumeMode.value : graphBuildMode.value,
+      resume_failed: resumeFailed,
     })
     started = true
     pipelineTask.value = response.task
@@ -1929,12 +2045,14 @@ async function handleBuildGraph() {
     expandTaskCenterForRunningTask()
     startPipelineTaskPolling(response.task.task_id)
     toast.success(
-      graphBuildMode.value === 'incremental'
-        ? 'Incremental graph update task started'
-        : 'Graph rebuild task started'
+      resumeFailed
+        ? 'Continue graph build task started'
+        : graphBuildMode.value === 'incremental'
+          ? 'Incremental graph update task started'
+          : 'Graph rebuild task started'
     )
   } catch (e: any) {
-    graphError.value = parseError(e, 'Failed to build graph')
+    graphError.value = parseError(e, resumeFailed ? 'Failed to continue graph build' : 'Failed to build graph')
   } finally {
     graphParsingFile.value = null
     if (!started) {
@@ -2107,15 +2225,18 @@ function oasisStageClass(done: boolean) {
 async function loadModels() {
   modelsLoading.value = true
   try {
-    const [chatModels, embedModels] = await Promise.all([
+    const [chatModels, embedModels, rerankModels] = await Promise.all([
       getModels(),
       getEmbeddingModels(),
+      getRerankerModels(),
     ])
     models.value = chatModels
     embeddingModels.value = embedModels
+    rerankerModels.value = rerankModels
   } catch {
     models.value = []
     embeddingModels.value = []
+    rerankerModels.value = []
   } finally {
     modelsLoading.value = false
   }
@@ -2218,6 +2339,9 @@ watch(
       continueUserInstruction.value = ''
       continueOutline.value = ''
       continueOutlineError.value = null
+      projectSearchQuery.value = ''
+      projectSearchError.value = null
+      projectSearchResults.value = []
       resetKnowledgeBaseState()
       confirmedSimulationId.value = ''
       loadProject()
@@ -2319,12 +2443,17 @@ watch(selectedChapterIds, () => {
           :right-panel-tab="rightPanelTab"
           :right-panel-tabs="rightPanelTabs"
           :graph-ready="graphReady"
-          :operation-type="operationType"
           @update:right-panel-tab="rightPanelTab = $event"
         >
           <template #ai-content>
             <ProjectRightAIContent
               :right-panel-tab="rightPanelTab"
+              :project-search-query="projectSearchQuery"
+              :project-search-loading="projectSearchLoading"
+              :project-search-error="projectSearchError"
+              :project-search-results="projectSearchResults"
+              :handle-project-search="handleProjectSearch"
+              :open-project-search-result="openProjectSearchResult"
               :selected-characters-count="selectedCharacters.length"
               :character-selection-count-label="characterSelectionCountLabel"
               :characters-loading="charactersLoading"
@@ -2413,6 +2542,7 @@ watch(selectedChapterIds, () => {
               :project-simulations="projectSimulations"
               :confirmed-simulation-id="confirmedSimulationId"
               :can-confirm-simulation="canConfirmSimulation"
+              @update:project-search-query="projectSearchQuery = $event"
               @update:operation-type="setOperationType"
               @update:operation-model="operationModel = $event"
               @update:continuation-apply-mode="continuationApplyMode = $event"
@@ -2449,6 +2579,7 @@ watch(selectedChapterIds, () => {
               :ontology-meta="ontologyMeta"
               :graph-build-model="graphBuildModel"
               :embedding-models="embeddingModels"
+              :reranker-models="rerankerModels"
               :graph-embedding-model="graphEmbeddingModel"
               :graph-reranker-model="graphRerankerModel"
               :graph-build-mode="graphBuildMode"
@@ -2457,6 +2588,9 @@ watch(selectedChapterIds, () => {
               :graph-freshness-hint="graphFreshnessHint"
               :graph-loading="graphLoading"
               :graph-build-action-label="graphBuildActionLabel"
+              :graph-auto-sync-enabled="graphAutoSyncEnabled"
+              :graph-resume-available="graphResumeAvailable"
+              :graph-resume-action-label="graphResumeActionLabel"
               :graph-build-message="graphBuildMessage"
               :graph-build-progress="graphBuildProgress"
               :graph-build-summary="graphBuildSummary"
@@ -2492,8 +2626,11 @@ watch(selectedChapterIds, () => {
               @update:graph-embedding-model="graphEmbeddingModel = $event"
               @update:graph-reranker-model="graphRerankerModel = $event"
               @update:graph-build-mode="graphBuildMode = $event"
+              @update:graph-auto-sync-enabled="graphAutoSyncEnabled = $event"
               @generate-ontology="handleGenerateOntology"
               @build-graph="handleBuildGraph"
+              @run-auto-sync="handleRunAutoGraphSync"
+              @resume-graph-build="handleBuildGraph(true)"
               @update:graph-analysis-prompt="graphAnalysisPrompt = $event"
               @update:oasis-analysis-model="oasisAnalysisModel = $event"
               @update:oasis-simulation-model="oasisSimulationModel = $event"
