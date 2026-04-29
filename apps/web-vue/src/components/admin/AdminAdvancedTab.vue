@@ -7,6 +7,7 @@ import Alert from '@/components/ui/Alert.vue'
 import Input from '@/components/ui/Input.vue'
 import Textarea from '@/components/ui/Textarea.vue'
 import Checkbox from '@/components/ui/Checkbox.vue'
+import Select from '@/components/ui/Select.vue'
 
 const props = defineProps<{
   oasisConfig: OasisConfig
@@ -84,6 +85,28 @@ const llmModelConcurrencyOverridesInputValue = computed({
           <Checkbox v-model="oasisConfig.llm_stream_fallback_nonstream" />
           llm_stream_fallback_nonstream
         </label>
+        <div class="space-y-1 md:col-span-3">
+          <label class="text-xs text-stone-500 dark:text-zinc-400">llm_openai_api_style</label>
+          <Select v-model="oasisConfig.llm_openai_api_style">
+            <option value="responses">responses</option>
+            <option value="chat_completions">chat_completions</option>
+          </Select>
+        </div>
+        <div class="space-y-1 md:col-span-3">
+          <label class="text-xs text-stone-500 dark:text-zinc-400">llm_reasoning_effort</label>
+          <Select v-model="oasisConfig.llm_reasoning_effort">
+            <option value="model_default">model_default</option>
+            <option value="none">none</option>
+            <option value="minimal">minimal</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+          </Select>
+          <p class="text-xs text-stone-500 dark:text-zinc-400">
+            Support depends on the selected model and gateway. Unsupported levels surface provider errors directly.
+          </p>
+        </div>
       </div>
 
       <Alert v-if="llmRequestConfigError" variant="destructive">{{ llmRequestConfigError }}</Alert>

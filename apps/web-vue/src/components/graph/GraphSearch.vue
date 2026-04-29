@@ -115,7 +115,7 @@ async function handleSearch() {
         placeholder="Top N"
       />
       <span class="text-xs text-stone-500 dark:text-zinc-500">
-        Model uses workspace setting: <code>graph_reranker</code>
+        Model uses project setting: <code>graph_reranker</code>
       </span>
     </div>
 

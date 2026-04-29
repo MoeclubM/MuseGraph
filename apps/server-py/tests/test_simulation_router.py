@@ -80,7 +80,7 @@ class TestSimulationCreate:
         project = SimpleNamespace(
             id="proj-1",
             user_id=fake_user.id,
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
             chapters=[
                 SimpleNamespace(
                     id="ch-1",
@@ -124,7 +124,7 @@ class TestSimulationCreate:
         project = SimpleNamespace(
             id="proj-1",
             user_id=fake_user.id,
-            cognee_dataset_id=None,
+            graph_id=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -141,7 +141,7 @@ class TestSimulationCreate:
         project = SimpleNamespace(
             id="proj-1",
             user_id="different-user-id",
-            cognee_dataset_id="dataset-1",
+            graph_id="dataset-1",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -356,7 +356,7 @@ class TestSimulationStart:
         assert resp.json()["data"]["status"] == "completed"
 
     @pytest.mark.asyncio
-    async def test_build_run_artifacts_salvages_invalid_top_level_json(self, mock_db: AsyncMock):
+    async def test_build_run_artifacts_retries_invalid_top_level_json(self, mock_db: AsyncMock):
         from tests.conftest import app
 
         g = _get_endpoint_globals(app, "start_simulation")
@@ -399,20 +399,47 @@ class TestSimulationStart:
             component_models=None,
         )
         run_result = {"metrics": {"total_rounds": 2}}
-        malformed = (
-            '{'
-            '"rounds":['
-            '{"round":1,"situation":"Round 1 situation","developments":["Signal emerges"],"agent_updates":[{"agent":"Agent1","decision":"Issue update","rationale":"Set narrative","impact":"Stabilizes discussion"}],"signals":[{"type":"shift","summary":"Attention refocuses"}]},'
-            '{"round":2,"situation":"Round 2 situation","developments":["External pressure rises"],"agent_updates":[{"agent":"Agent1","decision":"Coordinate response","rationale":"Reduce uncertainty","impact":"Mitigates risk"}],"signals":[{"type":"risk","summary":"Escalation risk remains"}]}'
-            ']'
-            '}'
-        )
-
         orig_call = g["call_llm"]
         orig_extract = g["extract_json_object"]
-        mock_call = AsyncMock(return_value={"content": malformed})
+        mock_call = AsyncMock(side_effect=[{"content": "invalid"}, {"content": "valid"}])
         g["call_llm"] = mock_call
-        g["extract_json_object"] = MagicMock(return_value={"rounds": []})
+        g["extract_json_object"] = MagicMock(
+            side_effect=[
+                None,
+                {
+                    "rounds": [
+                        {
+                            "round": 1,
+                            "situation": "Round 1 situation",
+                            "developments": ["Signal emerges"],
+                            "agent_updates": [
+                                {
+                                    "agent": "Agent1",
+                                    "decision": "Issue update",
+                                    "rationale": "Set narrative",
+                                    "impact": "Stabilizes discussion",
+                                }
+                            ],
+                            "signals": [{"type": "shift", "summary": "Attention refocuses"}],
+                        },
+                        {
+                            "round": 2,
+                            "situation": "Round 2 situation",
+                            "developments": ["External pressure rises"],
+                            "agent_updates": [
+                                {
+                                    "agent": "Agent1",
+                                    "decision": "Coordinate response",
+                                    "rationale": "Reduce uncertainty",
+                                    "impact": "Mitigates risk",
+                                }
+                            ],
+                            "signals": [{"type": "risk", "summary": "Escalation risk remains"}],
+                        },
+                    ]
+                },
+            ]
+        )
         try:
             updated_run, actions = await g["_build_run_artifacts_with_llm"](
                 sim=sim,
@@ -424,6 +451,8 @@ class TestSimulationStart:
             assert any(action["action_type"] == "decision" for action in actions)
             assert "highlights" not in updated_run
             assert mock_call.await_args.kwargs["max_tokens"] > 1024
+            assert mock_call.await_args.kwargs["response_schema"].__name__ == "SimulationRunResponse"
+            assert mock_call.await_count == 2
         finally:
             g["call_llm"] = orig_call
             g["extract_json_object"] = orig_extract
@@ -996,3 +1025,4 @@ class TestHelperFunctions:
         assert _resolve_simulation_run_max_tokens(1) >= 1024
         assert _resolve_simulation_run_max_tokens(12) > _resolve_simulation_run_max_tokens(1)
         assert _resolve_simulation_run_max_tokens(1000) <= 16384
+

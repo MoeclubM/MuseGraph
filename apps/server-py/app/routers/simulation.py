@@ -2,7 +2,6 @@
 import hashlib
 import json
 import logging
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -18,7 +17,7 @@ from app.models.project import ProjectChapter, TextProject
 from app.models.runtime import SimulationRuntime
 from app.models.user import User
 from app.services.ai import DEFAULT_MODEL, call_llm, llm_billing_scope, resolve_component_model
-from app.services.llm_json import extract_json_object
+from app.services.llm_json import StrictJsonSchemaModel, extract_json_object
 from app.services.oasis import analyze_and_enrich_oasis, build_oasis_package, build_oasis_run_result, load_oasis_config
 from app.services.task_state import TaskStatus, task_manager
 
@@ -63,6 +62,30 @@ class SimulationStopRequest(BaseModel):
 
 class EnvRequest(BaseModel):
     simulation_id: str
+
+
+class SimulationAgentUpdate(StrictJsonSchemaModel):
+    agent: str
+    decision: str
+    rationale: str
+    impact: str
+
+
+class SimulationSignal(StrictJsonSchemaModel):
+    type: str
+    summary: str
+
+
+class SimulationRound(StrictJsonSchemaModel):
+    round: int
+    situation: str
+    developments: list[str]
+    agent_updates: list[SimulationAgentUpdate]
+    signals: list[SimulationSignal]
+
+
+class SimulationRunResponse(StrictJsonSchemaModel):
+    rounds: list[SimulationRound]
 
 
 def _now_iso() -> str:
@@ -419,35 +442,6 @@ def _build_simulation_retry_prompt(base_prompt: str, reason: str, raw_content: s
     return f"{base_prompt}{retry_note}"
 
 
-def _extract_named_json_value(raw: str, key: str) -> Any | None:
-    text = str(raw or "")
-    if not text:
-        return None
-    pattern = re.compile(rf'"{re.escape(key)}"\s*:')
-    decoder = json.JSONDecoder()
-    for match in pattern.finditer(text):
-        idx = match.end()
-        while idx < len(text) and text[idx].isspace():
-            idx += 1
-        if idx >= len(text):
-            continue
-        try:
-            value, _ = decoder.raw_decode(text[idx:])
-            return value
-        except Exception:
-            continue
-    return None
-
-
-def _salvage_simulation_run_payload(raw_content: str) -> dict[str, Any] | None:
-    payload = {
-        "rounds": _extract_named_json_value(raw_content, "rounds"),
-    }
-    if not any(value not in (None, "", [], {}) for value in payload.values()):
-        return None
-    return payload
-
-
 def _resolve_simulation_run_max_tokens(total_rounds: int) -> int:
     safe_rounds = max(1, int(total_rounds or 1))
     estimated = SIMULATION_RUN_MAX_TOKENS_BASE + (safe_rounds * SIMULATION_RUN_MAX_TOKENS_PER_ROUND)
@@ -487,18 +481,7 @@ async def _build_run_artifacts_with_llm(
     prompt = "\n".join(
         [
             "You are generating a multi-round scenario simulation for text analysis and forecasting.",
-            "Return JSON only with this schema:",
-            "{",
-            '  "rounds": [',
-            "    {",
-            '      "round": 1,',
-            '      "situation": "...",',
-            '      "developments": ["..."],',
-            '      "agent_updates": [{"agent":"...", "decision":"...", "rationale":"...", "impact":"..."}],',
-            '      "signals": [{"type":"risk|opportunity|shift", "summary":"..."}]',
-            "    }",
-            "  ]",
-            "}",
+            "Use the provided response schema.",
             "Rules:",
             f"- Generate exactly {total_rounds} rounds with coherent progression.",
             "- This is a generic scenario simulation, not a social-media platform simulation.",
@@ -538,17 +521,18 @@ async def _build_run_artifacts_with_llm(
             user_id=sim.user_id,
             project_id=project.id,
         ):
-            llm_result = await call_llm(model=model, prompt=retry_prompt, db=db, max_tokens=run_max_tokens)
+            llm_result = await call_llm(
+                model=model,
+                prompt=retry_prompt,
+                db=db,
+                max_tokens=run_max_tokens,
+                prefer_stream_override=False,
+                stream_fallback_nonstream_override=False,
+                response_schema=SimulationRunResponse,
+            )
         raw_content = str(llm_result.get("content") or "")
-        initial = extract_json_object(raw_content)
-        candidates: list[tuple[str, dict[str, Any]]] = []
-        if isinstance(initial, dict):
-            candidates.append(("parsed", initial))
-        repaired = _salvage_simulation_run_payload(raw_content)
-        if isinstance(repaired, dict) and repaired and all(repaired != candidate for _, candidate in candidates):
-            candidates.append(("repaired", repaired))
-
-        if not candidates:
+        parsed = extract_json_object(raw_content)
+        if not isinstance(parsed, dict):
             last_error = ValueError("simulation_run_llm_response_not_json_or_invalid_schema")
             logger.warning(
                 "Simulation run JSON parse failed on attempt %s (preview=%s)",
@@ -558,17 +542,8 @@ async def _build_run_artifacts_with_llm(
             retry_prompt = _build_simulation_retry_prompt(prompt, str(last_error), raw_content)
             continue
 
-        for source, candidate in candidates:
-            rounds = candidate.get("rounds")
-            if isinstance(rounds, list) and rounds:
-                parsed = candidate
-                if source == "repaired":
-                    logger.warning(
-                        "Simulation run JSON salvaged on attempt %s via field-level extraction",
-                        attempt + 1,
-                    )
-                break
-        if parsed is not None:
+        rounds = parsed.get("rounds")
+        if isinstance(rounds, list) and rounds:
             break
 
         last_error = ValueError("simulation_run_rounds_missing")
@@ -812,7 +787,7 @@ async def create_simulation(
     db: AsyncSession = Depends(get_db),
 ):
     project = await _get_project_for_user(body.project_id, user, db)
-    if not project.cognee_dataset_id:
+    if not project.graph_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Project graph not built. Please build graph before creating simulation.",
@@ -845,7 +820,7 @@ async def create_simulation(
         interview_history=[],
         env_status={"alive": False, "status": "created", "updated_at": _now_iso()},
         metadata_={
-            "graph_id": body.graph_id or project.cognee_dataset_id,
+            "graph_id": body.graph_id or project.graph_id,
             "source_chapter_ids": list(provenance.get("source_chapter_ids") or []),
             "content_hash": str(provenance.get("content_hash") or ""),
             "generated_at": str(provenance.get("generated_at") or _now_iso()),
@@ -858,7 +833,7 @@ async def create_simulation(
         "data": {
             "simulation_id": simulation_id,
             "project_id": project.id,
-            "graph_id": project.cognee_dataset_id,
+            "graph_id": project.graph_id,
             "status": sim.status,
         },
     }

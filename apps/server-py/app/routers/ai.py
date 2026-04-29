@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
-from app.services.ai import get_available_embedding_models, get_available_models
+from app.services.ai import get_available_embedding_models, get_available_models, get_available_reranker_models
 
 router = APIRouter()
 
@@ -24,4 +24,13 @@ async def list_embedding_models(
     db: AsyncSession = Depends(get_db),
 ):
     models = await get_available_embedding_models(db)
+    return {"models": models}
+
+
+@router.get("/reranker-models")
+async def list_reranker_models(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    models = await get_available_reranker_models(db)
     return {"models": models}

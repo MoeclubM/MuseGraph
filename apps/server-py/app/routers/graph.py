@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import hashlib
 import inspect
 import json
@@ -15,29 +15,30 @@ from app.database import async_session, get_db
 from app.dependencies import get_current_user
 from app.models.project import ProjectChapter, TextProject
 from app.models.user import User
-from app.schemas.cognee import (
-    CogneeAddRequest,
-    CogneeOasisAnalyzeRequest,
-    CogneeOasisAnalyzeResponse,
-    CogneeOasisPrepareRequest,
-    CogneeOasisPrepareResponse,
-    CogneeOasisReportRequest,
-    CogneeOasisReportResponse,
-    CogneeOasisRunRequest,
-    CogneeOasisRunResponse,
-    CogneeTaskInfo,
-    CogneeTaskListResponse,
-    CogneeTaskStartResponse,
-    CogneeTaskStatusResponse,
-    CogneeOntologyGenerateRequest,
-    CogneeOntologyResponse,
-    CogneeSearchRequest,
-    CogneeStatusResponse,
-    CogneeVisualizationResponse,
+from app.schemas.graph import (
+    GraphBuildRequest,
+    GraphOasisAnalyzeRequest,
+    GraphOasisAnalyzeResponse,
+    GraphOasisPrepareRequest,
+    GraphOasisPrepareResponse,
+    GraphOasisReportRequest,
+    GraphOasisReportResponse,
+    GraphOasisRunRequest,
+    GraphOasisRunResponse,
+    GraphTaskInfo,
+    GraphTaskListResponse,
+    GraphTaskStartResponse,
+    GraphTaskStatusResponse,
+    GraphOntologyGenerateRequest,
+    GraphOntologyResponse,
+    GraphSearchRequest,
+    GraphStatusResponse,
+    GraphVisualizationResponse,
 )
 from app.services.graph_service import (
-    add_and_cognify,
-    delete_dataset,
+    GraphBuildPartialFailure,
+    build_graph,
+    delete_graph as delete_graph_data,
     get_graph_visualization,
     has_graph_data,
     search_graph,
@@ -82,7 +83,7 @@ def _require_ontology_and_graph(project: TextProject, action_name: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Ontology not generated. Please complete ontology first before {action_name}.",
         )
-    if not project.cognee_dataset_id:
+    if not project.graph_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Graph not built. Please build graph before {action_name}.",
@@ -112,6 +113,21 @@ def _normalize_chapter_ids(chapter_ids: list[str] | None) -> list[str]:
     for raw in chapter_ids or []:
         value = str(raw or "").strip()
         if not value or value in seen:
+            continue
+        normalized.append(value)
+        seen.add(value)
+    return normalized
+
+
+def _normalize_int_list(values: list[Any] | None) -> list[int]:
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for raw in values or []:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value <= 0 or value in seen:
             continue
         normalized.append(value)
         seen.add(value)
@@ -155,20 +171,21 @@ def _build_task_idempotency_key(*, task_type: str, project_id: str, payload: dic
     return f"{task}:{fingerprint[:24]}"
 
 
-def _build_graph_task_idempotency_key(project_id: str, body: CogneeAddRequest) -> str:
+def _build_graph_task_idempotency_key(project_id: str, body: GraphBuildRequest) -> str:
     return _build_task_idempotency_key(
         task_type="graph_build",
         project_id=project_id,
         payload={
             "chapter_ids": _normalize_chapter_ids(body.chapter_ids),
             "build_mode": _normalize_graph_build_mode(body.build_mode),
+            "resume_failed": bool(body.resume_failed),
             "text_hash": _text_hash_or_empty(body.text),
             "ontology_hash": _hash_json_payload(body.ontology) if isinstance(body.ontology, dict) else "",
         },
     )
 
 
-def _build_ontology_task_idempotency_key(project_id: str, body: CogneeOntologyGenerateRequest) -> str:
+def _build_ontology_task_idempotency_key(project_id: str, body: GraphOntologyGenerateRequest) -> str:
     return _build_task_idempotency_key(
         task_type="ontology_generate",
         project_id=project_id,
@@ -181,7 +198,7 @@ def _build_ontology_task_idempotency_key(project_id: str, body: CogneeOntologyGe
     )
 
 
-def _build_oasis_analyze_task_idempotency_key(project_id: str, body: CogneeOasisAnalyzeRequest) -> str:
+def _build_oasis_analyze_task_idempotency_key(project_id: str, body: GraphOasisAnalyzeRequest) -> str:
     return _build_task_idempotency_key(
         task_type="oasis_analyze",
         project_id=project_id,
@@ -197,7 +214,7 @@ def _build_oasis_analyze_task_idempotency_key(project_id: str, body: CogneeOasis
     )
 
 
-def _build_oasis_prepare_task_idempotency_key(project_id: str, body: CogneeOasisPrepareRequest) -> str:
+def _build_oasis_prepare_task_idempotency_key(project_id: str, body: GraphOasisPrepareRequest) -> str:
     return _build_task_idempotency_key(
         task_type="oasis_prepare",
         project_id=project_id,
@@ -213,7 +230,7 @@ def _build_oasis_prepare_task_idempotency_key(project_id: str, body: CogneeOasis
     )
 
 
-def _build_oasis_run_task_idempotency_key(project_id: str, body: CogneeOasisRunRequest) -> str:
+def _build_oasis_run_task_idempotency_key(project_id: str, body: GraphOasisRunRequest) -> str:
     return _build_task_idempotency_key(
         task_type="oasis_run",
         project_id=project_id,
@@ -224,7 +241,7 @@ def _build_oasis_run_task_idempotency_key(project_id: str, body: CogneeOasisRunR
     )
 
 
-def _build_oasis_report_task_idempotency_key(project_id: str, body: CogneeOasisReportRequest) -> str:
+def _build_oasis_report_task_idempotency_key(project_id: str, body: GraphOasisReportRequest) -> str:
     return _build_task_idempotency_key(
         task_type="oasis_report",
         project_id=project_id,
@@ -361,15 +378,15 @@ def _resolve_requirement_input(*, requirement: str | None, provided: bool, proje
     return _resolve_requirement(None, project)
 
 
-def _resolve_analysis_model(project: TextProject, body: CogneeOasisAnalyzeRequest | CogneeOasisPrepareRequest) -> str:
+def _resolve_analysis_model(project: TextProject, body: GraphOasisAnalyzeRequest | GraphOasisPrepareRequest) -> str:
     return resolve_component_model(project, "oasis_analysis", body.analysis_model)
 
 
-def _resolve_simulation_model(project: TextProject, body: CogneeOasisAnalyzeRequest | CogneeOasisPrepareRequest) -> str:
+def _resolve_simulation_model(project: TextProject, body: GraphOasisAnalyzeRequest | GraphOasisPrepareRequest) -> str:
     return resolve_component_model(project, "oasis_simulation_config", body.simulation_model)
 
 
-def _resolve_report_model(project: TextProject, body: CogneeOasisReportRequest) -> str:
+def _resolve_report_model(project: TextProject, body: GraphOasisReportRequest) -> str:
     return resolve_component_model(project, "oasis_report", body.report_model)
 
 
@@ -413,6 +430,11 @@ def _extract_graph_build_hashes(project: TextProject) -> dict[str, str]:
         if chapter_id and hash_value:
             hashes[chapter_id] = hash_value
     return hashes
+
+
+def _extract_graph_build_resume_state(project: TextProject) -> dict[str, Any]:
+    raw = _extract_graph_build_state(project).get("resume")
+    return raw if isinstance(raw, dict) else {}
 
 
 def _to_utc_datetime(value: Any) -> datetime | None:
@@ -462,6 +484,8 @@ def _latest_running_graph_task(project_id: str) -> TaskRecord | None:
 
 async def _build_graph_freshness_payload(project: TextProject, db: AsyncSession) -> dict[str, Any]:
     state = _extract_graph_build_state(project)
+    resume_state = _extract_graph_build_resume_state(project)
+    failed_chunk_indices = _normalize_int_list(resume_state.get("failed_chunk_indices"))
     last_build_at = str(state.get("updated_at") or "").strip() or None
     graph_mode = str(state.get("mode") or "").strip() or None
 
@@ -475,6 +499,9 @@ async def _build_graph_freshness_payload(project: TextProject, db: AsyncSession)
         "graph_last_build_at": last_build_at,
         "graph_mode": graph_mode,
         "graph_syncing_task_id": None,
+        "graph_resume_available": bool(failed_chunk_indices),
+        "graph_resume_failed_chunks": len(failed_chunk_indices),
+        "graph_resume_mode": str(resume_state.get("mode") or "").strip() or None,
     }
 
     if not project.ontology_schema:
@@ -489,9 +516,14 @@ async def _build_graph_freshness_payload(project: TextProject, db: AsyncSession)
         base_payload["graph_syncing_task_id"] = running_task.task_id
         return base_payload
 
-    if not project.cognee_dataset_id:
+    if failed_chunk_indices:
+        base_payload["graph_freshness"] = "stale"
+        base_payload["graph_reason"] = "graph_build_incomplete_resume_available"
+        return base_payload
+
+    if not project.graph_id:
         base_payload["graph_freshness"] = "empty"
-        base_payload["graph_reason"] = "dataset_missing"
+        base_payload["graph_reason"] = "graph_missing"
         return base_payload
 
     if not await has_graph_data(project.id, db=db):
@@ -563,6 +595,7 @@ def _store_graph_build_state(
     mode: str,
     provenance: dict[str, Any],
     changed_chapter_ids: list[str] | None = None,
+    resume_state: dict[str, Any] | None = None,
 ) -> None:
     state: dict[str, Any] = {
         "mode": _normalize_graph_build_mode(mode),
@@ -581,6 +614,8 @@ def _store_graph_build_state(
             for chapter_id in changed_chapter_ids
             if str(chapter_id or "").strip()
         ]
+    if isinstance(resume_state, dict) and resume_state:
+        state["resume"] = resume_state
     _store_analysis_payload(project, _graph_build_state=state)
 
 
@@ -597,6 +632,53 @@ def _merge_chapter_text_by_ids(chapters: list[ProjectChapter], include_ids: list
         for chapter in chapters
         if chapter.id in include_set and (chapter.content or "").strip()
     ).strip()
+
+
+def _graph_build_resume_matches(
+    *,
+    resume_state: dict[str, Any],
+    provenance: dict[str, Any],
+) -> bool:
+    if not resume_state:
+        return False
+    resume_hash = str(resume_state.get("content_hash") or "").strip()
+    current_hash = str(provenance.get("content_hash") or "").strip()
+    if not resume_hash or not current_hash or resume_hash != current_hash:
+        return False
+    resume_source_ids = _normalize_chapter_ids(resume_state.get("source_chapter_ids"))
+    current_source_ids = _normalize_chapter_ids(provenance.get("source_chapter_ids"))
+    return resume_source_ids == current_source_ids
+
+
+def _build_graph_resume_state(
+    *,
+    graph_id: str,
+    mode: str,
+    provenance: dict[str, Any],
+    selected_chunk_indices: list[int],
+    completed_chunk_indices: list[int],
+    failed_chunk_indices: list[int],
+    total_chunks: int,
+    failed_errors: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "graph_id": str(graph_id or "").strip(),
+        "mode": _normalize_graph_build_mode(mode),
+        "content_hash": str(provenance.get("content_hash") or "").strip(),
+        "source_chapter_ids": _normalize_chapter_ids(provenance.get("source_chapter_ids")),
+        "selected_chunk_indices": _normalize_int_list(selected_chunk_indices),
+        "completed_chunk_indices": _normalize_int_list(completed_chunk_indices),
+        "failed_chunk_indices": _normalize_int_list(failed_chunk_indices),
+        "total_chunks": max(0, int(total_chunks or 0)),
+        "updated_at": _now_iso(),
+    }
+    if isinstance(failed_errors, dict) and failed_errors:
+        payload["failed_errors"] = {
+            str(key): str(value or "").strip()
+            for key, value in failed_errors.items()
+            if str(key or "").strip() and str(value or "").strip()
+        }
+    return payload
 
 
 def _is_payload_matching_provenance(payload: dict[str, Any] | None, provenance: dict[str, Any]) -> bool:
@@ -702,8 +784,8 @@ async def _resolve_oasis_runtime_context(
     return analysis, requirement, provenance, oasis_config
 
 
-def _task_to_schema(task: TaskRecord) -> CogneeTaskInfo:
-    return CogneeTaskInfo.model_validate(task.to_dict())
+def _task_to_schema(task: TaskRecord) -> GraphTaskInfo:
+    return GraphTaskInfo.model_validate(task.to_dict())
 
 
 def _create_project_task(*, task_type: str, project_id: str, user_id: str, metadata: dict[str, Any] | None = None) -> TaskRecord:
@@ -717,6 +799,50 @@ def _create_project_task(*, task_type: str, project_id: str, user_id: str, metad
     return task_manager.create_task(task_type, task_metadata)
 
 
+def _cancel_superseded_auto_graph_tasks(task: TaskRecord) -> None:
+    task_type = str(getattr(task, "task_type", "") or "").strip()
+    if task_type != "graph_build":
+        return
+    metadata = task.metadata if isinstance(task.metadata, dict) else {}
+    if not bool(metadata.get("auto_created")):
+        return
+    if str(metadata.get("trigger_source_kind") or "").strip().lower() != "chapter":
+        return
+
+    keep_task_id = str(getattr(task, "task_id", "") or "").strip()
+    project_id = str(metadata.get("project_id") or "").strip()
+    keep_idempotency_key = str(metadata.get("idempotency_key") or "").strip()
+    keep_created_at = getattr(task, "created_at", None)
+    if not keep_task_id or not project_id or keep_created_at is None:
+        return
+    if keep_created_at.tzinfo is None:
+        keep_created_at = keep_created_at.replace(tzinfo=timezone.utc)
+
+    for candidate in task_manager.list_tasks(task_type=task_type, project_id=project_id, limit=200):
+        if candidate.task_id == keep_task_id:
+            continue
+        if candidate.status in _TERMINAL_TASK_STATUSES:
+            continue
+        candidate_metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+        if not bool(candidate_metadata.get("auto_created")):
+            continue
+        if str(candidate_metadata.get("trigger_source_kind") or "").strip().lower() != "chapter":
+            continue
+        if str(candidate_metadata.get("idempotency_key") or "").strip() == keep_idempotency_key:
+            continue
+        candidate_created_at = getattr(candidate, "created_at", None)
+        if candidate_created_at is None:
+            continue
+        if candidate_created_at.tzinfo is None:
+            candidate_created_at = candidate_created_at.replace(tzinfo=timezone.utc)
+        if candidate_created_at >= keep_created_at:
+            continue
+        task_manager.cancel_task(
+            candidate.task_id,
+            message="Cancelled because a newer automatic graph sync task was scheduled",
+        )
+
+
 def _start_project_task(
     *,
     task_type: str,
@@ -724,7 +850,7 @@ def _start_project_task(
     user_id: str,
     worker: Callable[[str], Coroutine[Any, Any, None]],
     metadata: dict[str, Any] | None = None,
-) -> CogneeTaskStartResponse:
+) -> GraphTaskStartResponse:
     task_metadata: dict[str, Any] = dict(metadata or {})
     idempotency_key = str(task_metadata.get("idempotency_key") or "").strip()
     if idempotency_key:
@@ -734,7 +860,7 @@ def _start_project_task(
             idempotency_key=idempotency_key,
         )
         if existing is not None:
-            return CogneeTaskStartResponse(status="accepted", task=_task_to_schema(existing))
+            return GraphTaskStartResponse(status="accepted", task=_task_to_schema(existing))
 
     task = _create_project_task(
         task_type=task_type,
@@ -742,6 +868,7 @@ def _start_project_task(
         user_id=user_id,
         metadata=task_metadata,
     )
+    _cancel_superseded_auto_graph_tasks(task)
 
     async def _runner() -> None:
         try:
@@ -751,7 +878,7 @@ def _start_project_task(
 
     runner = asyncio.create_task(_runner())
     task_manager.register_runner(task.task_id, runner)
-    return CogneeTaskStartResponse(status="accepted", task=_task_to_schema(task))
+    return GraphTaskStartResponse(status="accepted", task=_task_to_schema(task))
 
 
 def _ensure_task_project(task: TaskRecord | None, project_id: str) -> TaskRecord:
@@ -886,11 +1013,11 @@ async def _resolve_graph_build_plan(
     build_provenance = resolved_provenance
     skip_reason: str | None = None
     mode_reason: str | None = None
-    dataset_exists = bool(project.cognee_dataset_id)
+    graph_exists = bool(project.graph_id)
     full_scope = len(normalized_chapter_ids) == 0
 
     if requested_mode == GRAPH_BUILD_INCREMENTAL:
-        if not dataset_exists:
+        if not graph_exists:
             effective_mode = GRAPH_BUILD_REBUILD
             mode_reason = "Incremental update requested without existing graph; switched to full rebuild."
         else:
@@ -998,6 +1125,7 @@ async def _execute_graph_build(
     chapter_ids: list[str] | None,
     ontology: dict[str, Any] | None,
     mode: str | None,
+    resume_failed: bool = False,
     db: AsyncSession,
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> dict[str, Any]:
@@ -1024,6 +1152,9 @@ async def _execute_graph_build(
     modified_chapter_ids: list[str] = list(plan.get("modified_chapter_ids") or [])
     removed_chapter_ids: list[str] = list(plan.get("removed_chapter_ids") or [])
     build_provenance: dict[str, Any] = dict(plan["build_provenance"])
+    resume_state = _extract_graph_build_resume_state(project)
+    resume_graph_id = ""
+    resume_chunk_indices: list[int] = []
 
     if plan["skip_reason"]:
         next_hashes = dict(previous_hashes)
@@ -1049,7 +1180,7 @@ async def _execute_graph_build(
             "requested_mode": requested_mode,
             "mode": effective_mode,
             "mode_reason": mode_reason,
-            "dataset_id": project.cognee_dataset_id,
+            "graph_id": project.graph_id,
             "content_hash": build_provenance.get("content_hash"),
             "source_chapter_ids": build_provenance.get("source_chapter_ids"),
             "changed_chapter_ids": changed_chapter_ids,
@@ -1070,12 +1201,22 @@ async def _execute_graph_build(
         fallback_model="",
     )
 
-    if effective_mode == GRAPH_BUILD_REBUILD and project.cognee_dataset_id:
+    if resume_failed:
+        if not _graph_build_resume_matches(resume_state=resume_state, provenance=build_provenance):
+            raise ValueError("No matching failed graph build is available to continue.")
+        resume_graph_id = str(resume_state.get("graph_id") or "").strip()
+        resume_chunk_indices = _normalize_int_list(resume_state.get("failed_chunk_indices"))
+        if not resume_graph_id or not resume_chunk_indices:
+            raise ValueError("No failed graph chunks are available to continue.")
+        effective_mode = _normalize_graph_build_mode(resume_state.get("mode") or effective_mode)
+        mode_reason = "Continuing previously failed graph build chunks."
+
+    if not resume_failed and effective_mode == GRAPH_BUILD_REBUILD and project.graph_id:
         if progress_callback:
-            progress_callback(25, "Cleaning previous dataset...")
+            progress_callback(25, "Cleaning previous graph...")
         try:
             await _await_if_needed(
-                delete_dataset(
+                delete_graph_data(
                     project_id,
                     model=graph_model,
                     embedding_model=graph_embedding_model or None,
@@ -1083,20 +1224,68 @@ async def _execute_graph_build(
                 )
             )
         except Exception as exc:
-            raise RuntimeError(f"Failed to clear previous dataset before rebuild: {exc}") from exc
-        project.cognee_dataset_id = None
+            raise RuntimeError(f"Failed to clear previous graph before rebuild: {exc}") from exc
+        project.graph_id = None
         await db.flush()
 
-    dataset_name = await add_and_cognify(
-        project_id,
-        graph_source_text,
-        model=graph_model,
-        embedding_model=graph_embedding_model or None,
-        ontology=project.ontology_schema,
-        db=db,
-        progress_callback=progress_callback,
-    )
-    project.cognee_dataset_id = dataset_name
+    try:
+        graph_id = await build_graph(
+            project_id,
+            graph_source_text,
+            model=graph_model,
+            embedding_model=graph_embedding_model or None,
+            ontology=project.ontology_schema,
+            db=db,
+            progress_callback=progress_callback,
+            graph_id_override=resume_graph_id or None,
+            chunk_indices=resume_chunk_indices or None,
+            continue_on_error=True,
+        )
+    except GraphBuildPartialFailure as exc:
+        effective_graph_id = str(exc.graph_id or resume_graph_id or project.graph_id or "").strip()
+        _store_graph_build_state(
+            project,
+            chapter_hashes=previous_hashes,
+            mode=effective_mode,
+            provenance=build_provenance,
+            changed_chapter_ids=changed_chapter_ids,
+            resume_state=_build_graph_resume_state(
+                graph_id=effective_graph_id,
+                mode=effective_mode,
+                provenance=build_provenance,
+                selected_chunk_indices=exc.selected_chunk_indices,
+                completed_chunk_indices=exc.completed_chunk_indices,
+                failed_chunk_indices=exc.failed_chunk_indices,
+                total_chunks=exc.total_chunks,
+                failed_errors=exc.failed_errors,
+            ),
+        )
+        await db.flush()
+        failed_count = len(exc.failed_chunk_indices)
+        selected_count = len(exc.selected_chunk_indices)
+        return {
+            "status": "partial_failed",
+            "requested_mode": requested_mode,
+            "mode": effective_mode,
+            "mode_reason": mode_reason,
+            "graph_id": project.graph_id,
+            "resume_graph_id": effective_graph_id or None,
+            "content_hash": build_provenance.get("content_hash"),
+            "source_chapter_ids": build_provenance.get("source_chapter_ids"),
+            "changed_chapter_ids": changed_chapter_ids,
+            "added_chapter_ids": added_chapter_ids,
+            "modified_chapter_ids": modified_chapter_ids,
+            "removed_chapter_ids": removed_chapter_ids,
+            "selected_chunk_indices": exc.selected_chunk_indices,
+            "completed_chunk_indices": exc.completed_chunk_indices,
+            "failed_chunk_indices": exc.failed_chunk_indices,
+            "failed_chunk_count": failed_count,
+            "total_chunks": exc.total_chunks,
+            "resume_available": failed_count > 0,
+            "reason": f"{failed_count}/{max(1, selected_count)} graph chunks failed. Continue is available.",
+            "failed_errors": exc.failed_errors,
+        }
+    project.graph_id = graph_id
 
     if effective_mode == GRAPH_BUILD_REBUILD:
         next_hashes = dict(chapter_hashes)
@@ -1118,6 +1307,7 @@ async def _execute_graph_build(
         mode=effective_mode,
         provenance=build_provenance,
         changed_chapter_ids=changed_chapter_ids,
+        resume_state=None,
     )
     await db.flush()
     return {
@@ -1125,7 +1315,7 @@ async def _execute_graph_build(
         "requested_mode": requested_mode,
         "mode": effective_mode,
         "mode_reason": mode_reason,
-        "dataset_id": dataset_name,
+        "graph_id": graph_id,
         "content_hash": build_provenance.get("content_hash"),
         "source_chapter_ids": build_provenance.get("source_chapter_ids"),
         "changed_chapter_ids": changed_chapter_ids,
@@ -1143,6 +1333,7 @@ async def _run_graph_build_task(
     chapter_ids: list[str] | None,
     ontology: dict[str, Any] | None,
     build_mode: str | None = None,
+    resume_failed: bool = False,
 ) -> None:
     task_manager.update_task(
         task_id,
@@ -1171,6 +1362,7 @@ async def _run_graph_build_task(
                 chapter_ids=chapter_ids,
                 ontology=ontology,
                 mode=build_mode,
+                resume_failed=resume_failed,
                 db=db,
                 progress_callback=_on_build_progress,
             )
@@ -1180,12 +1372,43 @@ async def _run_graph_build_task(
             completion_message = "Knowledge graph updated incrementally" if is_incremental else "Knowledge graph built"
             if status == "skipped":
                 completion_message = str(build_result.get("reason") or "No graph changes to apply")
+            elif status == "partial_failed":
+                task_manager.update_task(
+                    task_id,
+                    status=TaskStatus.FAILED,
+                    progress=max(0, min(99, int(task_manager.get_task(task_id).progress if task_manager.get_task(task_id) else 0))),
+                    message=str(build_result.get("reason") or "Graph build partially failed"),
+                    error=str(build_result.get("reason") or "Graph build partially failed"),
+                    result={
+                        "graph_id": build_result.get("graph_id"),
+                        "resume_graph_id": build_result.get("resume_graph_id"),
+                        "requested_mode": build_result.get("requested_mode"),
+                        "mode": build_result.get("mode"),
+                        "mode_reason": build_result.get("mode_reason"),
+                        "status": status,
+                        "content_hash": build_result.get("content_hash"),
+                        "source_chapter_ids": build_result.get("source_chapter_ids"),
+                        "changed_chapter_ids": build_result.get("changed_chapter_ids"),
+                        "added_chapter_ids": build_result.get("added_chapter_ids"),
+                        "modified_chapter_ids": build_result.get("modified_chapter_ids"),
+                        "removed_chapter_ids": build_result.get("removed_chapter_ids"),
+                        "selected_chunk_indices": build_result.get("selected_chunk_indices"),
+                        "completed_chunk_indices": build_result.get("completed_chunk_indices"),
+                        "failed_chunk_indices": build_result.get("failed_chunk_indices"),
+                        "failed_chunk_count": build_result.get("failed_chunk_count"),
+                        "total_chunks": build_result.get("total_chunks"),
+                        "resume_available": build_result.get("resume_available"),
+                        "reason": build_result.get("reason"),
+                        "failed_errors": build_result.get("failed_errors"),
+                    },
+                )
+                return
             elif build_result.get("mode_reason"):
                 completion_message = str(build_result.get("mode_reason"))
             task_manager.complete_task(
                 task_id,
                 {
-                    "dataset_id": build_result.get("dataset_id"),
+                    "graph_id": build_result.get("graph_id"),
                     "requested_mode": build_result.get("requested_mode"),
                     "mode": build_result.get("mode"),
                     "mode_reason": build_result.get("mode_reason"),
@@ -1615,7 +1838,7 @@ async def _run_report_task(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def add_to_graph(
     project_id: str,
-    body: CogneeAddRequest,
+    body: GraphBuildRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1634,8 +1857,14 @@ async def add_to_graph(
             chapter_ids=body.chapter_ids,
             ontology=incoming_ontology,
             mode=body.build_mode,
+            resume_failed=body.resume_failed,
             db=db,
         )
+        if str(build_result.get("status") or "") == "partial_failed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(build_result.get("reason") or "Graph build partially failed"),
+            )
         return build_result
     except HTTPException:
         raise
@@ -1645,10 +1874,10 @@ async def add_to_graph(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@router.post("/build/task", response_model=CogneeTaskStartResponse)
+@router.post("/build/task", response_model=GraphTaskStartResponse)
 async def add_to_graph_task(
     project_id: str,
-    body: CogneeAddRequest,
+    body: GraphBuildRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1660,6 +1889,7 @@ async def add_to_graph_task(
         user_id=user.id,
         metadata={
             "build_mode": _normalize_graph_build_mode(body.build_mode),
+            "resume_failed": bool(body.resume_failed),
             "idempotency_key": idempotency_key,
         },
         worker=lambda task_id: _run_graph_build_task(
@@ -1669,14 +1899,44 @@ async def add_to_graph_task(
             chapter_ids=body.chapter_ids,
             ontology=body.ontology if isinstance(body.ontology, dict) else None,
             build_mode=body.build_mode,
+            resume_failed=body.resume_failed,
         ),
     )
 
 
-@router.post("/ontology/generate", response_model=CogneeOntologyResponse)
+@router.post("/build/auto-sync/task", response_model=GraphTaskStartResponse)
+async def add_to_graph_auto_sync_task(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_project(project_id, user, db)
+
+    from app.routers.projects import _start_chapter_graph_refresh
+
+    try:
+        response = await _start_chapter_graph_refresh(
+            project_id,
+            user.id,
+            "manual",
+            respect_auto_sync_setting=False,
+            require_ready=True,
+        )
+        if response is None:
+            raise RuntimeError("Failed to start automatic graph sync task.")
+        return response
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/ontology/generate", response_model=GraphOntologyResponse)
 async def generate_project_ontology(
     project_id: str,
-    body: CogneeOntologyGenerateRequest,
+    body: GraphOntologyGenerateRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1704,7 +1964,7 @@ async def generate_project_ontology(
         if body.requirement is not None:
             project.simulation_requirement = body.requirement.strip() or None
         await db.flush()
-        return CogneeOntologyResponse(status="ok", ontology=ontology)
+        return GraphOntologyResponse(status="ok", ontology=ontology)
     except HTTPException:
         raise
     except ValueError as e:
@@ -1713,10 +1973,10 @@ async def generate_project_ontology(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@router.post("/ontology/generate/task", response_model=CogneeTaskStartResponse)
+@router.post("/ontology/generate/task", response_model=GraphTaskStartResponse)
 async def generate_project_ontology_task(
     project_id: str,
-    body: CogneeOntologyGenerateRequest,
+    body: GraphOntologyGenerateRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1741,10 +2001,10 @@ async def generate_project_ontology_task(
     )
 
 
-@router.post("/oasis/analyze", response_model=CogneeOasisAnalyzeResponse)
+@router.post("/oasis/analyze", response_model=GraphOasisAnalyzeResponse)
 async def analyze_with_oasis(
     project_id: str,
-    body: CogneeOasisAnalyzeRequest,
+    body: GraphOasisAnalyzeRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1783,17 +2043,17 @@ async def analyze_with_oasis(
             provenance=provenance,
             db=db,
         )
-        return CogneeOasisAnalyzeResponse(status="ok", analysis=analysis, context=context)
+        return GraphOasisAnalyzeResponse(status="ok", analysis=analysis, context=context)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@router.post("/oasis/analyze/task", response_model=CogneeTaskStartResponse)
+@router.post("/oasis/analyze/task", response_model=GraphTaskStartResponse)
 async def analyze_with_oasis_task(
     project_id: str,
-    body: CogneeOasisAnalyzeRequest,
+    body: GraphOasisAnalyzeRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1823,10 +2083,10 @@ async def analyze_with_oasis_task(
     )
 
 
-@router.post("/oasis/prepare", response_model=CogneeOasisPrepareResponse)
+@router.post("/oasis/prepare", response_model=GraphOasisPrepareResponse)
 async def prepare_oasis_package(
     project_id: str,
-    body: CogneeOasisPrepareRequest,
+    body: GraphOasisPrepareRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1864,17 +2124,17 @@ async def prepare_oasis_package(
             provenance=provenance,
             db=db,
         )
-        return CogneeOasisPrepareResponse(status="ok", package=package)
+        return GraphOasisPrepareResponse(status="ok", package=package)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@router.post("/oasis/prepare/task", response_model=CogneeTaskStartResponse)
+@router.post("/oasis/prepare/task", response_model=GraphTaskStartResponse)
 async def prepare_oasis_package_task(
     project_id: str,
-    body: CogneeOasisPrepareRequest,
+    body: GraphOasisPrepareRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1902,10 +2162,10 @@ async def prepare_oasis_package_task(
     )
 
 
-@router.post("/oasis/run", response_model=CogneeOasisRunResponse)
+@router.post("/oasis/run", response_model=GraphOasisRunResponse)
 async def run_oasis_simulation(
     project_id: str,
-    body: CogneeOasisRunRequest,
+    body: GraphOasisRunRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1935,15 +2195,15 @@ async def run_oasis_simulation(
             project=project,
         )
         await db.flush()
-        return CogneeOasisRunResponse(status="ok", run_result=run_result)
+        return GraphOasisRunResponse(status="ok", run_result=run_result)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
 
 
-@router.post("/oasis/run/task", response_model=CogneeTaskStartResponse)
+@router.post("/oasis/run/task", response_model=GraphTaskStartResponse)
 async def run_oasis_simulation_task(
     project_id: str,
-    body: CogneeOasisRunRequest,
+    body: GraphOasisRunRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1968,10 +2228,10 @@ async def run_oasis_simulation_task(
     )
 
 
-@router.post("/oasis/report", response_model=CogneeOasisReportResponse)
+@router.post("/oasis/report", response_model=GraphOasisReportResponse)
 async def generate_oasis_report_sync(
     project_id: str,
-    body: CogneeOasisReportRequest,
+    body: GraphOasisReportRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -2016,15 +2276,15 @@ async def generate_oasis_report_sync(
         report = _inject_provenance(report, provenance)
         _store_analysis_payload(project, latest_report=report)
         await db.flush()
-        return CogneeOasisReportResponse(status="ok", report=report)
+        return GraphOasisReportResponse(status="ok", report=report)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
 
 
-@router.post("/oasis/report/task", response_model=CogneeTaskStartResponse)
+@router.post("/oasis/report/task", response_model=GraphTaskStartResponse)
 async def generate_oasis_report_task(
     project_id: str,
-    body: CogneeOasisReportRequest,
+    body: GraphOasisReportRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -2048,7 +2308,7 @@ async def generate_oasis_report_task(
     )
 
 
-@router.get("/tasks/{task_id}", response_model=CogneeTaskStatusResponse)
+@router.get("/tasks/{task_id}", response_model=GraphTaskStatusResponse)
 async def get_task_status(
     project_id: str,
     task_id: str,
@@ -2057,10 +2317,10 @@ async def get_task_status(
 ):
     await _get_project(project_id, user, db)
     task = _ensure_task_project(task_manager.get_task(task_id), project_id)
-    return CogneeTaskStatusResponse(status="ok", task=_task_to_schema(task))
+    return GraphTaskStatusResponse(status="ok", task=_task_to_schema(task))
 
 
-@router.post("/tasks/{task_id}/cancel", response_model=CogneeTaskStatusResponse)
+@router.post("/tasks/{task_id}/cancel", response_model=GraphTaskStatusResponse)
 async def cancel_task(
     project_id: str,
     task_id: str,
@@ -2071,10 +2331,10 @@ async def cancel_task(
     task = _ensure_task_project(task_manager.get_task(task_id), project_id)
     if task.status not in _TERMINAL_TASK_STATUSES:
         task = task_manager.cancel_task(task_id) or task
-    return CogneeTaskStatusResponse(status="ok", task=_task_to_schema(task))
+    return GraphTaskStatusResponse(status="ok", task=_task_to_schema(task))
 
 
-@router.get("/tasks", response_model=CogneeTaskListResponse)
+@router.get("/tasks", response_model=GraphTaskListResponse)
 async def list_tasks(
     project_id: str,
     task_type: str | None = Query(default=None),
@@ -2084,11 +2344,11 @@ async def list_tasks(
 ):
     await _get_project(project_id, user, db)
     tasks = task_manager.list_tasks(task_type=task_type, project_id=project_id, limit=limit)
-    return CogneeTaskListResponse(status="ok", tasks=[_task_to_schema(task) for task in tasks])
+    return GraphTaskListResponse(status="ok", tasks=[_task_to_schema(task) for task in tasks])
 
 
 # Backward-compatible aliases.
-@router.get("/oasis/tasks/{task_id}", response_model=CogneeTaskStatusResponse)
+@router.get("/oasis/tasks/{task_id}", response_model=GraphTaskStatusResponse)
 async def get_oasis_task_status(
     project_id: str,
     task_id: str,
@@ -2098,7 +2358,7 @@ async def get_oasis_task_status(
     return await get_task_status(project_id, task_id, user, db)
 
 
-@router.post("/oasis/tasks/{task_id}/cancel", response_model=CogneeTaskStatusResponse)
+@router.post("/oasis/tasks/{task_id}/cancel", response_model=GraphTaskStatusResponse)
 async def cancel_oasis_task(
     project_id: str,
     task_id: str,
@@ -2108,7 +2368,7 @@ async def cancel_oasis_task(
     return await cancel_task(project_id, task_id, user, db)
 
 
-@router.get("/oasis/tasks", response_model=CogneeTaskListResponse)
+@router.get("/oasis/tasks", response_model=GraphTaskListResponse)
 async def list_oasis_tasks(
     project_id: str,
     task_type: str | None = Query(default=None),
@@ -2119,7 +2379,7 @@ async def list_oasis_tasks(
     return await list_tasks(project_id, task_type, limit, user, db)
 
 
-@router.get("", response_model=CogneeStatusResponse)
+@router.get("", response_model=GraphStatusResponse)
 async def get_graph_status(
     project_id: str,
     user: User = Depends(get_current_user),
@@ -2127,15 +2387,15 @@ async def get_graph_status(
 ):
     project = await _get_project(project_id, user, db)
     freshness_payload = await _build_graph_freshness_payload(project, db)
-    if project.cognee_dataset_id:
-        return CogneeStatusResponse(
-            dataset_id=project.cognee_dataset_id,
+    if project.graph_id:
+        return GraphStatusResponse(
+            graph_id=project.graph_id,
             status="ready",
             ontology_status="ready" if project.ontology_schema else "empty",
             oasis_status="ready" if project.oasis_analysis else "empty",
             **freshness_payload,
         )
-    return CogneeStatusResponse(
+    return GraphStatusResponse(
         status="empty",
         ontology_status="ready" if project.ontology_schema else "empty",
         oasis_status="ready" if project.oasis_analysis else "empty",
@@ -2146,12 +2406,12 @@ async def get_graph_status(
 @router.post("/search")
 async def search(
     project_id: str,
-    body: CogneeSearchRequest,
+    body: GraphSearchRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     project = await _get_project(project_id, user, db)
-    if not project.cognee_dataset_id:
+    if not project.graph_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No graph data for this project")
     reranker_enabled_for_type = body.search_type in _RERANKER_SEARCH_TYPES
     use_reranker = bool(body.use_reranker and reranker_enabled_for_type)
@@ -2191,7 +2451,7 @@ async def search(
     return {"results": results}
 
 
-@router.get("/visualization", response_model=CogneeVisualizationResponse)
+@router.get("/visualization", response_model=GraphVisualizationResponse)
 async def visualization(
     project_id: str,
     user: User = Depends(get_current_user),
@@ -2225,7 +2485,7 @@ async def visualization(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Graph visualization failed: {type(exc).__name__}",
         ) from exc
-    return CogneeVisualizationResponse(nodes=data["nodes"], edges=data["edges"])
+    return GraphVisualizationResponse(nodes=data["nodes"], edges=data["edges"])
 
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
@@ -2235,7 +2495,7 @@ async def delete_graph(
     db: AsyncSession = Depends(get_db),
 ):
     project = await _get_project(project_id, user, db)
-    if project.cognee_dataset_id:
+    if project.graph_id:
         try:
             ontology_default_model = resolve_component_model(project, "ontology_generation")
             graph_model = resolve_component_model(project, "graph_build", fallback_model=ontology_default_model)
@@ -2245,7 +2505,7 @@ async def delete_graph(
                 fallback_model="",
             )
             await _await_if_needed(
-                delete_dataset(
+                delete_graph_data(
                     project_id,
                     model=graph_model,
                     embedding_model=graph_embedding_model or None,
@@ -2255,9 +2515,9 @@ async def delete_graph(
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to delete graph dataset: {exc}",
+                detail=f"Failed to delete graph: {exc}",
             ) from exc
-        project.cognee_dataset_id = None
+        project.graph_id = None
         analysis = _get_project_analysis(project)
         if analysis:
             analysis.pop("_graph_build_state", None)
@@ -2265,3 +2525,4 @@ async def delete_graph(
         await db.flush()
         await db.commit()
     return None
+

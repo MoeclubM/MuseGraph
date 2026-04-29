@@ -20,7 +20,7 @@ from httpx import ASGITransport, AsyncClient
 
 # ---------------------------------------------------------------------------
 # Patch heavy / side-effect-laden modules BEFORE importing the application.
-# This prevents real connections to PostgreSQL, Redis, storage backend, Cognee, etc.
+# This prevents real connections to PostgreSQL, Redis, storage backend, Graph, etc.
 # ---------------------------------------------------------------------------
 
 # 0. Patch bcrypt to avoid PyO3 initialization issues
@@ -210,3 +210,4 @@ async def unauthed_client() -> AsyncGenerator[AsyncClient, None]:
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.clear()
+

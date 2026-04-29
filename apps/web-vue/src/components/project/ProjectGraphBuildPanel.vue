@@ -6,6 +6,7 @@ import type { ProjectOntology } from '@/types'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Alert from '@/components/ui/Alert.vue'
+import Checkbox from '@/components/ui/Checkbox.vue'
 import Select from '@/components/ui/Select.vue'
 import Textarea from '@/components/ui/Textarea.vue'
 
@@ -41,6 +42,7 @@ const props = defineProps<{
   ontologyMeta: Record<string, any> | null
   graphBuildModel: string
   embeddingModels: ModelInfo[]
+  rerankerModels: ModelInfo[]
   graphEmbeddingModel: string
   graphRerankerModel: string
   graphBuildMode: GraphBuildMode
@@ -49,6 +51,9 @@ const props = defineProps<{
   graphFreshnessHint: string
   graphLoading: boolean
   graphBuildActionLabel: string
+  graphAutoSyncEnabled: boolean
+  graphResumeAvailable: boolean
+  graphResumeActionLabel: string
   graphBuildMessage: string
   graphBuildProgress: number
   graphBuildSummary: GraphBuildSummary | null
@@ -64,8 +69,11 @@ const emit = defineEmits<{
   'update:graphEmbeddingModel': [value: string]
   'update:graphRerankerModel': [value: string]
   'update:graphBuildMode': [value: GraphBuildMode]
+  'update:graphAutoSyncEnabled': [value: boolean]
   generateOntology: []
   buildGraph: []
+  runAutoSync: []
+  resumeGraphBuild: []
 }>()
 
 const ontologyRequirementValue = computed({
@@ -101,6 +109,11 @@ const graphBuildModeValue = computed({
     emit('update:graphBuildMode', allow.includes(normalized as GraphBuildMode) ? normalized as GraphBuildMode : 'rebuild')
   },
 })
+
+const graphAutoSyncEnabledValue = computed({
+  get: () => props.graphAutoSyncEnabled,
+  set: (value: boolean) => emit('update:graphAutoSyncEnabled', value),
+})
 </script>
 
 <template>
@@ -110,34 +123,23 @@ const graphBuildModeValue = computed({
     >
       <div class="space-y-2">
         <h3 class="text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-          Step 1. Ontology Generation
+          Step 1. Generate Ontology
         </h3>
-        <div class="rounded-md border border-amber-700/30 bg-amber-900/10 p-3 space-y-1.5">
-          <p class="text-sm font-medium text-amber-800 dark:text-amber-200">
-            Purpose: define the entity and relation ontology first so graph ingestion and RAG retrieval use a stable schema.
-          </p>
-          <p class="text-xs text-amber-700 dark:text-amber-300/90">
-            Until ontology generation completes, Step 2 graph build stays disabled and downstream AI/OASIS steps will not have reliable context.
-          </p>
-          <p class="text-xs text-amber-700 dark:text-amber-300/80">
-            Source text always comes from the selected chapters on the left. Current text length: {{ props.workflowSourceTextLength.toLocaleString() }} characters
-          </p>
-        </div>
+        <p class="text-xs text-stone-500 dark:text-zinc-400">
+          Source text: {{ props.workflowSourceTextLength.toLocaleString() }} characters
+        </p>
       </div>
 
       <div class="space-y-2.5">
         <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-          Requirement Preset
+          Requirement
         </label>
         <Textarea
           v-model="ontologyRequirementValue"
           :rows="5"
-          placeholder="Edit ontology requirement preset"
+          placeholder="Optional requirement"
           class="min-h-28"
         />
-        <p class="text-[11px] text-stone-500 dark:text-zinc-500">
-          Preset prompt is enabled by default. You can edit it before each generation.
-        </p>
       </div>
 
       <div class="space-y-2">
@@ -148,7 +150,7 @@ const graphBuildModeValue = computed({
           v-model="ontologyModelValue"
           :disabled="props.modelsLoading"
         >
-          <option value="">Auto-select first configured model</option>
+          <option value="">Auto-select</option>
           <option v-for="m in props.models" :key="`ontology-${m.id}`" :value="m.id">{{ m.name }}</option>
         </Select>
       </div>
@@ -224,7 +226,7 @@ const graphBuildModeValue = computed({
     >
       <div class="space-y-2.5">
         <h3 class="text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-          Step 2. Graph Build
+          Step 2. Build Graph
         </h3>
         <div class="space-y-2">
           <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
@@ -234,7 +236,7 @@ const graphBuildModeValue = computed({
             v-model="graphBuildModelValue"
             :disabled="props.modelsLoading"
           >
-            <option value="">Auto-select first configured model</option>
+            <option value="">Use ontology model or auto-select</option>
             <option v-for="m in props.models" :key="`graph-build-${m.id}`" :value="m.id">{{ m.name }}</option>
           </Select>
         </div>
@@ -242,14 +244,14 @@ const graphBuildModeValue = computed({
           <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
             Embedding Model
           </label>
-          <Select
-            v-model="graphEmbeddingModelValue"
-            :disabled="props.modelsLoading"
-          >
-            <option value="">Auto-select first configured embedding model</option>
-            <option
-              v-for="m in props.embeddingModels"
-              :key="`graph-embed-${m.id}`"
+        <Select
+          v-model="graphEmbeddingModelValue"
+          :disabled="props.modelsLoading"
+        >
+          <option value="">Auto-select</option>
+          <option
+            v-for="m in props.embeddingModels"
+            :key="`graph-embed-${m.id}`"
               :value="m.id"
             >
               {{ m.name }}
@@ -258,30 +260,24 @@ const graphBuildModeValue = computed({
         </div>
         <div class="space-y-2">
           <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
-            Workspace Reranker Model (RAG)
+            Reranker Model (Optional)
           </label>
           <Select
             v-model="graphRerankerModelValue"
             :disabled="props.modelsLoading"
           >
             <option value="">Disabled</option>
-            <option v-for="m in props.models" :key="`graph-reranker-${m.id}`" :value="m.id">{{ m.name }}</option>
+            <option v-for="m in props.rerankerModels" :key="`graph-reranker-${m.id}`" :value="m.id">{{ m.name }}</option>
           </Select>
-          <p class="text-[11px] text-stone-500 dark:text-zinc-500">
-            Stored per workspace and used by RAG retrieval in graph search and AI operations.
-          </p>
         </div>
         <div class="space-y-2">
           <label class="block text-xs font-medium text-stone-500 dark:text-zinc-400 uppercase tracking-wider">
             Build Mode
           </label>
           <Select v-model="graphBuildModeValue">
-            <option value="rebuild">From Zero (Clear Old Graph)</option>
-            <option value="incremental">Incremental Update (Changed Chapters Only)</option>
+            <option value="rebuild">Rebuild graph</option>
+            <option value="incremental">Incremental update</option>
           </Select>
-          <p class="text-[11px] text-stone-500 dark:text-zinc-500">
-            Rebuild ensures a clean graph. Incremental mode appends only changed chapter content.
-          </p>
         </div>
         <div
           class="rounded-md border px-3 py-2 text-[11px]"
@@ -297,6 +293,19 @@ const graphBuildModeValue = computed({
             {{ props.graphFreshnessHint }}
           </p>
         </div>
+        <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-3 py-2 dark:border-zinc-700/60 dark:bg-zinc-800/40">
+          <label class="flex items-start gap-3">
+            <Checkbox v-model="graphAutoSyncEnabledValue" :disabled="props.graphLoading" />
+            <div class="space-y-0.5">
+              <p class="text-xs font-medium text-stone-700 dark:text-zinc-200">
+                Auto-sync graph after chapter changes
+              </p>
+              <p class="text-[11px] text-stone-500 dark:text-zinc-400">
+                When enabled, chapter create, update, and delete will start the same incremental graph sync task automatically.
+              </p>
+            </div>
+          </label>
+        </div>
         <Button
           variant="primary"
           class="w-full"
@@ -306,6 +315,25 @@ const graphBuildModeValue = computed({
         >
           <Network class="w-4 h-4" />
           {{ props.graphBuildActionLabel }}
+        </Button>
+        <Button
+          variant="secondary"
+          class="w-full"
+          :disabled="props.graphLoading || !props.graphCanBuild || !props.hasOntology"
+          @click="emit('runAutoSync')"
+        >
+          <Network class="w-4 h-4" />
+          Run Auto Sync Now
+        </Button>
+        <Button
+          v-if="props.graphResumeAvailable"
+          variant="secondary"
+          class="w-full"
+          :disabled="props.graphLoading"
+          @click="emit('resumeGraphBuild')"
+        >
+          <Network class="w-4 h-4" />
+          {{ props.graphResumeActionLabel }}
         </Button>
       </div>
 
@@ -339,10 +367,6 @@ const graphBuildModeValue = computed({
           Detail: {{ props.graphBuildSummary.reason }}
         </p>
       </div>
-
-      <p v-if="!props.hasOntology" class="text-xs text-amber-700 dark:text-amber-300">
-        Please complete Step 1 first.
-      </p>
 
       <Alert v-if="props.graphError" variant="destructive" class="text-sm">
         {{ props.graphError }}

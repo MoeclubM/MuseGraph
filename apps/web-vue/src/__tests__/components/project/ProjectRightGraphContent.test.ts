@@ -15,6 +15,7 @@ const ProjectGraphBuildPanelStub = defineComponent({
     'update:graph-build-mode',
     'generate-ontology',
     'build-graph',
+    'resume-graph-build',
   ],
   template: '<div data-test="graph-build-stub" />',
 })
@@ -74,6 +75,7 @@ function buildBaseProps() {
     ontologyMeta: null,
     graphBuildModel: '',
     embeddingModels: [],
+    rerankerModels: [],
     graphEmbeddingModel: '',
     graphRerankerModel: '',
     graphBuildMode: 'rebuild' as const,
@@ -82,6 +84,8 @@ function buildBaseProps() {
     graphFreshnessHint: '',
     graphLoading: false,
     graphBuildActionLabel: 'Build',
+    graphResumeAvailable: false,
+    graphResumeActionLabel: 'Continue Failed Graph Build',
     graphBuildMessage: '',
     graphBuildProgress: 0,
     graphBuildSummary: null,
@@ -182,7 +186,7 @@ describe('ProjectRightGraphContent', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('No graph data yet. Follow steps 1-2 to build the graph.')
+    expect(wrapper.text()).toContain('Build the graph to preview it here.')
     expect(wrapper.find('[data-test="graph-search-stub"]').exists()).toBe(true)
   })
 })

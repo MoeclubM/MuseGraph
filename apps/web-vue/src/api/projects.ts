@@ -5,6 +5,7 @@ import type {
   ProjectChapter,
   ProjectCharacter,
   ProjectGlossaryTerm,
+  ProjectSearchResult,
   ProjectWorldbookEntry,
 } from '@/types'
 
@@ -22,6 +23,9 @@ export interface RunOperationPayload {
   character_ids?: string[]
   glossary_term_ids?: string[]
   worldbook_entry_ids?: string[]
+  include_all_characters?: boolean
+  include_all_glossary_terms?: boolean
+  include_all_worldbook_entries?: boolean
   use_rag?: boolean
 }
 
@@ -35,6 +39,11 @@ export async function getEmbeddingModels(): Promise<ModelInfo[]> {
   return data.models
 }
 
+export async function getRerankerModels(): Promise<ModelInfo[]> {
+  const { data } = await api.get<{ models: ModelInfo[] }>('/api/ai/reranker-models')
+  return data.models
+}
+
 export async function getProjects(): Promise<Project[]> {
   const { data } = await api.get<Project[]>('/api/projects')
   return data
@@ -42,6 +51,13 @@ export async function getProjects(): Promise<Project[]> {
 
 export async function getProject(id: string): Promise<Project> {
   const { data } = await api.get<Project>(`/api/projects/${id}`)
+  return data
+}
+
+export async function searchProject(projectId: string, query: string): Promise<ProjectSearchResult[]> {
+  const { data } = await api.get<ProjectSearchResult[]>(`/api/projects/${projectId}/search`, {
+    params: { q: query },
+  })
   return data
 }
 
@@ -73,6 +89,17 @@ export async function runOperation(
 ): Promise<Operation> {
   const { data } = await api.post<Operation>(
     `/api/projects/${projectId}/operation`,
+    payload
+  )
+  return data
+}
+
+export async function startOperation(
+  projectId: string,
+  payload: RunOperationPayload
+): Promise<Operation> {
+  const { data } = await api.post<Operation>(
+    `/api/projects/${projectId}/operation/stream`,
     payload
   )
   return data

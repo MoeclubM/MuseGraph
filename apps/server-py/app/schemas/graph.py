@@ -4,16 +4,17 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-class CogneeAddRequest(BaseModel):
+class GraphBuildRequest(BaseModel):
     text: str = ""
     ontology: Optional[dict[str, Any]] = None
     chapter_ids: Optional[list[str]] = None
     build_mode: Literal["rebuild", "incremental"] = "rebuild"
+    resume_failed: bool = False
 
     model_config = {"extra": "forbid"}
 
 
-class CogneeOntologyGenerateRequest(BaseModel):
+class GraphOntologyGenerateRequest(BaseModel):
     text: str = ""
     requirement: Optional[str] = None
     model: Optional[str] = None
@@ -22,7 +23,7 @@ class CogneeOntologyGenerateRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class CogneeOasisAnalyzeRequest(BaseModel):
+class GraphOasisAnalyzeRequest(BaseModel):
     text: str = ""
     requirement: Optional[str] = None
     prompt: Optional[str] = None
@@ -33,7 +34,7 @@ class CogneeOasisAnalyzeRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class CogneeOasisPrepareRequest(BaseModel):
+class GraphOasisPrepareRequest(BaseModel):
     text: str = ""
     requirement: Optional[str] = None
     prompt: Optional[str] = None
@@ -44,21 +45,21 @@ class CogneeOasisPrepareRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class CogneeOasisRunRequest(BaseModel):
+class GraphOasisRunRequest(BaseModel):
     package: Optional[dict[str, Any]] = None
     chapter_ids: Optional[list[str]] = None
 
     model_config = {"extra": "forbid"}
 
 
-class CogneeOasisReportRequest(BaseModel):
+class GraphOasisReportRequest(BaseModel):
     report_model: Optional[str] = None
     chapter_ids: Optional[list[str]] = None
 
     model_config = {"extra": "forbid"}
 
 
-class CogneeSearchRequest(BaseModel):
+class GraphSearchRequest(BaseModel):
     query: str
     search_type: Literal[
         "INSIGHTS",
@@ -76,8 +77,8 @@ class CogneeSearchRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class CogneeStatusResponse(BaseModel):
-    dataset_id: Optional[str] = None
+class GraphStatusResponse(BaseModel):
+    graph_id: Optional[str] = None
     status: str
     ontology_status: Optional[str] = None
     oasis_status: Optional[str] = None
@@ -90,35 +91,38 @@ class CogneeStatusResponse(BaseModel):
     graph_last_build_at: Optional[str] = None
     graph_mode: Optional[str] = None
     graph_syncing_task_id: Optional[str] = None
+    graph_resume_available: Optional[bool] = None
+    graph_resume_failed_chunks: Optional[int] = None
+    graph_resume_mode: Optional[str] = None
 
 
-class CogneeOntologyResponse(BaseModel):
+class GraphOntologyResponse(BaseModel):
     status: str
     ontology: dict[str, Any]
 
 
-class CogneeOasisAnalyzeResponse(BaseModel):
+class GraphOasisAnalyzeResponse(BaseModel):
     status: str
     analysis: dict[str, Any]
     context: dict[str, Any]
 
 
-class CogneeOasisPrepareResponse(BaseModel):
+class GraphOasisPrepareResponse(BaseModel):
     status: str
     package: dict[str, Any]
 
 
-class CogneeOasisRunResponse(BaseModel):
+class GraphOasisRunResponse(BaseModel):
     status: str
     run_result: dict[str, Any]
 
 
-class CogneeOasisReportResponse(BaseModel):
+class GraphOasisReportResponse(BaseModel):
     status: str
     report: dict[str, Any]
 
 
-class CogneeTaskInfo(BaseModel):
+class GraphTaskInfo(BaseModel):
     task_id: str
     task_type: str
     status: str
@@ -132,21 +136,21 @@ class CogneeTaskInfo(BaseModel):
     metadata: Optional[dict[str, Any]] = None
 
 
-class CogneeTaskStartResponse(BaseModel):
+class GraphTaskStartResponse(BaseModel):
     status: str
-    task: CogneeTaskInfo
+    task: GraphTaskInfo
 
 
-class CogneeTaskStatusResponse(BaseModel):
+class GraphTaskStatusResponse(BaseModel):
     status: str
-    task: CogneeTaskInfo
+    task: GraphTaskInfo
 
 
-class CogneeTaskListResponse(BaseModel):
+class GraphTaskListResponse(BaseModel):
     status: str
-    tasks: list[CogneeTaskInfo]
+    tasks: list[GraphTaskInfo]
 
 
-class CogneeVisualizationResponse(BaseModel):
+class GraphVisualizationResponse(BaseModel):
     nodes: list[dict[str, Any]]
     edges: list[dict[str, Any]]

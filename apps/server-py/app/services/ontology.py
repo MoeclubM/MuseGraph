@@ -8,8 +8,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.config import AIProviderConfig
 from app.services.ai import DEFAULT_MODEL
 from app.services.ai import call_llm
-from app.services.llm_json import extract_json_object
+from app.services.llm_json import StrictJsonSchemaModel, extract_json_object
 from app.services.provider_models import get_provider_chat_models
+
+
+class OntologyEntityType(StrictJsonSchemaModel):
+    name: str
+    description: str
+    examples: list[str]
+
+
+class OntologyEdgeType(StrictJsonSchemaModel):
+    name: str
+    source_type: str
+    target_type: str
+    description: str
+
+
+class OntologyResponse(StrictJsonSchemaModel):
+    entity_types: list[OntologyEntityType]
+    edge_types: list[OntologyEdgeType]
+    analysis_summary: str
+
+
+_ONTOLOGY_PROMPT_MAX_CHARS = 8000
+_ONTOLOGY_MIN_TIMEOUT_SECONDS = 300
 
 
 def _normalize_name(name: str) -> str:
@@ -36,167 +59,42 @@ def _to_example_list(value: Any) -> list[str]:
 
 
 def _normalize_entity_item(item: Any) -> dict[str, Any] | None:
-    if isinstance(item, str):
-        return {"name": item, "description": "", "examples": []}
     if not isinstance(item, dict):
         return None
-    name = str(
-        item.get("name")
-        or item.get("type")
-        or item.get("entity")
-        or item.get("label")
-        or item.get("entity_type")
-        or ""
-    ).strip()
+    name = str(item.get("name") or "").strip()
     return {
         "name": name,
-        "description": str(item.get("description") or item.get("desc") or item.get("definition") or "").strip(),
-        "examples": _to_example_list(
-            item.get("examples")
-            or item.get("sample")
-            or item.get("samples")
-            or item.get("instances")
-        ),
+        "description": str(item.get("description") or "").strip(),
+        "examples": _to_example_list(item.get("examples")),
     }
 
 
 def _normalize_edge_item(item: Any) -> dict[str, Any] | None:
-    if isinstance(item, str):
-        return {
-            "name": item,
-            "source_type": "",
-            "target_type": "",
-            "description": "",
-        }
     if not isinstance(item, dict):
         return None
 
-    def _stringify_type(value: Any) -> str:
-        if isinstance(value, dict):
-            return str(
-                value.get("type")
-                or value.get("name")
-                or value.get("entity_type")
-                or value.get("label")
-                or value.get("id")
-                or ""
-            ).strip()
-        return str(value or "").strip()
-
-    source_candidates = [
-        item.get("source_type"),
-        item.get("sourceType"),
-        item.get("source"),
-        item.get("from"),
-        item.get("head"),
-        item.get("subject"),
-        item.get("subject_type"),
-        item.get("source_entity"),
-        item.get("source_entity_type"),
-    ]
-    target_candidates = [
-        item.get("target_type"),
-        item.get("targetType"),
-        item.get("target"),
-        item.get("to"),
-        item.get("tail"),
-        item.get("object"),
-        item.get("object_type"),
-        item.get("target_entity"),
-        item.get("target_entity_type"),
-    ]
-    source_type = next((text for text in (_stringify_type(value) for value in source_candidates) if text), "")
-    target_type = next((text for text in (_stringify_type(value) for value in target_candidates) if text), "")
-
     return {
-        "name": str(item.get("name") or item.get("relation") or item.get("type") or item.get("predicate") or "").strip(),
-        "source_type": source_type,
-        "target_type": target_type,
-        "description": str(item.get("description") or item.get("desc") or "").strip(),
+        "name": str(item.get("name") or "").strip(),
+        "source_type": str(item.get("source_type") or "").strip(),
+        "target_type": str(item.get("target_type") or "").strip(),
+        "description": str(item.get("description") or "").strip(),
     }
 
 
 def _normalize_ontology_payload(data: dict[str, Any]) -> dict[str, Any]:
-    nested = data.get("ontology")
-    if isinstance(nested, dict):
-        merged = dict(nested)
-        merged.update(data)
-        data = merged
-
-    entities_raw = _pick_first_list(
-        data,
-        [
-            "entity_types",
-            "entityTypes",
-            "entities",
-            "entity_type_list",
-            "entityTypeList",
-            "entity_types_list",
-            "nodes",
-            "node_types",
-            "concepts",
-            "classes",
-        ],
-    )
-    edges_raw = _pick_first_list(
-        data,
-        [
-            "edge_types",
-            "edgeTypes",
-            "relations",
-            "relationship_types",
-            "relationships",
-            "edges",
-            "links",
-            "triples",
-            "predicates",
-        ],
-    )
+    entities_raw = _pick_first_list(data, ["entity_types"])
+    edges_raw = _pick_first_list(data, ["edge_types"])
 
     entities = [normalized for normalized in (_normalize_entity_item(item) for item in entities_raw) if normalized]
     edges = [normalized for normalized in (_normalize_edge_item(item) for item in edges_raw) if normalized]
 
-    analysis_summary = str(
-        data.get("analysis_summary")
-        or data.get("summary")
-        or data.get("analysis")
-        or data.get("explanation")
-        or ""
-    ).strip()
+    analysis_summary = str(data.get("analysis_summary") or "").strip()
 
     return {
         "entity_types": entities,
         "edge_types": edges,
         "analysis_summary": analysis_summary,
     }
-
-
-async def _repair_ontology_json(raw_output: str, model: str, db: AsyncSession) -> str | None:
-    content = (raw_output or "").strip()
-    if not content:
-        return None
-    repair_prompt = (
-        "You are a JSON normalizer. Convert the following ontology draft into strict JSON only.\n"
-        "Required schema:\n"
-        "{\n"
-        '  "entity_types": [{"name":"...", "description":"...", "examples":["..."]}],\n'
-        '  "edge_types": [{"name":"...", "source_type":"...", "target_type":"...", "description":"..."}],\n'
-        '  "analysis_summary": "..."\n'
-        "}\n"
-        "Rules:\n"
-        "1) Output JSON object only, no markdown.\n"
-        "2) Keep entity/edge names concise; use uppercase snake case when possible.\n"
-        "3) Keep relation source_type/target_type explicit and non-empty.\n\n"
-        f"Draft:\n{content[:12000]}"
-    )
-    repaired = await call_llm(
-        model,
-        repair_prompt,
-        db,
-        prefer_stream_override=False,
-        stream_fallback_nonstream_override=False,
-    )
-    return str(repaired.get("content") or "").strip() or None
 
 
 def _sanitize_ontology(data: dict[str, Any]) -> dict[str, Any]:
@@ -226,19 +124,12 @@ def _sanitize_ontology(data: dict[str, Any]) -> dict[str, Any]:
             break
 
     edge_types: list[dict[str, Any]] = []
-    entity_names = [entity["name"] for entity in entity_types if isinstance(entity, dict) and entity.get("name")]
-    default_source = entity_names[0] if entity_names else ""
-    default_target = entity_names[1] if len(entity_names) > 1 else default_source
     for item in edges_raw:
         if not isinstance(item, dict):
             continue
         raw_name = str(item.get("name") or "").strip()
         raw_source_type = str(item.get("source_type") or "").strip()
         raw_target_type = str(item.get("target_type") or "").strip()
-        if not raw_source_type:
-            raw_source_type = default_source
-        if not raw_target_type:
-            raw_target_type = default_target
         if not raw_name or not raw_source_type or not raw_target_type:
             continue
         name = _normalize_name(raw_name)
@@ -326,55 +217,30 @@ def _build_ontology_source_excerpt(text: str, *, max_chars: int = 12000) -> str:
 
 
 def _build_ontology_prompt(text: str, requirement: str | None) -> str:
-    sampled_text = _build_ontology_source_excerpt(text, max_chars=12000)
+    sampled_text = _build_ontology_source_excerpt(text, max_chars=_ONTOLOGY_PROMPT_MAX_CHARS)
     return (
-        "You are an ontology architect. Read the input text and propose an ontology in JSON only.\n"
-        "Output schema:\n"
-        "{\n"
-        '  "entity_types": [{"name":"...", "description":"...", "examples":["..."]}],\n'
-        '  "edge_types": [{"name":"...", "source_type":"...", "target_type":"...", "description":"..."}],\n'
-        '  "analysis_summary": "..."\n'
-        "}\n"
+        "You are an ontology architect. Read the input text and propose an ontology.\n"
+        "Use the provided response schema.\n"
         "Rules: 6-16 entity types, 8-24 edge types, concise names in uppercase snake case.\n"
-        "Do not include markdown.\n\n"
+        "Do not add commentary.\n\n"
         f"Requirement:\n{(requirement or '').strip()}\n\n"
         f"Text:\n{sampled_text}"
     )
 
 
 def _build_retry_prompt(text: str, requirement: str | None) -> str:
-    sampled_text = _build_ontology_source_excerpt(text, max_chars=12000)
+    sampled_text = _build_ontology_source_excerpt(text, max_chars=_ONTOLOGY_PROMPT_MAX_CHARS)
     return (
-        "Return strict JSON only. Build a rich ontology for the text.\n"
-        "Schema:\n"
-        "{\n"
-        '  "entity_types": [{"name":"...", "description":"...", "examples":["..."]}],\n'
-        '  "edge_types": [{"name":"...", "source_type":"...", "target_type":"...", "description":"..."}],\n'
-        '  "analysis_summary": "..."\n'
-        "}\n"
+        "Build a rich ontology for the text.\n"
+        "Use the provided response schema.\n"
         "Hard constraints:\n"
         "1) At least 6 entity_types and at least 8 edge_types.\n"
         "2) Do not use generic placeholders like only CONCEPT/RELATED_TO.\n"
         "3) Use concrete relation names and valid source_type/target_type.\n"
-        "4) Output JSON object only.\n\n"
+        "4) Return only the structured result.\n\n"
         f"Requirement:\n{(requirement or '').strip()}\n\n"
         f"Text:\n{sampled_text}"
     )
-
-
-async def _parse_ontology_from_content(
-    *,
-    raw_content: str,
-    model: str,
-    db: AsyncSession,
-) -> dict[str, Any] | None:
-    parsed = extract_json_object(raw_content)
-    if parsed:
-        return parsed
-    repaired_content = await _repair_ontology_json(raw_content, model, db)
-    if not repaired_content:
-        return None
-    return extract_json_object(repaired_content)
 
 
 def _attach_meta(
@@ -436,6 +302,8 @@ async def generate_ontology(
             max_tokens=2200,
             prefer_stream_override=False,
             stream_fallback_nonstream_override=False,
+            minimum_timeout_seconds=_ONTOLOGY_MIN_TIMEOUT_SECONDS,
+            response_schema=OntologyResponse,
         )
         api_called = True
         provider_name = str(llm_result.get("provider") or "")
@@ -445,16 +313,12 @@ async def generate_ontology(
         parsed: dict[str, Any] | None = None
         parse_error: Exception | None = None
         try:
-            parsed = await _parse_ontology_from_content(
-                raw_content=raw_content,
-                model=selected_model,
-                db=db,
-            )
+            parsed = extract_json_object(raw_content)
         except Exception as repair_exc:
             parse_error = repair_exc
 
         if not parsed:
-            error_code = "llm_response_not_json_or_invalid_schema_after_repair"
+            error_code = "llm_response_not_json_or_invalid_schema"
             if parse_error:
                 error_code = f"{error_code}:{type(parse_error).__name__}:{str(parse_error)[:120]}"
             raise ValueError(error_code)
@@ -473,6 +337,8 @@ async def generate_ontology(
                 max_tokens=2200,
                 prefer_stream_override=False,
                 stream_fallback_nonstream_override=False,
+                minimum_timeout_seconds=_ONTOLOGY_MIN_TIMEOUT_SECONDS,
+                response_schema=OntologyResponse,
             )
             input_tokens += int(retry_result.get("input_tokens") or 0)
             output_tokens += int(retry_result.get("output_tokens") or 0)
@@ -483,16 +349,12 @@ async def generate_ontology(
             retry_parsed: dict[str, Any] | None = None
             retry_parse_error: Exception | None = None
             try:
-                retry_parsed = await _parse_ontology_from_content(
-                    raw_content=retry_content,
-                    model=selected_model,
-                    db=db,
-                )
+                retry_parsed = extract_json_object(retry_content)
             except Exception as retry_exc:
                 retry_parse_error = retry_exc
 
             if not retry_parsed:
-                error_code = "retry_llm_response_not_json_or_invalid_schema_after_repair"
+                error_code = "retry_llm_response_not_json_or_invalid_schema"
                 if retry_parse_error:
                     error_code = f"{error_code}:{type(retry_parse_error).__name__}:{str(retry_parse_error)[:120]}"
                 raise ValueError(error_code)

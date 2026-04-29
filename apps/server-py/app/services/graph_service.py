@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.services.ai import call_llm
 from app.services.graphiti_graph import (
+    GraphBuildPartialFailure,
     build_graph as build_graph_with_graphiti,
     delete_graph as delete_graph_with_graphiti,
     get_graph_visualization as get_graph_visualization_with_graphiti,
@@ -16,7 +17,16 @@ from app.services.graphiti_graph import (
     search_graph as search_graph_with_graphiti,
     setup_graphiti,
 )
-from app.services.llm_json import extract_json_object
+from app.services.llm_json import StrictJsonSchemaModel, extract_json_object
+
+
+class RerankedCandidate(StrictJsonSchemaModel):
+    id: int
+    score: float
+
+
+class RerankResponse(StrictJsonSchemaModel):
+    ranked: list[RerankedCandidate]
 
 
 def _ensure_supported_graph_backend() -> None:
@@ -82,14 +92,12 @@ def _rerank_search_results_lexical(
 def _build_reranker_prompt(query: str, candidates: list[dict[str, Any]]) -> str:
     return (
         "You are a retrieval reranker for RAG.\n"
-        "Given a user query and candidate passages, return strict JSON only.\n"
-        "Schema:\n"
-        '{"ranked":[{"id":1,"score":0.95}]}\n'
+        "Given a user query and candidate passages, use the provided response schema.\n"
         "Rules:\n"
         "1) Keep only ids from provided candidates.\n"
         "2) score must be in [0, 1], sorted descending by relevance.\n"
         "3) Prefer factual grounding, temporal consistency, and direct answerability.\n"
-        "4) Do not output markdown or explanations.\n\n"
+        "4) Do not add explanations.\n\n"
         f"Query:\n{str(query or '').strip()}\n\n"
         f"Candidates:\n{json.dumps(candidates, ensure_ascii=False)}"
     )
@@ -124,6 +132,9 @@ async def _rerank_search_results_with_llm(
         _build_reranker_prompt(query, candidates),
         db,
         max_tokens=900,
+        prefer_stream_override=False,
+        stream_fallback_nonstream_override=False,
+        response_schema=RerankResponse,
     )
     payload = extract_json_object(str(llm_result.get("content") or "")) or {}
     ranked_raw = payload.get("ranked") if isinstance(payload, dict) else None
@@ -182,7 +193,7 @@ async def setup_graph_runtime() -> None:
     await setup_graphiti()
 
 
-async def add_and_cognify(
+async def build_graph(
     project_id: str,
     text: str,
     *,
@@ -191,6 +202,9 @@ async def add_and_cognify(
     progress_callback: Any | None = None,
     model: str | None = None,
     embedding_model: str | None = None,
+    graph_id_override: str | None = None,
+    chunk_indices: list[int] | None = None,
+    continue_on_error: bool = False,
 ) -> str:
     _ensure_supported_graph_backend()
     return await build_graph_with_graphiti(
@@ -201,10 +215,13 @@ async def add_and_cognify(
         progress_callback=progress_callback,
         model=model,
         embedding_model=embedding_model,
+        graph_id_override=graph_id_override,
+        chunk_indices=chunk_indices,
+        continue_on_error=continue_on_error,
     )
 
 
-async def delete_dataset(
+async def delete_graph(
     project_id: str,
     *,
     model: str | None = None,
@@ -272,4 +289,3 @@ async def get_graph_visualization(
 async def has_graph_data(project_id: str, *, db: AsyncSession | None = None) -> bool:
     _ensure_supported_graph_backend()
     return await has_graphiti_graph_data(project_id, db=db)
-

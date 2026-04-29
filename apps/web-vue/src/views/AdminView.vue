@@ -23,9 +23,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   getStats, getUsers, createUser, updateUser, deleteUser, addUserBalance,
   getProviders, createProvider, updateProvider, deleteProvider,
-  discoverProviderModels, discoverProviderEmbeddingModels, addProviderModel, removeProviderModel,
+  discoverProviderModels, discoverProviderEmbeddingModels, discoverProviderRerankerModels,
+  addProviderModel, removeProviderModel,
   addProviderEmbeddingModel, removeProviderEmbeddingModel,
-  getPricing, createPricing, updatePricing, deletePricing,
+  addProviderRerankerModel, removeProviderRerankerModel,
+  getPricing, createPricing, updatePricing,
   getPaymentConfig, updatePaymentConfig,
   getOasisConfig, updateOasisConfig,
   getUserOrders,
@@ -48,6 +50,13 @@ type Tab = 'overview' | 'users' | 'providers' | 'models' | 'advanced' | 'payment
 type UserStatus = '' | 'ACTIVE' | 'SUSPENDED' | 'DELETED'
 type UserAdminFilter = '' | 'true' | 'false'
 type AdminTaskStatusFilter = '' | 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
+type ProviderModelKind = 'chat' | 'embedding' | 'reranker'
+type ModelRow = {
+  providerId: string
+  providerName: string
+  kind: ProviderModelKind
+  model: string
+}
 type AdminTaskFilters = {
   status: AdminTaskStatusFilter
   task_type: string
@@ -95,13 +104,13 @@ const providerForm = ref<{ id: string; name: string; provider: string; api_key: 
   priority: 0,
 })
 const showProviderForm = ref(false)
-const providerTypeOptions = (import.meta.env.VITE_PROVIDER_TYPES || '')
-  .split(',')
-  .map((item: string) => item.trim())
-  .filter((item: string) => item.length > 0)
+const providerTypeOptions = [
+  { value: 'openai_compatible', label: 'OpenAI Compatible' },
+  { value: 'anthropic_compatible', label: 'Anthropic Compatible' },
+]
 
 const providerModelProviderId = ref('')
-const providerModelFormKind = ref<'chat' | 'embedding'>('chat')
+const providerModelFormKind = ref<'chat' | 'embedding' | 'reranker'>('chat')
 const providerModelManualInput = ref('')
 const discoveredProviderModels = ref<string[]>([])
 const discoveredProviderModel = ref('')
@@ -111,6 +120,10 @@ const discoveredProviderEmbeddingModels = ref<string[]>([])
 const discoveredProviderEmbeddingModel = ref('')
 const providerEmbeddingMessage = ref('')
 const providerEmbeddingError = ref('')
+const discoveredProviderRerankerModels = ref<string[]>([])
+const discoveredProviderRerankerModel = ref('')
+const providerRerankerMessage = ref('')
+const providerRerankerError = ref('')
 const showModelForm = ref(false)
 
 const oasisConfig = ref<OasisConfig>({
@@ -131,6 +144,8 @@ const oasisConfig = ref<OasisConfig>({
   llm_retry_interval_seconds: 2,
   llm_prefer_stream: true,
   llm_stream_fallback_nonstream: true,
+  llm_openai_api_style: 'responses',
+  llm_reasoning_effort: 'model_default',
   llm_task_concurrency: 4,
   llm_model_default_concurrency: 8,
   llm_model_concurrency_overrides: {},
@@ -191,17 +206,22 @@ const tabItems: Array<{ value: Tab; label: string; icon: Component; hint: string
   { value: 'tasks', label: 'Tasks', icon: ListChecks, hint: 'Task monitoring' },
 ]
 
-const discoveredModelsForCurrentKind = computed(() =>
-  providerModelFormKind.value === 'embedding'
-    ? discoveredProviderEmbeddingModels.value
-    : discoveredProviderModels.value
-)
+const discoveredModelsForCurrentKind = computed(() => {
+  if (providerModelFormKind.value === 'reranker') return discoveredProviderRerankerModels.value
+  if (providerModelFormKind.value === 'embedding') return discoveredProviderEmbeddingModels.value
+  return discoveredProviderModels.value
+})
 const discoveredModelForCurrentKind = computed({
-  get: () =>
-    providerModelFormKind.value === 'embedding'
-      ? discoveredProviderEmbeddingModel.value
-      : discoveredProviderModel.value,
+  get: () => {
+    if (providerModelFormKind.value === 'reranker') return discoveredProviderRerankerModel.value
+    if (providerModelFormKind.value === 'embedding') return discoveredProviderEmbeddingModel.value
+    return discoveredProviderModel.value
+  },
   set: (value: string) => {
+    if (providerModelFormKind.value === 'reranker') {
+      discoveredProviderRerankerModel.value = value
+      return
+    }
     if (providerModelFormKind.value === 'embedding') {
       discoveredProviderEmbeddingModel.value = value
       return
@@ -209,59 +229,42 @@ const discoveredModelForCurrentKind = computed({
     discoveredProviderModel.value = value
   },
 })
-const providerModelMessageForCurrentKind = computed(() =>
-  providerModelFormKind.value === 'embedding'
-    ? providerEmbeddingMessage.value
-    : providerModelMessage.value
-)
-const providerModelErrorForCurrentKind = computed(() =>
-  providerModelFormKind.value === 'embedding'
-    ? providerEmbeddingError.value
-    : providerModelError.value
-)
+const providerModelMessageForCurrentKind = computed(() => {
+  if (providerModelFormKind.value === 'reranker') return providerRerankerMessage.value
+  if (providerModelFormKind.value === 'embedding') return providerEmbeddingMessage.value
+  return providerModelMessage.value
+})
+const providerModelErrorForCurrentKind = computed(() => {
+  if (providerModelFormKind.value === 'reranker') return providerRerankerError.value
+  if (providerModelFormKind.value === 'embedding') return providerEmbeddingError.value
+  return providerModelError.value
+})
 const knownModels = computed(() =>
   Array.from(
     new Set([
       ...providers.value.flatMap((p) => p.models || []),
       ...providers.value.flatMap((p) => p.embedding_models || []),
+      ...providers.value.flatMap((p) => p.reranker_models || []),
     ])
   ).sort()
 )
 const totalKnownModels = computed(() => knownModels.value.length)
 
-const providerNamesByModel = computed<Record<string, string>>(() => {
-  const entries = new Map<string, string[]>()
-  for (const provider of providers.value) {
-    for (const model of [...(provider.models || []), ...(provider.embedding_models || [])]) {
-      const current = entries.get(model) || []
-      if (!current.includes(provider.name)) current.push(provider.name)
-      entries.set(model, current)
-    }
-  }
-  return Object.fromEntries(
-    Array.from(entries.entries()).map(([model, names]) => [model, names.join(', ')])
-  )
-})
-
-const modelTypesByModel = computed<Record<string, string>>(() => {
-  const entries = new Map<string, { llm: boolean; embedding: boolean }>()
+const modelRows = computed<ModelRow[]>(() => {
+  const rows: ModelRow[] = []
   for (const provider of providers.value) {
     for (const model of provider.models || []) {
-      const current = entries.get(model) || { llm: false, embedding: false }
-      current.llm = true
-      entries.set(model, current)
+      rows.push({ providerId: provider.id, providerName: provider.name, kind: 'chat', model })
     }
     for (const model of provider.embedding_models || []) {
-      const current = entries.get(model) || { llm: false, embedding: false }
-      current.embedding = true
-      entries.set(model, current)
+      rows.push({ providerId: provider.id, providerName: provider.name, kind: 'embedding', model })
+    }
+    for (const model of provider.reranker_models || []) {
+      rows.push({ providerId: provider.id, providerName: provider.name, kind: 'reranker', model })
     }
   }
-  return Object.fromEntries(
-    Array.from(entries.entries()).map(([model, usage]) => [
-      model,
-      usage.llm && usage.embedding ? 'LLM + Embedding' : usage.embedding ? 'Embedding' : 'LLM',
-    ])
+  return rows.sort((a, b) =>
+    a.model.localeCompare(b.model) || a.providerName.localeCompare(b.providerName) || a.kind.localeCompare(b.kind)
   )
 })
 
@@ -305,14 +308,6 @@ function parseModelConcurrencyOverrides(raw: string): Record<string, number> {
 
 function pricingByModel(model: string): PricingRule | undefined {
   return pricingRules.value.find((r) => r.model === model)
-}
-
-function providerNameForModel(model: string): string {
-  return providerNamesByModel.value[model]
-}
-
-function modelTypeForModel(model: string): string {
-  return modelTypesByModel.value[model]
 }
 
 function formatPricing(rule?: PricingRule): string {
@@ -528,7 +523,15 @@ function editProvider(p: Provider) {
 }
 
 function newProvider() {
-  providerForm.value = { id: '', name: '', provider: '', api_key: '', base_url: '', is_active: true, priority: 0 }
+  providerForm.value = {
+    id: '',
+    name: '',
+    provider: 'openai_compatible',
+    api_key: '',
+    base_url: '',
+    is_active: true,
+    priority: 0,
+  }
   showProviderForm.value = true
 }
 
@@ -580,10 +583,14 @@ async function removeProvider(id: string) {
   pricingRules.value = await getPricing()
 }
 
-type ProviderModelKind = 'chat' | 'embedding'
 type ProviderModelAction = 'add' | 'remove'
 
 function clearProviderModelFeedback(kind: ProviderModelKind) {
+  if (kind === 'reranker') {
+    providerRerankerError.value = ''
+    providerRerankerMessage.value = ''
+    return
+  }
   if (kind === 'embedding') {
     providerEmbeddingError.value = ''
     providerEmbeddingMessage.value = ''
@@ -594,6 +601,10 @@ function clearProviderModelFeedback(kind: ProviderModelKind) {
 }
 
 function setProviderModelMessage(kind: ProviderModelKind, message: string) {
+  if (kind === 'reranker') {
+    providerRerankerMessage.value = message
+    return
+  }
   if (kind === 'embedding') {
     providerEmbeddingMessage.value = message
     return
@@ -602,6 +613,10 @@ function setProviderModelMessage(kind: ProviderModelKind, message: string) {
 }
 
 function setProviderModelError(kind: ProviderModelKind, message: string) {
+  if (kind === 'reranker') {
+    providerRerankerError.value = message
+    return
+  }
   if (kind === 'embedding') {
     providerEmbeddingError.value = message
     return
@@ -613,6 +628,14 @@ async function refreshDiscover(kind: ProviderModelKind, persist = false) {
   if (!providerModelProviderId.value) return
   clearProviderModelFeedback(kind)
   try {
+    if (kind === 'reranker') {
+      const discovered = await discoverProviderRerankerModels(providerModelProviderId.value, persist)
+      discoveredProviderRerankerModels.value = discovered.discovered
+      discoveredProviderRerankerModel.value = discovered.discovered[0] || ''
+      if (persist) await refreshProviders()
+      setProviderModelMessage(kind, `${persist ? 'Imported' : 'Discovered'} ${discovered.discovered.length}`)
+      return
+    }
     if (kind === 'embedding') {
       const discovered = await discoverProviderEmbeddingModels(providerModelProviderId.value, persist)
       discoveredProviderEmbeddingModels.value = discovered.discovered
@@ -639,7 +662,12 @@ async function mutateProviderModel(kind: ProviderModelKind, action: ProviderMode
   clearProviderModelFeedback(kind)
   try {
     let next: string[] = []
-    if (kind === 'embedding') {
+    if (kind === 'reranker') {
+      next = action === 'add'
+        ? await addProviderRerankerModel(providerModelProviderId.value, modelId)
+        : await removeProviderRerankerModel(providerModelProviderId.value, modelId)
+      setProviderModelMessage(kind, `Reranker models: ${next.length}`)
+    } else if (kind === 'embedding') {
       next = action === 'add'
         ? await addProviderEmbeddingModel(providerModelProviderId.value, modelId)
         : await removeProviderEmbeddingModel(providerModelProviderId.value, modelId)
@@ -653,7 +681,7 @@ async function mutateProviderModel(kind: ProviderModelKind, action: ProviderMode
     await refreshProviders()
   } catch (error: unknown) {
     const actionLabel = action === 'add' ? 'Add' : 'Remove'
-    const kindLabel = kind === 'embedding' ? 'embedding model' : 'model'
+    const kindLabel = kind === 'embedding' ? 'embedding model' : kind === 'reranker' ? 'reranker model' : 'model'
     setProviderModelError(kind, getErrorMessage(error, `${actionLabel} ${kindLabel} failed`))
   }
 }
@@ -674,6 +702,8 @@ function resetModelDiscoverState() {
   discoveredProviderModels.value = []
   discoveredProviderEmbeddingModel.value = ''
   discoveredProviderEmbeddingModels.value = []
+  discoveredProviderRerankerModel.value = ''
+  discoveredProviderRerankerModels.value = []
 }
 
 function openModelForm() {
@@ -683,6 +713,8 @@ function openModelForm() {
   providerModelMessage.value = ''
   providerEmbeddingError.value = ''
   providerEmbeddingMessage.value = ''
+  providerRerankerError.value = ''
+  providerRerankerMessage.value = ''
   showModelForm.value = true
 }
 
@@ -694,6 +726,8 @@ function closeModelForm() {
   providerModelMessage.value = ''
   providerEmbeddingError.value = ''
   providerEmbeddingMessage.value = ''
+  providerRerankerError.value = ''
+  providerRerankerMessage.value = ''
 }
 
 watch(providerModelProviderId, () => {
@@ -701,12 +735,14 @@ watch(providerModelProviderId, () => {
   providerModelManualInput.value = ''
   clearProviderModelFeedback('chat')
   clearProviderModelFeedback('embedding')
+  clearProviderModelFeedback('reranker')
 })
 
 watch(providerModelFormKind, () => {
   providerModelManualInput.value = ''
   clearProviderModelFeedback('chat')
   clearProviderModelFeedback('embedding')
+  clearProviderModelFeedback('reranker')
 })
 
 function applyLlmRequestFields(next: OasisConfig) {
@@ -715,6 +751,8 @@ function applyLlmRequestFields(next: OasisConfig) {
   oasisConfig.value.llm_retry_interval_seconds = next.llm_retry_interval_seconds
   oasisConfig.value.llm_prefer_stream = next.llm_prefer_stream
   oasisConfig.value.llm_stream_fallback_nonstream = next.llm_stream_fallback_nonstream
+  oasisConfig.value.llm_openai_api_style = next.llm_openai_api_style
+  oasisConfig.value.llm_reasoning_effort = next.llm_reasoning_effort
   oasisConfig.value.llm_task_concurrency = next.llm_task_concurrency
   oasisConfig.value.llm_model_default_concurrency = next.llm_model_default_concurrency
   oasisConfig.value.llm_model_concurrency_overrides = { ...next.llm_model_concurrency_overrides }
@@ -749,6 +787,8 @@ async function saveLlmRequestConfig() {
       llm_retry_interval_seconds: Number(oasisConfig.value.llm_retry_interval_seconds || 0),
       llm_prefer_stream: Boolean(oasisConfig.value.llm_prefer_stream),
       llm_stream_fallback_nonstream: Boolean(oasisConfig.value.llm_stream_fallback_nonstream),
+      llm_openai_api_style: String(oasisConfig.value.llm_openai_api_style || 'responses'),
+      llm_reasoning_effort: String(oasisConfig.value.llm_reasoning_effort || 'model_default'),
       llm_task_concurrency: Number(oasisConfig.value.llm_task_concurrency || 0),
       llm_model_default_concurrency: Number(oasisConfig.value.llm_model_default_concurrency || 0),
       llm_model_concurrency_overrides: modelOverrides,
@@ -873,25 +913,18 @@ async function cancelTaskByAdmin(task: AdminTask) {
   }
 }
 
-async function removeModel(model: string) {
-  const relatedLlmProviders = providers.value.filter((p) => (p.models || []).includes(model))
-  const relatedEmbeddingProviders = providers.value.filter((p) => (p.embedding_models || []).includes(model))
-  const relatedRule = pricingByModel(model)
-  if (!relatedLlmProviders.length && !relatedEmbeddingProviders.length && !relatedRule) return
-
+async function removeModelBinding(row: ModelRow) {
   const confirmed = window.confirm(
-    `Delete model "${model}" from providers${relatedRule ? ' and pricing rules' : ''}?`
+    `Remove ${row.kind} model "${row.model}" from provider "${row.providerName}"?`
   )
   if (!confirmed) return
 
-  for (const provider of relatedLlmProviders) {
-    await removeProviderModel(provider.id, model)
-  }
-  for (const provider of relatedEmbeddingProviders) {
-    await removeProviderEmbeddingModel(provider.id, model)
-  }
-  if (relatedRule) {
-    await deletePricing(relatedRule.id)
+  if (row.kind === 'reranker') {
+    await removeProviderRerankerModel(row.providerId, row.model)
+  } else if (row.kind === 'embedding') {
+    await removeProviderEmbeddingModel(row.providerId, row.model)
+  } else {
+    await removeProviderModel(row.providerId, row.model)
   }
 
   await refreshProviders()
@@ -946,6 +979,7 @@ async function savePricing() {
   if (pricingForm.value.id) await updatePricing(pricingForm.value.id, payload)
   else await createPricing(payload)
 
+  await refreshProviders()
   pricingRules.value = await getPricing()
   showPricingForm.value = false
 }
@@ -1102,8 +1136,7 @@ onMounted(loadAll)
               :pricing-form-error="pricingFormError"
               :format-pricing="formatPricing"
               :pricing-by-model="pricingByModel"
-              :provider-name-for-model="providerNameForModel"
-              :model-type-for-model="modelTypeForModel"
+              :model-rows="modelRows"
               @open-model-form="openModelForm"
               @close-model-form="closeModelForm"
               @update:provider-model-provider-id="providerModelProviderId = $event"
@@ -1113,7 +1146,7 @@ onMounted(loadAll)
               @add-model-discovered="addModelDiscoveredByKind"
               @update:provider-model-manual-input="providerModelManualInput = $event"
               @add-model-manual="addModelManualByKind"
-              @remove-model="removeModel"
+              @remove-model-binding="removeModelBinding"
               @new-pricing="newPricing"
               @edit-pricing="editPricing"
               @update:show-pricing-form="showPricingForm = $event"

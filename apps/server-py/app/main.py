@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import Base, async_session, engine
+from app.database import Base, engine
 from app.storage import ensure_bucket
 import app.models  # noqa: F401 — register all models with Base.metadata
 
@@ -28,8 +28,9 @@ async def lifespan(app: FastAPI):
         from app.services.graph_service import setup_graph_runtime
 
         await setup_graph_runtime()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.exception("Graph runtime initialization failed")
+        raise RuntimeError("Graph runtime initialization failed") from exc
 
     # Run seed only when explicitly enabled
     if settings.AUTO_SEED_DATA:
@@ -38,7 +39,6 @@ async def lifespan(app: FastAPI):
             await seed()
         except Exception as e:
             logger.warning(f"Seed failed: {e}")
-
 
     yield
     # Shutdown
@@ -68,8 +68,8 @@ from app.routers import (  # noqa: E402
     ai,
     auth,
     billing,
-    cognee_graph,
     export,
+    graph,
     payment,
     projects,
     report,
@@ -84,7 +84,7 @@ app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
 app.include_router(billing.router, prefix="/api/billing", tags=["billing"])
 app.include_router(payment.router, prefix="/api/payment", tags=["payment"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
-app.include_router(cognee_graph.router, prefix="/api/projects/{project_id}/graphs", tags=["graphs"])
+app.include_router(graph.router, prefix="/api/projects/{project_id}/graphs", tags=["graphs"])
 app.include_router(export.router, prefix="/api/projects/{project_id}/export", tags=["export"])
 app.include_router(simulation.router, prefix="/api/simulation", tags=["simulation"])
 app.include_router(report.router, prefix="/api/report", tags=["report"])

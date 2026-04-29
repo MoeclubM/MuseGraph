@@ -11,9 +11,9 @@
 ## 2. 结构化对比结论
 
 ### 2.1 MuseGraph 已具备的核心能力
-1. 增量/重建图谱计划器与章节哈希判定：`apps/server-py/app/routers/cognee_graph.py:562`
-2. 图谱构建分段入库（chunk+overlap）与 cognify/memify：`apps/server-py/app/services/cognee.py:1183`
-3. 图谱预览结构节点过滤与裁剪：`apps/server-py/app/services/cognee.py:660`
+1. 增量/重建图谱计划器与章节哈希判定：`apps/server-py/app/routers/graph.py:562`
+2. 图谱构建分段入库（chunk+overlap）与 cognify/memify：`apps/server-py/app/services/graph_service.py:1183`
+3. 图谱预览结构节点过滤与裁剪：`apps/server-py/app/services/graph_service.py:660`
 4. 任务持久化（内存+Redis+SQLite）：`apps/server-py/app/services/task_state.py:391`
 5. LLM 统一计费上下文：`apps/server-py/app/services/ai.py:65`
 
@@ -38,7 +38,7 @@
 ## 3. 最优方案选择（最终选型）
 
 采用 **Hybrid 方案**：
-1. **核心引擎保留 MuseGraph**（Cognee 图谱/RAG 与现有计费体系不动）
+1. **核心引擎保留 MuseGraph**（图谱/RAG 与现有计费体系不动）
 2. **任务编排引入 Ai-Novel 思路**（章节变更自动扇出、幂等键、防重）
 3. **检索前后处理引入 AI_NovelGenerator 思路**（查询扩展+二次过滤）
 4. **可观测性引入 MiroFish 思路**（阶段进度/原因可视化）
@@ -108,11 +108,11 @@
    - `apps/web-vue/src/views/ProjectView.vue:3569`
 6. 前端构建验证通过：`pnpm --filter @musegraph/web build`
 7. `GET /graphs` 返回权威图谱新鲜度状态（fresh/stale/syncing/no_ontology/empty）与差异计数：
-   - `apps/server-py/app/routers/cognee_graph.py:302`
-   - `apps/server-py/app/routers/cognee_graph.py:1900`
+   - `apps/server-py/app/routers/graph.py:302`
+   - `apps/server-py/app/routers/graph.py:1900`
 8. 图谱可视化异常显式化（后端不再吞错为空图，路由区分 502/500）：
-   - `apps/server-py/app/services/cognee.py:1529`
-   - `apps/server-py/app/routers/cognee_graph.py:1972`
+   - `apps/server-py/app/services/graph_service.py:1529`
+   - `apps/server-py/app/routers/graph.py:1972`
 9. 前端接入 `getGraphStatus` 并用后端权威状态覆盖启发式 freshness 判定：
    - `apps/web-vue/src/api/graph.ts:159`
    - `apps/web-vue/src/types/index.ts:266`
@@ -120,15 +120,15 @@
 10. GraphView 增加“加载失败”状态（与“空图”分离）：
    - `apps/web-vue/src/views/GraphView.vue:15`
 11. 图谱/OASIS 任务增加幂等键与在途任务复用（防止重复点击重复起任务）：
-   - `apps/server-py/app/routers/cognee_graph.py:130`
-   - `apps/server-py/app/routers/cognee_graph.py:694`
+   - `apps/server-py/app/routers/graph.py:130`
+   - `apps/server-py/app/routers/graph.py:694`
 12. 任务管理器增加按 `idempotency_key` 检索在途任务能力：
    - `apps/server-py/app/services/task_state.py:561`
 13. 新增幂等任务复用回归测试：
-   - `apps/server-py/tests/test_cognee_graph_extended.py:713`
+   - `apps/server-py/tests/test_graph_router_extended.py:713`
 14. 本轮后端验证：
-   - `python -m py_compile app/services/task_state.py app/routers/cognee_graph.py tests/test_cognee_graph_extended.py`
-   - `pytest tests/test_cognee_graph_extended.py -q -k "prepare_task_starts or report_task_starts or run_task_starts or reuses_inflight"`（`4 passed`）
+   - `python -m py_compile app/services/task_state.py app/routers/graph.py tests/test_graph_router_extended.py`
+   - `pytest tests/test_graph_router_extended.py -q -k "prepare_task_starts or report_task_starts or run_task_starts or reuses_inflight"`（`4 passed`）
 
 ---
 

@@ -22,7 +22,7 @@ class TextProject(Base):
     component_models: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     ontology_schema: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     oasis_analysis: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    cognee_dataset_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    graph_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -52,7 +52,6 @@ class TextProject(Base):
         cascade="all, delete-orphan",
         order_by="ProjectWorldbookEntry.order_index",
     )
-
 
 class ProjectChapter(Base):
     __tablename__ = "text_project_chapters"

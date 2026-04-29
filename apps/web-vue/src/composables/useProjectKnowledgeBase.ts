@@ -261,11 +261,6 @@ export function useProjectKnowledgeBase(options: UseProjectKnowledgeBaseOptions)
     if (checked) current.add(characterId)
     else current.delete(characterId)
     selectedCharacterIds.value = Array.from(current)
-
-    if (!selectedCharacterIds.value.length && projectCharacters.value.length) {
-      selectedCharacterIds.value = projectCharacters.value
-        .map((item) => item.id)
-    }
   }
 
   function setAllCharactersSelected(checked: boolean) {
@@ -406,11 +401,6 @@ export function useProjectKnowledgeBase(options: UseProjectKnowledgeBaseOptions)
     if (checked) current.add(termId)
     else current.delete(termId)
     selectedGlossaryTermIds.value = Array.from(current)
-
-    if (!selectedGlossaryTermIds.value.length && projectGlossaryTerms.value.length) {
-      selectedGlossaryTermIds.value = projectGlossaryTerms.value
-        .map((item) => item.id)
-    }
   }
 
   function setAllGlossaryTermsSelected(checked: boolean) {
@@ -547,11 +537,6 @@ export function useProjectKnowledgeBase(options: UseProjectKnowledgeBaseOptions)
     if (checked) current.add(entryId)
     else current.delete(entryId)
     selectedWorldbookEntryIds.value = Array.from(current)
-
-    if (!selectedWorldbookEntryIds.value.length && projectWorldbookEntries.value.length) {
-      selectedWorldbookEntryIds.value = projectWorldbookEntries.value
-        .map((item) => item.id)
-    }
   }
 
   function setAllWorldbookEntriesSelected(checked: boolean) {

@@ -10,13 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.oasis import (
-    _build_report_markdown,
     _as_text_list,
     _safe_agent_activity,
     _safe_agent_profiles,
     _safe_list,
-    _salvage_oasis_analysis_payload,
-    _salvage_oasis_simulation_config_payload,
     _to_float,
     _to_int,
     build_oasis_package,
@@ -120,38 +117,6 @@ class TestHelperFunctions:
         result = _safe_agent_activity(activities)
         assert len(result) == 1
 
-    def test_salvage_oasis_analysis_payload_from_invalid_top_level_json(self):
-        raw = (
-            '{'
-            '"scenario_summary":"Recovered summary",'
-            '"continuation_guidance":{'
-            '"must_follow":["rule1"],'
-            '"next_steps":["step1"],'
-            '"avoid":[],'
-            '"agent_profiles":[{"name":"Agent1","role":"Analyst","persona":"Tracks narrative trends","stance":"neutral","likely_actions":["Summarize events"]}]'
-            '}'
-            '}'
-        )
-        result = _salvage_oasis_analysis_payload(raw)
-        assert result is not None
-        assert result["scenario_summary"] == "Recovered summary"
-        assert result["continuation_guidance"]["must_follow"] == ["rule1"]
-        assert result["agent_profiles"][0]["name"] == "Agent1"
-
-    def test_salvage_oasis_simulation_config_payload_from_invalid_top_level_json(self):
-        raw = (
-            '{'
-            '"active_platforms":["twitter"],'
-            '"time_config":{"total_hours":48,"minutes_per_round":60,"peak_hours":[19,20],"off_peak_hours":[1,2]},'
-            '"events":[{"title":"Kickoff","trigger_hour":1,"description":"Start"}],'
-            '"agent_activity":[{"name":"Agent1","activity_level":0.6,"actions_per_hour":1.0,"response_delay_minutes":30,"stance":"neutral"}]'
-            '}'
-        )
-        result = _salvage_oasis_simulation_config_payload(raw)
-        assert result is not None
-        assert result["time_config"]["total_hours"] == 48
-        assert result["agent_activity"][0]["name"] == "Agent1"
-
     def test_to_float(self):
         """Test _to_float conversion."""
         assert _to_float("3.14") == 3.14
@@ -173,6 +138,8 @@ class TestHelperFunctions:
         assert cfg["llm_retry_interval_seconds"] == 2.0
         assert cfg["llm_prefer_stream"] is True
         assert cfg["llm_stream_fallback_nonstream"] is True
+        assert cfg["llm_openai_api_style"] == "responses"
+        assert cfg["llm_reasoning_effort"] == "model_default"
         assert cfg["llm_task_concurrency"] == 4
         assert cfg["llm_model_default_concurrency"] == 8
         assert cfg["llm_model_concurrency_overrides"] == {}
@@ -183,6 +150,8 @@ class TestHelperFunctions:
                 "llm_request_timeout_seconds": 9999,
                 "llm_retry_count": -5,
                 "llm_retry_interval_seconds": 999,
+                "llm_openai_api_style": "invalid",
+                "llm_reasoning_effort": "invalid",
                 "llm_task_concurrency": 999,
                 "llm_model_default_concurrency": 0,
                 "llm_model_concurrency_overrides": {"gpt-4o-mini": 999, "": 2, "bad": "x"},
@@ -191,6 +160,8 @@ class TestHelperFunctions:
         assert cfg["llm_request_timeout_seconds"] == 1800
         assert cfg["llm_retry_count"] == 0
         assert cfg["llm_retry_interval_seconds"] == 60.0
+        assert cfg["llm_openai_api_style"] == "responses"
+        assert cfg["llm_reasoning_effort"] == "model_default"
         assert cfg["llm_task_concurrency"] == 64
         assert cfg["llm_model_default_concurrency"] == 1
         assert cfg["llm_model_concurrency_overrides"] == {"gpt-4o-mini": 64}
@@ -396,45 +367,6 @@ class TestBuildOasisRunResult:
         assert result["metrics"]["total_hours"] == 72
         assert "risk_signals" not in result
 
-
-class TestBuildReportMarkdown:
-    """Test _build_report_markdown function."""
-
-    def test_fallback_markdown_basic(self):
-        """Test basic markdown generation."""
-        analysis = {"scenario_summary": "Test summary"}
-        run_result = {"metrics": {"total_hours": 48, "total_rounds": 24}}
-        markdown = _build_report_markdown(
-            requirement="Test requirement",
-            analysis=analysis,
-            run_result=run_result,
-        )
-
-        assert "# OASIS Analysis Report" in markdown
-        assert "Test summary" in markdown
-        assert "Test requirement" in markdown
-        assert "48" in markdown
-
-    def test_fallback_markdown_with_signals(self):
-        """Test markdown keeps only minimal next-step guidance."""
-        analysis = {
-            "scenario_summary": "Summary",
-            "risk_signals": ["Risk 1", "Risk 2"],
-            "opportunity_signals": ["Opp 1"],
-            "continuation_guidance": {"next_steps": ["Step 1", "Step 2"]},
-        }
-        markdown = _build_report_markdown(
-            requirement=None,
-            analysis=analysis,
-            run_result=None,
-        )
-
-        assert "## Risk Signals" not in markdown
-        assert "## Opportunity Signals" not in markdown
-        assert "## Recommended Next Steps" in markdown
-        assert "- Step 1" in markdown
-
-
 class TestAsyncOasisFunctions:
     """Test async OASIS functions."""
 
@@ -498,9 +430,10 @@ class TestAsyncOasisFunctions:
             assert mock_llm.await_args.kwargs["max_tokens"] == 4096
             assert mock_llm.await_args.kwargs["prefer_stream_override"] is False
             assert mock_llm.await_args.kwargs["stream_fallback_nonstream_override"] is False
+            assert mock_llm.await_args.kwargs["response_schema"].__name__ == "OasisAnalysisResponse"
 
     @pytest.mark.asyncio
-    async def test_generate_oasis_analysis_backfills_summary_from_context(self, mock_db: AsyncMock):
+    async def test_generate_oasis_analysis_retries_on_missing_summary(self, mock_db: AsyncMock):
         from app.services.oasis import generate_oasis_analysis
 
         with patch("app.services.oasis.collect_graph_context") as mock_context, \
@@ -511,24 +444,43 @@ class TestAsyncOasisFunctions:
                 "relationships": ["Agent1 influences Agent2"],
                 "top_nodes": [{"label": "Agent1"}, {"label": "Agent2"}],
             }
-            mock_llm.return_value = {"content": "response"}
-            mock_extract.return_value = {
-                "scenario_summary": "",
-                "continuation_guidance": {
-                    "must_follow": ["rule1"],
-                    "next_steps": ["step1"],
-                    "avoid": [],
+            mock_llm.side_effect = [{"content": "first"}, {"content": "second"}]
+            mock_extract.side_effect = [
+                {
+                    "scenario_summary": "",
+                    "continuation_guidance": {
+                        "must_follow": ["rule1"],
+                        "next_steps": ["step1"],
+                        "avoid": [],
+                    },
+                    "agent_profiles": [
+                        {
+                            "name": "Agent1",
+                            "role": "Analyst",
+                            "persona": "Tracks narrative trends",
+                            "stance": "neutral",
+                            "likely_actions": ["Summarize events"],
+                        }
+                    ],
                 },
-                "agent_profiles": [
-                    {
-                        "name": "Agent1",
-                        "role": "Analyst",
-                        "persona": "Tracks narrative trends",
-                        "stance": "neutral",
-                        "likely_actions": ["Summarize events"],
-                    }
-                ],
-            }
+                {
+                    "scenario_summary": "Recovered summary",
+                    "continuation_guidance": {
+                        "must_follow": ["rule1"],
+                        "next_steps": ["step1"],
+                        "avoid": [],
+                    },
+                    "agent_profiles": [
+                        {
+                            "name": "Agent1",
+                            "role": "Analyst",
+                            "persona": "Tracks narrative trends",
+                            "stance": "neutral",
+                            "likely_actions": ["Summarize events"],
+                        }
+                    ],
+                },
+            ]
 
             result, _ = await generate_oasis_analysis(
                 project_id="proj-1",
@@ -540,9 +492,8 @@ class TestAsyncOasisFunctions:
                 db=mock_db,
             )
 
-            assert result["scenario_summary"]
-            assert "Agent1" in result["scenario_summary"]
-            assert mock_llm.await_count == 1
+            assert result["scenario_summary"] == "Recovered summary"
+            assert mock_llm.await_count == 2
 
     @pytest.mark.asyncio
     async def test_generate_oasis_analysis_retries_on_validation_error(self, mock_db: AsyncMock):
@@ -597,42 +548,32 @@ class TestAsyncOasisFunctions:
             assert mock_llm.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_generate_oasis_analysis_salvages_invalid_top_level_json(self, mock_db: AsyncMock):
+    async def test_generate_oasis_analysis_invalid_top_level_json_retries(self, mock_db: AsyncMock):
         from app.services.oasis import generate_oasis_analysis
-
-        malformed = (
-            '{'
-            '"scenario_summary":"Recovered summary",'
-            '"key_drivers":["driver1"],'
-            '"risk_signals":["risk1"],'
-            '"opportunity_signals":["opp1"],'
-            '"timeline":["t1"],'
-            '"continuation_guidance":{'
-            '"must_follow":["rule1"],'
-            '"next_steps":["step1"],'
-            '"avoid":[],'
-            '"agent_profiles":[{"name":"Agent1","role":"Analyst","persona":"Tracks narrative trends","stance":"neutral","likely_actions":["Summarize events"]}]'
-            '}'
-            '}'
-        )
 
         with patch("app.services.oasis.collect_graph_context") as mock_context,              patch("app.services.oasis.call_llm") as mock_llm,              patch("app.services.oasis.extract_json_object") as mock_extract:
             mock_context.return_value = {"insights": []}
-            mock_llm.return_value = {"content": malformed}
-            mock_extract.return_value = {
-                "must_follow": ["rule1"],
-                "next_steps": ["step1"],
-                "avoid": [],
-                "agent_profiles": [
-                    {
-                        "name": "Agent1",
-                        "role": "Analyst",
-                        "persona": "Tracks narrative trends",
-                        "stance": "neutral",
-                        "likely_actions": ["Summarize events"],
-                    }
-                ],
-            }
+            mock_llm.side_effect = [{"content": "invalid"}, {"content": "valid"}]
+            mock_extract.side_effect = [
+                None,
+                {
+                    "scenario_summary": "Recovered summary",
+                    "continuation_guidance": {
+                        "must_follow": ["rule1"],
+                        "next_steps": ["step1"],
+                        "avoid": [],
+                    },
+                    "agent_profiles": [
+                        {
+                            "name": "Agent1",
+                            "role": "Analyst",
+                            "persona": "Tracks narrative trends",
+                            "stance": "neutral",
+                            "likely_actions": ["Summarize events"],
+                        }
+                    ],
+                },
+            ]
 
             result, _ = await generate_oasis_analysis(
                 project_id="proj-1",
@@ -646,7 +587,7 @@ class TestAsyncOasisFunctions:
 
             assert result["scenario_summary"] == "Recovered summary"
             assert result["continuation_guidance"]["next_steps"] == ["step1"]
-            assert mock_llm.await_count == 1
+            assert mock_llm.await_count == 2
 
     @pytest.mark.asyncio
     async def test_generate_oasis_analysis_failure_raises(self, mock_db: AsyncMock):
@@ -713,6 +654,7 @@ class TestAsyncOasisFunctions:
             assert mock_llm.await_args.kwargs["max_tokens"] == 2048
             assert mock_llm.await_args.kwargs["prefer_stream_override"] is False
             assert mock_llm.await_args.kwargs["stream_fallback_nonstream_override"] is False
+            assert mock_llm.await_args.kwargs["response_schema"].__name__ == "OasisSimulationConfigResponse"
 
     @pytest.mark.asyncio
     async def test_generate_oasis_report(self, mock_db: AsyncMock):
@@ -747,26 +689,33 @@ class TestAsyncOasisFunctions:
             assert result["status"] == "completed"
             assert mock_llm.await_args.kwargs["prefer_stream_override"] is False
             assert mock_llm.await_args.kwargs["stream_fallback_nonstream_override"] is False
+            assert mock_llm.await_args.kwargs["response_schema"].__name__ == "OasisReportResponse"
 
     @pytest.mark.asyncio
-    async def test_generate_oasis_report_salvages_field_level_json(self, mock_db: AsyncMock):
-        """Test generate_oasis_report salvages malformed top-level JSON."""
+    async def test_generate_oasis_report_invalid_top_level_json_retries(self, mock_db: AsyncMock):
+        """Test generate_oasis_report retries when top-level JSON is invalid."""
         from app.services.oasis import generate_oasis_report
 
         package = {"simulation_id": "sim-1"}
         analysis = {"scenario_summary": "Summary"}
         run_result = {"metrics": {"total_hours": 72}}
 
-        malformed = (
-            'invalid prefix\n'
-            '"title": "Recovered Report",\n'
-            '"executive_summary": "Recovered summary",\n'
-            '"key_findings": ["finding1"],\n'
-            '"next_actions": ["action1"],\n'
-            '"markdown": "# Report\nRecovered"'
-        )
-
-        with patch("app.services.oasis.call_llm", new=AsyncMock(return_value={"content": malformed})):
+        with patch(
+            "app.services.oasis.call_llm",
+            new=AsyncMock(side_effect=[{"content": "invalid"}, {"content": "valid"}]),
+        ), patch(
+            "app.services.oasis.extract_json_object",
+            side_effect=[
+                None,
+                {
+                    "title": "Recovered Report",
+                    "executive_summary": "Recovered summary",
+                    "key_findings": ["finding1"],
+                    "next_actions": ["action1"],
+                    "markdown": "# Report\nRecovered",
+                },
+            ],
+        ):
             result = await generate_oasis_report(
                 package=package,
                 analysis=analysis,

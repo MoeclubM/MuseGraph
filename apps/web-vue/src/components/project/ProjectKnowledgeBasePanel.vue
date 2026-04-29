@@ -2,6 +2,7 @@
 import type {
   ProjectCharacter,
   ProjectGlossaryTerm,
+  ProjectSearchResult,
   ProjectWorldbookEntry,
 } from '@/types'
 import Button from '@/components/ui/Button.vue'
@@ -33,6 +34,12 @@ type WorldbookForm = {
 }
 
 const props = defineProps<{
+  projectSearchQuery: string
+  projectSearchLoading: boolean
+  projectSearchError: string | null
+  projectSearchResults: ProjectSearchResult[]
+  handleProjectSearch: () => unknown
+  openProjectSearchResult: (result: ProjectSearchResult) => unknown
   selectedCharactersCount: number
   characterSelectionCountLabel: string
   charactersLoading: boolean
@@ -91,10 +98,80 @@ const props = defineProps<{
   cancelWorldbookForm: () => unknown
   handleSubmitWorldbookEntry: () => unknown
 }>()
+
+const itemTypeLabels: Record<ProjectSearchResult['item_type'], string> = {
+  chapter: 'Chapter',
+  character: 'Character',
+  glossary_term: 'Glossary',
+  worldbook_entry: 'Worldbook',
+}
+
+const emit = defineEmits<{
+  'update:projectSearchQuery': [value: string]
+}>()
+
+function updateProjectSearchQuery(value: string | number) {
+  emit('update:projectSearchQuery', String(value))
+}
 </script>
 
 <template>
   <div class="space-y-5">
+    <div class="space-y-3 rounded-md border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
+      <div class="space-y-1">
+        <p class="text-xs font-medium uppercase tracking-wider text-stone-700 dark:text-zinc-300">
+          Project Search
+        </p>
+        <p class="text-xs text-stone-500 dark:text-zinc-400">
+          Search chapters, characters, glossary terms, and worldbook entries.
+        </p>
+      </div>
+      <div class="flex gap-2">
+        <Input
+          :model-value="props.projectSearchQuery"
+          placeholder="Search project content"
+          @update:modelValue="updateProjectSearchQuery"
+          @keydown.enter="props.handleProjectSearch"
+        />
+        <Button
+          variant="secondary"
+          size="md"
+          :loading="props.projectSearchLoading"
+          :disabled="!props.projectSearchQuery.trim()"
+          @click="props.handleProjectSearch"
+        >
+          Search
+        </Button>
+      </div>
+      <Alert v-if="props.projectSearchError" variant="destructive" class="text-sm">
+        {{ props.projectSearchError }}
+      </Alert>
+      <div v-if="props.projectSearchResults.length" class="space-y-2 max-h-64 overflow-y-auto pr-1">
+        <button
+          v-for="result in props.projectSearchResults"
+          :key="`${result.item_type}:${result.item_id}`"
+          type="button"
+          class="w-full rounded-md border border-stone-300/80 bg-stone-50/90 p-3 text-left transition hover:border-amber-400/70 hover:bg-amber-50/80 dark:border-zinc-700/60 dark:bg-zinc-900/40 dark:hover:border-amber-600/70 dark:hover:bg-amber-900/15"
+          @click="props.openProjectSearchResult(result)"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <p class="truncate text-sm font-medium text-stone-800 dark:text-zinc-100">
+              {{ result.title }}
+            </p>
+            <span class="shrink-0 rounded-full bg-stone-200 px-2 py-0.5 text-[11px] text-stone-600 dark:bg-zinc-800 dark:text-zinc-300">
+              {{ itemTypeLabels[result.item_type] }} · {{ result.matched_field }}
+            </span>
+          </div>
+          <p class="mt-1 line-clamp-2 text-xs text-stone-600 dark:text-zinc-300">
+            {{ result.snippet || 'Matched title' }}
+          </p>
+        </button>
+      </div>
+      <p v-else-if="props.projectSearchQuery.trim() && !props.projectSearchLoading && !props.projectSearchError" class="text-xs text-stone-500 dark:text-zinc-400">
+        No matching project content.
+      </p>
+    </div>
+
     <div class="space-y-3 rounded-md border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
       <div class="flex items-center justify-between gap-2">
         <p class="text-xs font-medium uppercase tracking-wider text-stone-700 dark:text-zinc-300">

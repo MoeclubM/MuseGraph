@@ -174,12 +174,21 @@ class ProjectResponse(BaseModel):
     component_models: Optional[dict[str, str]] = None
     ontology_schema: Optional[dict[str, Any]] = None
     oasis_analysis: Optional[dict[str, Any]] = None
-    cognee_dataset_id: Optional[str] = None
+    graph_id: Optional[str] = None
     chapters: list[ProjectChapterResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ProjectSearchResult(BaseModel):
+    item_type: str
+    item_id: str
+    title: str
+    matched_field: str
+    snippet: str
+    order_index: int = 0
 
 
 class OperationRequest(BaseModel):
@@ -190,6 +199,9 @@ class OperationRequest(BaseModel):
     character_ids: Optional[list[str]] = None
     glossary_term_ids: Optional[list[str]] = None
     worldbook_entry_ids: Optional[list[str]] = None
+    include_all_characters: bool = True
+    include_all_glossary_terms: bool = True
+    include_all_worldbook_entries: bool = True
     use_rag: Optional[bool] = None
 
     model_config = {"extra": "forbid"}

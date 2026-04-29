@@ -5,6 +5,7 @@ import ProjectRightAIContent from '@/components/project/ProjectRightAIContent.vu
 
 const ProjectKnowledgeBasePanelStub = defineComponent({
   name: 'ProjectKnowledgeBasePanel',
+  emits: ['update:project-search-query'],
   template: '<div data-test="kb-stub" />',
 })
 
@@ -40,6 +41,12 @@ const ProjectSimulationWorkflowCardStub = defineComponent({
 function buildBaseProps(tab: 'ai' | 'oasis' = 'ai') {
   return {
     rightPanelTab: tab,
+    projectSearchQuery: '',
+    projectSearchLoading: false,
+    projectSearchError: null,
+    projectSearchResults: [],
+    handleProjectSearch: () => undefined,
+    openProjectSearchResult: () => undefined,
     selectedCharactersCount: 0,
     characterSelectionCountLabel: '0/0',
     charactersLoading: false,
@@ -132,6 +139,24 @@ function buildBaseProps(tab: 'ai' | 'oasis' = 'ai') {
 }
 
 describe('ProjectRightAIContent', () => {
+  it('forwards project search query updates', async () => {
+    const wrapper = mount(ProjectRightAIContent, {
+      props: buildBaseProps('ai') as any,
+      global: {
+        stubs: {
+          ProjectKnowledgeBasePanel: ProjectKnowledgeBasePanelStub,
+          ProjectOperationPanel: ProjectOperationPanelStub,
+          ProjectSimulationWorkflowCard: ProjectSimulationWorkflowCardStub,
+        },
+      },
+    })
+
+    wrapper.findComponent(ProjectKnowledgeBasePanelStub).vm.$emit('update:project-search-query', 'lighthouse')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('update:projectSearchQuery')?.[0]).toEqual(['lighthouse'])
+  })
+
   it('forwards operation panel events', async () => {
     const wrapper = mount(ProjectRightAIContent, {
       props: buildBaseProps('ai') as any,

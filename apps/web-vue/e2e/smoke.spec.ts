@@ -42,7 +42,7 @@ async function mockProjectApis(page: Page) {
       title: 'New Project',
       description: null,
       content: null,
-      cognee_dataset_id: null,
+      graph_id: null,
       created_at: now,
       updated_at: now,
     })

@@ -25,7 +25,7 @@ def _make_fake_project(
     title: str = "Test Project",
     description: str | None = "A test project",
     chapter_content: str | None = "Some content",
-    cognee_dataset_id: str | None = None,
+    graph_id: str | None = None,
 ):
     """Return a lightweight object that behaves like a ``TextProject`` row."""
     return SimpleNamespace(
@@ -48,7 +48,7 @@ def _make_fake_project(
         component_models=None,
         ontology_schema=None,
         oasis_analysis=None,
-        cognee_dataset_id=cognee_dataset_id,
+        graph_id=graph_id,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
@@ -86,7 +86,7 @@ class TestCreateProject:
             obj.user_id = TEST_USER_ID
             obj.created_at = now
             obj.updated_at = now
-            obj.cognee_dataset_id = None
+            obj.graph_id = None
 
         mock_db.add.side_effect = _side_effect_add
 
@@ -233,3 +233,4 @@ class TestDeleteProject:
         resp = await client.delete(f"/api/projects/{other_project.id}")
 
         assert resp.status_code == 403
+

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
-from app.routers import cognee_graph
+from app.routers import graph
 from app.services.task_state import task_manager
 from tests.conftest import TEST_USER_ID, app as app_instance
 
@@ -22,7 +22,7 @@ def _make_project(
     chapter_content: str | None = "Base text",
     ontology_schema: dict | None = None,
     oasis_analysis: dict | None = None,
-    cognee_dataset_id: str | None = None,
+    graph_id: str | None = None,
 ):
     return SimpleNamespace(
         id=project_id or str(uuid.uuid4()),
@@ -49,7 +49,7 @@ def _make_project(
         },
         ontology_schema=ontology_schema,
         oasis_analysis=oasis_analysis,
-        cognee_dataset_id=cognee_dataset_id,
+        graph_id=graph_id,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
@@ -92,25 +92,113 @@ def _reset_task_manager():
         pass
 
 
-class TestCogneeGraphFlow:
+class TestGraphGraphFlow:
     def test_latest_running_graph_task_ignores_stale_processing_task(self):
         task = task_manager.create_task(
             "graph_build",
             metadata={"project_id": "project-1", "user_id": TEST_USER_ID},
         )
-        task.status = cognee_graph.TaskStatus.PROCESSING
+        task.status = graph.TaskStatus.PROCESSING
         task.progress = 32
         task.message = "Graphiti ingesting episodes 4/112..."
         task.updated_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=300)
         task_manager._memory.update_task(task)  # type: ignore[attr-defined]
 
-        running = cognee_graph._latest_running_graph_task("project-1")
+        running = graph._latest_running_graph_task("project-1")
 
         assert running is None
         refreshed = task_manager.get_task(task.task_id)
         assert refreshed is not None
-        assert refreshed.status == cognee_graph.TaskStatus.FAILED
+        assert refreshed.status == graph.TaskStatus.FAILED
         assert refreshed.message == "Graph build task timed out"
+
+    def test_start_project_task_cancels_older_auto_graph_sync_task(self, monkeypatch: pytest.MonkeyPatch):
+        old_task = task_manager.create_task(
+            "graph_build",
+            metadata={
+                "project_id": "project-1",
+                "user_id": TEST_USER_ID,
+                "idempotency_key": "graph_build:old",
+                "auto_created": True,
+                "trigger_source_kind": "chapter",
+            },
+        )
+        task_manager.update_task(old_task.task_id, status=graph.TaskStatus.PROCESSING, message="Building old graph")
+        old_task = task_manager.get_task(old_task.task_id)
+        assert old_task is not None
+        old_task.created_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+        task_manager._memory.update_task(old_task)  # type: ignore[attr-defined]
+
+        def _fake_create_task(coro):
+            coro.close()
+            runner = MagicMock()
+            runner.done.return_value = False
+            return runner
+
+        async def _worker(_task_id: str) -> None:
+            return None
+
+        monkeypatch.setattr(graph.asyncio, "create_task", _fake_create_task)
+
+        response = graph._start_project_task(
+            task_type="graph_build",
+            project_id="project-1",
+            user_id=TEST_USER_ID,
+            metadata={
+                "idempotency_key": "graph_build:new",
+                "auto_created": True,
+                "trigger_source_kind": "chapter",
+                "trigger_action": "update",
+            },
+            worker=_worker,
+        )
+
+        refreshed_old = task_manager.get_task(old_task.task_id)
+        assert response.status == "accepted"
+        assert refreshed_old is not None
+        assert refreshed_old.status == graph.TaskStatus.CANCELLED
+        assert refreshed_old.message == "Cancelled because a newer automatic graph sync task was scheduled"
+
+    def test_start_project_task_keeps_manual_graph_build_task(self, monkeypatch: pytest.MonkeyPatch):
+        old_task = task_manager.create_task(
+            "graph_build",
+            metadata={
+                "project_id": "project-1",
+                "user_id": TEST_USER_ID,
+                "idempotency_key": "graph_build:manual",
+            },
+        )
+        task_manager.update_task(old_task.task_id, status=graph.TaskStatus.PROCESSING, message="Manual build")
+
+        def _fake_create_task(coro):
+            coro.close()
+            runner = MagicMock()
+            runner.done.return_value = False
+            return runner
+
+        async def _worker(_task_id: str) -> None:
+            return None
+
+        monkeypatch.setattr(graph.asyncio, "create_task", _fake_create_task)
+
+        response = graph._start_project_task(
+            task_type="graph_build",
+            project_id="project-1",
+            user_id=TEST_USER_ID,
+            metadata={
+                "idempotency_key": "graph_build:auto",
+                "auto_created": True,
+                "trigger_source_kind": "chapter",
+                "trigger_action": "update",
+            },
+            worker=_worker,
+        )
+
+        refreshed_old = task_manager.get_task(old_task.task_id)
+        assert response.status == "accepted"
+        assert refreshed_old is not None
+        assert refreshed_old.status == graph.TaskStatus.PROCESSING
+        assert refreshed_old.message == "Manual build"
 
     @pytest.mark.asyncio
     async def test_list_tasks_invalid_project_id_returns_422(self, client: AsyncClient):
@@ -129,7 +217,7 @@ class TestCogneeGraphFlow:
         project = _make_project(
             project_id="11111111-1111-4111-8111-111111111111",
             ontology_schema={"entity_types": [{"name": "Character"}]},
-            cognee_dataset_id="graph-1",
+            graph_id="graph-1",
             oasis_analysis={
                 "_graph_build_state": {
                     "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -141,7 +229,7 @@ class TestCogneeGraphFlow:
         chapter_result = MagicMock()
         chapter_result.all.return_value = [chapter_row]
         mock_db.execute.side_effect = [_scalar_one_or_none(project), chapter_result]
-        monkeypatch.setattr(cognee_graph, "has_graph_data", AsyncMock(return_value=False))
+        monkeypatch.setattr(graph, "has_graph_data", AsyncMock(return_value=False))
 
         resp = await client.get(f"/api/projects/{project.id}/graphs")
 
@@ -150,6 +238,45 @@ class TestCogneeGraphFlow:
         assert body["status"] == "ready"
         assert body["graph_freshness"] == "stale"
         assert body["graph_reason"] == "graph_store_empty_or_unreadable"
+
+    @pytest.mark.asyncio
+    async def test_get_graph_status_exposes_resume_available_for_failed_build(
+        self,
+        client: AsyncClient,
+        mock_db: AsyncMock,
+    ):
+        project = _make_project(
+            project_id="11111111-1111-4111-8111-111111111111",
+            ontology_schema={"entity_types": [{"name": "Character"}]},
+            graph_id=None,
+            oasis_analysis={
+                "_graph_build_state": {
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "chapter_hashes": {},
+                    "resume": {
+                        "graph_id": "graph-resume-1",
+                        "mode": "rebuild",
+                        "content_hash": "hash-1",
+                        "source_chapter_ids": [],
+                        "failed_chunk_indices": [2, 4],
+                        "completed_chunk_indices": [1, 3],
+                        "selected_chunk_indices": [1, 2, 3, 4],
+                        "total_chunks": 4,
+                    },
+                }
+            },
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(project)
+
+        resp = await client.get(f"/api/projects/{project.id}/graphs")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["graph_freshness"] == "stale"
+        assert body["graph_reason"] == "graph_build_incomplete_resume_available"
+        assert body["graph_resume_available"] is True
+        assert body["graph_resume_failed_chunks"] == 2
+        assert body["graph_resume_mode"] == "rebuild"
 
     @pytest.mark.asyncio
     async def test_generate_ontology_success(
@@ -243,10 +370,10 @@ class TestCogneeGraphFlow:
     async def test_add_graph_success(self, client: AsyncClient, mock_db: AsyncMock, monkeypatch: pytest.MonkeyPatch):
         project = _make_project(ontology_schema={"entity_types": [{"name": "Actor"}], "edge_types": []})
         mock_db.execute.return_value = _scalar_one_or_none(project)
-        cognify_mock = AsyncMock(return_value="dataset-001")
+        build_mock = AsyncMock(return_value="dataset-001")
         add_graph_endpoint = _endpoint("/api/projects/{project_id}/graphs", "POST")
         monkeypatch.setitem(add_graph_endpoint.__globals__, "build_graph_input_with_ontology", lambda _text, _ontology: "graph input")
-        monkeypatch.setitem(add_graph_endpoint.__globals__, "add_and_cognify", cognify_mock)
+        monkeypatch.setitem(add_graph_endpoint.__globals__, "build_graph", build_mock)
 
         resp = await client.post(
             f"/api/projects/{project.id}/graphs",
@@ -256,15 +383,92 @@ class TestCogneeGraphFlow:
         assert resp.status_code == 201, resp.text
         body = resp.json()
         assert body["status"] == "ok"
-        assert body["dataset_id"] == "dataset-001"
-        assert project.cognee_dataset_id == "dataset-001"
-        cognify_mock.assert_awaited_once()
+        assert body["graph_id"] == "dataset-001"
+        assert project.graph_id == "dataset-001"
+        build_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_run_graph_build_task_marks_partial_failure_as_failed_with_resume_result(
+        self,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from app.routers import graph as graph_router
+
+        project = _make_project(
+            project_id="11111111-1111-4111-8111-111111111111",
+            ontology_schema={"entity_types": [{"name": "Actor"}], "edge_types": []},
+            graph_id="graph-existing",
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(project)
+        mock_db.commit = AsyncMock()
+        mock_db.rollback = AsyncMock()
+
+        class _SessionContext:
+            async def __aenter__(self_inner):
+                return mock_db
+
+            async def __aexit__(self_inner, exc_type, exc, tb):
+                return False
+
+        monkeypatch.setattr(graph_router, "async_session", lambda: _SessionContext())
+        monkeypatch.setattr(
+            graph_router,
+            "_execute_graph_build",
+            AsyncMock(
+                return_value={
+                    "status": "partial_failed",
+                    "requested_mode": "incremental",
+                    "mode": "incremental",
+                    "mode_reason": "Continuing previously failed graph build chunks.",
+                    "graph_id": "graph-existing",
+                    "resume_graph_id": "graph-existing",
+                    "content_hash": "hash-1",
+                    "source_chapter_ids": [],
+                    "changed_chapter_ids": ["chapter-1"],
+                    "added_chapter_ids": ["chapter-1"],
+                    "modified_chapter_ids": [],
+                    "removed_chapter_ids": [],
+                    "selected_chunk_indices": [1, 2, 3],
+                    "completed_chunk_indices": [1, 3],
+                    "failed_chunk_indices": [2],
+                    "failed_chunk_count": 1,
+                    "total_chunks": 3,
+                    "resume_available": True,
+                    "reason": "1/3 graph chunks failed. Continue is available.",
+                    "failed_errors": {"2": "Provider returned HTTP 502: Bad Gateway"},
+                }
+            ),
+        )
+
+        task = task_manager.create_task(
+            "graph_build",
+            metadata={"project_id": project.id, "user_id": TEST_USER_ID},
+        )
+
+        await graph_router._run_graph_build_task(
+            task.task_id,
+            project_id=project.id,
+            text="graph input",
+            chapter_ids=None,
+            ontology=project.ontology_schema,
+            build_mode="incremental",
+            resume_failed=False,
+        )
+
+        stored = task_manager.get_task(task.task_id)
+        assert stored is not None
+        assert stored.status == graph.TaskStatus.FAILED
+        assert stored.result is not None
+        assert stored.result["resume_available"] is True
+        assert stored.result["failed_chunk_indices"] == [2]
+        assert stored.error == "1/3 graph chunks failed. Continue is available."
 
     @pytest.mark.asyncio
     async def test_oasis_analyze_requires_graph(self, client: AsyncClient, mock_db: AsyncMock):
         project = _make_project(
             ontology_schema={"entity_types": [{"name": "Actor"}], "edge_types": []},
-            cognee_dataset_id=None,
+            graph_id=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -285,7 +489,7 @@ class TestCogneeGraphFlow:
     ):
         project = _make_project(
             ontology_schema={"entity_types": [{"name": "Actor"}], "edge_types": [{"name": "links"}]},
-            cognee_dataset_id="dataset-001",
+            graph_id="dataset-001",
             chapter_content="Base content",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -376,7 +580,7 @@ class TestCogneeGraphFlow:
     ):
         project = _make_project(
             ontology_schema={"entity_types": [{"name": "Actor"}], "edge_types": []},
-            cognee_dataset_id="dataset-001",
+            graph_id="dataset-001",
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -407,7 +611,7 @@ class TestCogneeGraphFlow:
 
 @pytest.mark.asyncio
 async def test_resolve_chapters_queries_db_without_touching_lazy_relationship():
-    from app.routers import cognee_graph as cognee_graph_router
+    from app.routers import graph as graph_router
 
     chapter = SimpleNamespace(
         id="chapter-1",
@@ -432,23 +636,24 @@ async def test_resolve_chapters_queries_db_without_touching_lazy_relationship():
     db = AsyncMock()
     db.execute.return_value = query_result
 
-    chapters = await cognee_graph_router._resolve_chapters_for_project(project, None, db)
+    chapters = await graph_router._resolve_chapters_for_project(project, None, db)
 
     assert [item.id for item in chapters] == ["chapter-1"]
     db.execute.assert_awaited_once()
 
 
-class TestCogneeGraphTaskErrors:
+class TestGraphGraphTaskErrors:
     def test_describe_task_exception_keeps_message(self):
-        from app.routers import cognee_graph as cognee_graph_router
+        from app.routers import graph as graph_router
 
-        assert cognee_graph_router._describe_task_exception(RuntimeError("build failed")) == "build failed"
+        assert graph_router._describe_task_exception(RuntimeError("build failed")) == "build failed"
 
     def test_describe_task_exception_falls_back_to_type_and_repr(self):
-        from app.routers import cognee_graph as cognee_graph_router
+        from app.routers import graph as graph_router
 
         error = RuntimeError()
-        described = cognee_graph_router._describe_task_exception(error)
+        described = graph_router._describe_task_exception(error)
 
         assert described.startswith("RuntimeError:")
         assert "RuntimeError()" in described
+

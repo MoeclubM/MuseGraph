@@ -82,6 +82,43 @@ class TestProviderModels:
         mock_db.flush.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_remove_provider_reranker_model_prunes_orphan_pricing_and_project_references(
+        self,
+        admin_client: AsyncClient,
+        mock_db: AsyncMock,
+    ):
+        provider = SimpleNamespace(
+            id="provider-1",
+            name="Primary",
+            provider="openai_compatible",
+            api_key="sk-test",
+            base_url=None,
+            models={"models": ["chat-model"], "embedding_models": [], "reranker_models": ["reranker-model"]},
+        )
+        orphan_rule = SimpleNamespace(id="rule-1", model="reranker-model")
+        project = SimpleNamespace(
+            id=str(uuid.uuid4()),
+            component_models={"graph_reranker": "reranker-model", "graph_build": "chat-model"},
+        )
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(provider),
+            _scalars_all([]),
+            _scalars_all([orphan_rule]),
+            _scalars_all([project]),
+        ]
+
+        resp = await admin_client.delete(
+            "/api/admin/providers/provider-1/reranker-models",
+            params={"model": "reranker-model"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["reranker_models"] == []
+        mock_db.delete.assert_any_await(orphan_rule)
+        assert project.component_models == {"graph_build": "chat-model"}
+        mock_db.flush.assert_awaited()
+
+    @pytest.mark.asyncio
     async def test_delete_provider_removes_orphan_pricing_and_project_references(
         self,
         admin_client: AsyncClient,
@@ -96,6 +133,7 @@ class TestProviderModels:
             models={
                 "models": ["MiniMax-M2.5", "Shared-Model"],
                 "embedding_models": ["Qwen3-Embedding-0.6B"],
+                "reranker_models": ["BAAI-bge-reranker-v2-m3"],
             },
         )
         remaining_provider = SimpleNamespace(
@@ -113,6 +151,7 @@ class TestProviderModels:
             component_models={
                 "graph_build": "MiniMax-M2.5",
                 "graph_embedding": "Qwen3-Embedding-0.6B",
+                "graph_reranker": "BAAI-bge-reranker-v2-m3",
                 "default": "Shared-Model",
             },
         )
@@ -248,6 +287,7 @@ class TestProviderModels:
         assert provider.models == {
             "models": ["gpt-4o-mini"],
             "embedding_models": ["Qwen3-Embedding-0.6B", "text-embedding-3-small"],
+            "reranker_models": [],
         }
         mock_db.flush.assert_awaited()
 
@@ -296,6 +336,7 @@ class TestProviderModels:
         assert provider.models == {
             "models": ["gpt-4o-mini"],
             "embedding_models": ["Qwen3-Embedding-0.6B", "gpt-4.1-mini", "text-embedding-3-small"],
+            "reranker_models": [],
         }
 
     @pytest.mark.asyncio
@@ -342,6 +383,7 @@ class TestProviderModels:
         assert provider.models == {
             "models": ["Qwen3-Embedding-0.6B", "gpt-4.1-mini"],
             "embedding_models": ["Qwen3-Embedding-0.6B"],
+            "reranker_models": [],
         }
 
     @pytest.mark.asyncio
@@ -484,6 +526,7 @@ class TestPricingRules:
         assert provider.models == {
             "models": ["MiniMax-M2.7"],
             "embedding_models": ["MiniMax-M2.7", "Qwen3-Embedding-0.6B"],
+            "reranker_models": [],
         }
         assert untouched_provider.models == {
             "models": ["Other-Model"],
@@ -732,6 +775,8 @@ class TestOasisConfig:
         assert body["llm_retry_interval_seconds"] == 2.0
         assert body["llm_prefer_stream"] is True
         assert body["llm_stream_fallback_nonstream"] is True
+        assert body["llm_openai_api_style"] == "responses"
+        assert body["llm_reasoning_effort"] == "model_default"
         assert body["llm_task_concurrency"] == 4
         assert body["llm_model_default_concurrency"] == 8
         assert body["llm_model_concurrency_overrides"] == {}
@@ -747,6 +792,8 @@ class TestOasisConfig:
                 "llm_request_timeout_seconds": 99999,
                 "llm_retry_count": -3,
                 "llm_retry_interval_seconds": 999,
+                "llm_openai_api_style": "invalid",
+                "llm_reasoning_effort": "invalid",
                 "llm_task_concurrency": 999,
                 "llm_model_default_concurrency": 0,
                 "llm_model_concurrency_overrides": {
@@ -762,6 +809,8 @@ class TestOasisConfig:
         assert body["llm_request_timeout_seconds"] == 1800
         assert body["llm_retry_count"] == 0
         assert body["llm_retry_interval_seconds"] == 60.0
+        assert body["llm_openai_api_style"] == "responses"
+        assert body["llm_reasoning_effort"] == "model_default"
         assert body["llm_task_concurrency"] == 64
         assert body["llm_model_default_concurrency"] == 1
         assert body["llm_model_concurrency_overrides"] == {"gpt-4o-mini": 64}
@@ -783,6 +832,8 @@ class TestOasisConfig:
                 "llm_retry_interval_seconds": 2.5,
                 "llm_prefer_stream": False,
                 "llm_stream_fallback_nonstream": False,
+                "llm_openai_api_style": "chat_completions",
+                "llm_reasoning_effort": "high",
                 "llm_task_concurrency": 3,
                 "llm_model_default_concurrency": 6,
                 "llm_model_concurrency_overrides": {"gpt-4o-mini": 4},
@@ -806,6 +857,8 @@ class TestOasisConfig:
         assert body["llm_retry_interval_seconds"] == 2.5
         assert body["llm_prefer_stream"] is False
         assert body["llm_stream_fallback_nonstream"] is False
+        assert body["llm_openai_api_style"] == "chat_completions"
+        assert body["llm_reasoning_effort"] == "high"
         assert body["llm_task_concurrency"] == 3
         assert body["llm_model_default_concurrency"] == 6
         assert body["llm_model_concurrency_overrides"] == {"gpt-4o-mini": 4}

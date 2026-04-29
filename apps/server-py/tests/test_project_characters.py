@@ -92,7 +92,7 @@ async def test_create_operation_includes_character_context(
         chapters=[],
         characters=[],
         component_models={},
-        cognee_dataset_id=None,
+        graph_id=None,
     )
     character = SimpleNamespace(
         id="char-1",
@@ -156,6 +156,84 @@ async def test_create_operation_includes_character_context(
 
 
 @pytest.mark.asyncio
+async def test_create_operation_can_exclude_all_reference_cards(
+    client: AsyncClient,
+    mock_db: AsyncMock,
+    fake_user,
+    _create_operation_globals: dict,
+):
+    project = SimpleNamespace(
+        id="proj-1",
+        user_id=fake_user.id,
+        chapters=[],
+        characters=[
+            SimpleNamespace(
+                id="char-1",
+                project_id="proj-1",
+                name="林默",
+                role="主角",
+                profile="理性、克制，善于推理",
+                notes=None,
+                order_index=0,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        ],
+        glossary_terms=[],
+        worldbook_entries=[],
+        component_models={},
+        graph_id=None,
+    )
+    op = SimpleNamespace(
+        id="op-2",
+        project_id="proj-1",
+        type="CREATE",
+        input="prompt",
+        output="result",
+        model="MiniMax-M2.5",
+        input_tokens=10,
+        output_tokens=20,
+        cost=0.001,
+        status="COMPLETED",
+        error=None,
+        progress=100,
+        message="Done",
+        metadata_=None,
+        created_at=datetime.now(timezone.utc),
+    )
+    mock_db.execute.return_value = _scalar_one_or_none(project)
+    mock_db.flush = AsyncMock()
+
+    mock_run = AsyncMock(return_value=op)
+    orig = _create_operation_globals["run_operation"]
+    _create_operation_globals["run_operation"] = mock_run
+    try:
+        resp = await client.post(
+            "/api/projects/proj-1/operation",
+            json={
+                "type": "CREATE",
+                "input": "write",
+                "character_ids": [],
+                "glossary_term_ids": [],
+                "worldbook_entry_ids": [],
+                "include_all_characters": False,
+                "include_all_glossary_terms": False,
+                "include_all_worldbook_entries": False,
+                "use_rag": False,
+            },
+        )
+    finally:
+        _create_operation_globals["run_operation"] = orig
+
+    assert resp.status_code == 200
+    kwargs = mock_run.await_args.kwargs
+    assert kwargs["character_context"] == ""
+    assert kwargs["reference_cards"] is None
+    added_operation = mock_db.add.call_args.args[0]
+    assert added_operation.metadata_ is None
+
+
+@pytest.mark.asyncio
 async def test_create_operation_rejects_invalid_character_ids(
     client: AsyncClient,
     mock_db: AsyncMock,
@@ -167,7 +245,7 @@ async def test_create_operation_rejects_invalid_character_ids(
         chapters=[],
         characters=[],
         component_models={},
-        cognee_dataset_id=None,
+        graph_id=None,
     )
     mock_db.execute.side_effect = [
         _scalar_one_or_none(project),
@@ -199,7 +277,7 @@ async def test_create_operation_rejects_invalid_glossary_term_ids(
         characters=[],
         glossary_terms=[],
         component_models={},
-        cognee_dataset_id=None,
+        graph_id=None,
     )
     mock_db.execute.side_effect = [
         _scalar_one_or_none(project),
@@ -216,3 +294,4 @@ async def test_create_operation_rejects_invalid_glossary_term_ids(
     )
     assert resp.status_code == 400
     assert "Invalid glossary_term_ids" in resp.json()["detail"]
+

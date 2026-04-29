@@ -42,6 +42,7 @@ const props = defineProps<{
   ontologyMeta: Record<string, unknown> | null
   graphBuildModel: string
   embeddingModels: ModelInfo[]
+  rerankerModels: ModelInfo[]
   graphEmbeddingModel: string
   graphRerankerModel: string
   graphBuildMode: 'rebuild' | 'incremental'
@@ -50,6 +51,9 @@ const props = defineProps<{
   graphFreshnessHint: string
   graphLoading: boolean
   graphBuildActionLabel: string
+  graphAutoSyncEnabled: boolean
+  graphResumeAvailable: boolean
+  graphResumeActionLabel: string
   graphBuildMessage: string
   graphBuildProgress: number
   graphBuildSummary: GraphBuildSummary | null
@@ -88,8 +92,11 @@ const emit = defineEmits<{
   'update:graphEmbeddingModel': [value: string]
   'update:graphRerankerModel': [value: string]
   'update:graphBuildMode': [value: 'rebuild' | 'incremental']
+  'update:graphAutoSyncEnabled': [value: boolean]
   'generate-ontology': []
   'build-graph': []
+  'run-auto-sync': []
+  'resume-graph-build': []
   'update:graphAnalysisPrompt': [value: string]
   'update:oasisAnalysisModel': [value: string]
   'update:oasisSimulationModel': [value: string]
@@ -122,6 +129,7 @@ const emit = defineEmits<{
     :ontology-meta="ontologyMeta"
     :graph-build-model="graphBuildModel"
     :embedding-models="embeddingModels"
+    :reranker-models="rerankerModels"
     :graph-embedding-model="graphEmbeddingModel"
     :graph-reranker-model="graphRerankerModel"
     :graph-build-mode="graphBuildMode"
@@ -130,6 +138,9 @@ const emit = defineEmits<{
     :graph-freshness-hint="graphFreshnessHint"
     :graph-loading="graphLoading"
     :graph-build-action-label="graphBuildActionLabel"
+    :graph-auto-sync-enabled="graphAutoSyncEnabled"
+    :graph-resume-available="graphResumeAvailable"
+    :graph-resume-action-label="graphResumeActionLabel"
     :graph-build-message="graphBuildMessage"
     :graph-build-progress="graphBuildProgress"
     :graph-build-summary="graphBuildSummary"
@@ -142,8 +153,11 @@ const emit = defineEmits<{
     @update:graph-embedding-model="emit('update:graphEmbeddingModel', $event)"
     @update:graph-reranker-model="emit('update:graphRerankerModel', $event)"
     @update:graph-build-mode="emit('update:graphBuildMode', $event)"
+    @update:graph-auto-sync-enabled="emit('update:graphAutoSyncEnabled', $event)"
     @generate-ontology="emit('generate-ontology')"
     @build-graph="emit('build-graph')"
+    @run-auto-sync="emit('run-auto-sync')"
+    @resume-graph-build="emit('resume-graph-build')"
   />
 
   <ProjectOasisAnalysisCard
@@ -196,9 +210,12 @@ const emit = defineEmits<{
     </Button>
   </div>
 
-  <div v-else-if="rightPanelTab === 'graph' && !graphLoading" class="py-8 text-center">
+  <div
+    v-else-if="rightPanelTab === 'graph' && !graphLoading"
+    class="rounded-md border border-stone-300/70 bg-stone-100/70 px-6 py-8 text-center dark:border-zinc-700/50 dark:bg-zinc-800/35"
+  >
     <Network class="mx-auto mb-3 h-10 w-10 text-stone-600 dark:text-zinc-500" />
-    <p class="text-sm text-stone-500 dark:text-zinc-500">No graph data yet. Follow steps 1-2 to build the graph.</p>
+    <p class="text-sm text-stone-500 dark:text-zinc-500">Build the graph to preview it here.</p>
   </div>
 
   <GraphSearch v-if="rightPanelTab === 'graph'" :project-id="projectId" />

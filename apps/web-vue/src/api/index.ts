@@ -2,6 +2,17 @@ import axios from 'axios'
 import router from '@/router'
 import { useToast } from '@/composables/useToast'
 
+function sanitizeErrorMessage(value: unknown, fallback: string): string {
+  const raw = String(value || '').trim()
+  if (!raw) return fallback
+  const lowered = raw.toLowerCase()
+  if (!lowered.includes('<html') && !lowered.includes('<!doctype html') && !lowered.includes('<body')) {
+    return raw
+  }
+  const cleaned = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  return cleaned || fallback
+}
+
 function hasHeaderFlag(headers: unknown, headerName: string, expectedValue: string): boolean {
   if (!headers) return false
   if (typeof headers === 'object' && headers !== null && 'get' in headers && typeof (headers as { get?: unknown }).get === 'function') {
@@ -51,7 +62,10 @@ api.interceptors.response.use(
   (error) => {
     const { error: showError } = useToast()
     const requestId = error.response?.headers?.['x-request-id']
-    const message = error.response?.data?.detail || error.response?.data?.message || error.message || 'An unexpected error occurred'
+    const message = sanitizeErrorMessage(
+      error.response?.data?.detail || error.response?.data?.message || error.message,
+      'An unexpected error occurred'
+    )
     const suppressAuthToast = hasHeaderFlag(error.config?.headers, 'X-Muse-Silent-Auth', '1')
     const requestPath = getRequestPath(error.config?.url)
     const isAuthStateRequest = requestPath === '/api/auth/me' || requestPath === '/api/auth/logout'

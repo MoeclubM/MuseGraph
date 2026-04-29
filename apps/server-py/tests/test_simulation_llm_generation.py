@@ -31,8 +31,9 @@ async def test_build_run_artifacts_with_llm_generates_timeline_actions(monkeypat
     )
     run_result = {"metrics": {"total_rounds": 2}}
 
-    async def _fake_call_llm(*, model: str, prompt: str, db, max_tokens: int):
+    async def _fake_call_llm(*, model: str, prompt: str, db, max_tokens: int, **kwargs):
         assert model == "model-sim"
+        assert kwargs["response_schema"].__name__ == "SimulationRunResponse"
         return {
             "content": (
                 '{"rounds":['
@@ -75,7 +76,8 @@ async def test_build_run_artifacts_with_llm_raises_when_invalid_json(monkeypatch
     )
     run_result = {"metrics": {"total_rounds": 1}}
 
-    async def _fake_call_llm(*, model: str, prompt: str, db, max_tokens: int):
+    async def _fake_call_llm(*, model: str, prompt: str, db, max_tokens: int, **kwargs):
+        assert kwargs["response_schema"].__name__ == "SimulationRunResponse"
         return {"content": "not-json"}
 
     monkeypatch.setattr(simulation_router, "call_llm", _fake_call_llm)

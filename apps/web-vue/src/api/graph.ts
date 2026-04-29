@@ -39,11 +39,21 @@ export async function startBuildGraphTask(
     ontology?: ProjectOntology | null
     chapter_ids?: string[]
     build_mode?: 'rebuild' | 'incremental'
+    resume_failed?: boolean
   }
 ): Promise<{ status: string; task: OasisTask }> {
   const { data } = await api.post<{ status: string; task: OasisTask }>(
     `/api/projects/${assertProjectId(projectId)}/graphs/build/task`,
     payload
+  )
+  return data
+}
+
+export async function startAutoSyncGraphTask(
+  projectId: string
+): Promise<{ status: string; task: OasisTask }> {
+  const { data } = await api.post<{ status: string; task: OasisTask }>(
+    `/api/projects/${assertProjectId(projectId)}/graphs/build/auto-sync/task`
   )
   return data
 }

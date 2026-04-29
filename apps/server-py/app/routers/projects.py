@@ -4,13 +4,13 @@ import json
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sse_starlette.sse import EventSourceResponse
 
-from app.database import get_db
+from app.database import async_session, get_db
 from app.dependencies import get_current_user
 from app.models.project import (
     ProjectChapter,
@@ -36,6 +36,7 @@ from app.schemas.project import (
     ProjectChapterUpdate,
     ProjectCreate,
     ProjectResponse,
+    ProjectSearchResult,
     ProjectUpdate,
     ProjectWorldbookEntryCreate,
     ProjectWorldbookEntryResponse,
@@ -50,6 +51,8 @@ from app.services.ai import (
 from app.services.task_state import TaskStatus, task_manager
 
 router = APIRouter()
+GRAPH_AUTO_SYNC_COMPONENT_KEY = "graph_auto_sync"
+GRAPH_AUTO_SYNC_DISABLED = "disabled"
 
 
 async def _get_project_for_user(project_id: str, user: User, db: AsyncSession) -> TextProject:
@@ -209,6 +212,7 @@ def _record_project_sync_task(
 ) -> None:
     normalized_source = str(source_kind or "").strip().lower() or "project"
     normalized_action = str(action or "").strip().lower() or "update"
+    sync_targets = ["graph"] if normalized_source == "chapter" else []
     idempotency_key = _build_project_sync_idempotency_key(
         project_id=project_id,
         source_kind=normalized_source,
@@ -231,7 +235,7 @@ def _record_project_sync_task(
         "source_kind": normalized_source,
         "action": normalized_action,
         "entity_id": str(entity_id or "").strip() or None,
-        "sync_targets": ["graph", "rag"],
+        "sync_targets": sync_targets,
         "auto_created": True,
         "idempotency_key": idempotency_key,
     }
@@ -262,9 +266,104 @@ def _record_project_sync_task(
             "source_kind": normalized_source,
             "action": normalized_action,
             "entity_id": str(entity_id or "").strip() or None,
+            "sync_targets": sync_targets,
             "extra": extra or {},
         },
         message=f"Recorded {normalized_source} {normalized_action} sync event",
+    )
+
+
+def _project_auto_graph_sync_enabled(project: TextProject) -> bool:
+    component_models = getattr(project, "component_models", None)
+    if not isinstance(component_models, dict):
+        return True
+    raw = str(component_models.get(GRAPH_AUTO_SYNC_COMPONENT_KEY) or "").strip().lower()
+    return raw != GRAPH_AUTO_SYNC_DISABLED
+
+
+async def _start_chapter_graph_refresh(
+    project_id: str,
+    user_id: str,
+    trigger_action: str,
+    trigger_entity_id: str | None = None,
+    *,
+    respect_auto_sync_setting: bool = True,
+    require_ready: bool = False,
+):
+    from app.routers.graph import (
+        GraphBuildRequest,
+        _build_graph_task_idempotency_key,
+        _run_graph_build_task,
+        _start_project_task,
+    )
+
+    async with async_session() as schedule_db:
+        result = await schedule_db.execute(
+            select(TextProject)
+            .where(TextProject.id == project_id)
+            .options(selectinload(TextProject.chapters))
+        )
+        project = result.scalar_one_or_none()
+        if not project:
+            if require_ready:
+                raise RuntimeError("Project not found")
+            return None
+        if respect_auto_sync_setting and not _project_auto_graph_sync_enabled(project):
+            return None
+        if not project.ontology_schema:
+            if require_ready:
+                raise RuntimeError("Ontology not generated. Please generate ontology first.")
+            return
+
+        build_text = "\n\n".join(
+            (chapter.content or "").strip()
+            for chapter in _sorted_chapters(project)
+            if chapter.content is not None
+        ).strip()
+        if not build_text:
+            if require_ready:
+                raise RuntimeError("No chapter text available for graph sync.")
+            return None
+
+        body = GraphBuildRequest(text=build_text, build_mode="incremental")
+        idempotency_key = _build_graph_task_idempotency_key(project_id, body)
+
+    return _start_project_task(
+        task_type="graph_build",
+        project_id=project_id,
+        user_id=user_id,
+        metadata={
+            "build_mode": "incremental",
+            "resume_failed": False,
+            "idempotency_key": idempotency_key,
+            "trigger_source_kind": "chapter",
+            "trigger_action": str(trigger_action or "").strip().lower() or "update",
+            "trigger_entity_id": str(trigger_entity_id or "").strip() or None,
+            "auto_created": True,
+        },
+        worker=lambda task_id: _run_graph_build_task(
+            task_id,
+            project_id=project_id,
+            text=build_text,
+            chapter_ids=None,
+            ontology=None,
+            build_mode="incremental",
+            resume_failed=False,
+        ),
+    )
+
+
+async def _schedule_chapter_graph_refresh(
+    project_id: str,
+    user_id: str,
+    trigger_action: str,
+    trigger_entity_id: str | None = None,
+) -> None:
+    await _start_chapter_graph_refresh(
+        project_id,
+        user_id,
+        trigger_action,
+        trigger_entity_id,
     )
 
 
@@ -275,6 +374,34 @@ def _trim_text(value: str | None, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(1, limit - 3)] + "..."
+
+
+def _build_search_snippet(value: Any, keyword: str, limit: int = 160) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    match_index = lowered.find(keyword.lower())
+    if match_index < 0:
+        return _trim_text(text, limit)
+    half = max(20, limit // 2)
+    start = max(0, match_index - half)
+    end = min(len(text), match_index + len(keyword) + half)
+    snippet = text[start:end].strip()
+    if start > 0:
+        snippet = f"...{snippet}"
+    if end < len(text):
+        snippet = f"{snippet}..."
+    return snippet
+
+
+def _first_matching_field(fields: list[tuple[str, Any]], keyword: str) -> tuple[str, str] | None:
+    normalized = keyword.lower()
+    for name, value in fields:
+        text = str(value or "")
+        if normalized in text.lower():
+            return name, _build_search_snippet(text, keyword)
+    return None
 
 
 def _build_character_context(characters: list[ProjectCharacter]) -> str:
@@ -415,6 +542,7 @@ async def _resolve_operation_characters(
     *,
     project: TextProject,
     character_ids: list[str] | None,
+    include_all: bool,
     db: AsyncSession,
 ) -> tuple[str, list[str], list[ProjectCharacter]]:
     normalized = _normalize_character_ids(character_ids)
@@ -436,7 +564,7 @@ async def _resolve_operation_characters(
         ordered = [row_map[character_id] for character_id in normalized]
         return _build_character_context(ordered), normalized, ordered
 
-    characters = _sorted_characters(project)
+    characters = _sorted_characters(project) if include_all else []
     return _build_character_context(characters), [], characters
 
 
@@ -444,6 +572,7 @@ async def _resolve_operation_glossary_terms(
     *,
     project: TextProject,
     glossary_term_ids: list[str] | None,
+    include_all: bool,
     db: AsyncSession,
 ) -> tuple[str, list[str], list[ProjectGlossaryTerm]]:
     normalized = _normalize_glossary_term_ids(glossary_term_ids)
@@ -464,7 +593,7 @@ async def _resolve_operation_glossary_terms(
             )
         ordered = [row_map[item_id] for item_id in normalized]
         return _build_glossary_context(ordered), normalized, ordered
-    glossary_terms = _sorted_glossary_terms(project)
+    glossary_terms = _sorted_glossary_terms(project) if include_all else []
     return _build_glossary_context(glossary_terms), [], glossary_terms
 
 
@@ -472,6 +601,7 @@ async def _resolve_operation_worldbook_entries(
     *,
     project: TextProject,
     worldbook_entry_ids: list[str] | None,
+    include_all: bool,
     db: AsyncSession,
 ) -> tuple[str, list[str], list[ProjectWorldbookEntry]]:
     normalized = _normalize_worldbook_entry_ids(worldbook_entry_ids)
@@ -492,7 +622,7 @@ async def _resolve_operation_worldbook_entries(
             )
         ordered = [row_map[item_id] for item_id in normalized]
         return _build_worldbook_context(ordered), normalized, ordered
-    worldbook_entries = _sorted_worldbook_entries(project)
+    worldbook_entries = _sorted_worldbook_entries(project) if include_all else []
     return _build_worldbook_context(worldbook_entries), [], worldbook_entries
 
 
@@ -609,6 +739,113 @@ async def get_project(
     return ProjectResponse.model_validate(project)
 
 
+@router.get("/{project_id}/search", response_model=list[ProjectSearchResult])
+async def search_project_content(
+    project_id: str,
+    q: str = Query(..., min_length=1),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    keyword = q.strip()
+    if not keyword:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Search query is required")
+
+    project = await _get_project_for_user(project_id, user, db)
+    results: list[ProjectSearchResult] = []
+
+    for chapter in _sorted_chapters(project):
+        match = _first_matching_field(
+            [("title", chapter.title), ("content", chapter.content)],
+            keyword,
+        )
+        if match:
+            field, snippet = match
+            results.append(
+                ProjectSearchResult(
+                    item_type="chapter",
+                    item_id=chapter.id,
+                    title=chapter.title,
+                    matched_field=field,
+                    snippet=snippet,
+                    order_index=chapter.order_index,
+                )
+            )
+
+    for character in _sorted_characters(project):
+        match = _first_matching_field(
+            [
+                ("name", character.name),
+                ("role", character.role),
+                ("profile", character.profile),
+                ("notes", character.notes),
+            ],
+            keyword,
+        )
+        if match:
+            field, snippet = match
+            results.append(
+                ProjectSearchResult(
+                    item_type="character",
+                    item_id=character.id,
+                    title=character.name,
+                    matched_field=field,
+                    snippet=snippet,
+                    order_index=character.order_index,
+                )
+            )
+
+    for term in _sorted_glossary_terms(project):
+        aliases = ", ".join(str(alias) for alias in term.aliases or [])
+        match = _first_matching_field(
+            [
+                ("term", term.term),
+                ("definition", term.definition),
+                ("aliases", aliases),
+                ("notes", term.notes),
+            ],
+            keyword,
+        )
+        if match:
+            field, snippet = match
+            results.append(
+                ProjectSearchResult(
+                    item_type="glossary_term",
+                    item_id=term.id,
+                    title=term.term,
+                    matched_field=field,
+                    snippet=snippet,
+                    order_index=term.order_index,
+                )
+            )
+
+    for entry in _sorted_worldbook_entries(project):
+        tags = ", ".join(str(tag) for tag in entry.tags or [])
+        match = _first_matching_field(
+            [
+                ("title", entry.title),
+                ("category", entry.category),
+                ("tags", tags),
+                ("content", entry.content),
+                ("notes", entry.notes),
+            ],
+            keyword,
+        )
+        if match:
+            field, snippet = match
+            results.append(
+                ProjectSearchResult(
+                    item_type="worldbook_entry",
+                    item_id=entry.id,
+                    title=entry.title,
+                    matched_field=field,
+                    snippet=snippet,
+                    order_index=entry.order_index,
+                )
+            )
+
+    return results
+
+
 @router.put("/{project_id}", response_model=ProjectResponse)
 async def update_project(
     project_id: str,
@@ -671,6 +908,7 @@ async def list_project_chapters(
 async def create_project_chapter(
     project_id: str,
     body: ProjectChapterCreate,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -705,6 +943,8 @@ async def create_project_chapter(
         entity_id=chapter.id,
         extra={"chapter_ids": [chapter.id]},
     )
+    if project.ontology_schema and _project_has_text_content(project) and _project_auto_graph_sync_enabled(project):
+        background_tasks.add_task(_schedule_chapter_graph_refresh, project.id, user.id, "create", chapter.id)
     return ProjectChapterResponse.model_validate(chapter)
 
 
@@ -713,6 +953,7 @@ async def update_project_chapter(
     project_id: str,
     chapter_id: str,
     body: ProjectChapterUpdate,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -747,6 +988,8 @@ async def update_project_chapter(
         entity_id=target.id,
         extra={"chapter_ids": [target.id]},
     )
+    if project.ontology_schema and _project_has_text_content(project) and _project_auto_graph_sync_enabled(project):
+        background_tasks.add_task(_schedule_chapter_graph_refresh, project.id, user.id, "update", target.id)
 
     return ProjectChapterResponse.model_validate(target)
 
@@ -755,6 +998,7 @@ async def update_project_chapter(
 async def delete_project_chapter(
     project_id: str,
     chapter_id: str,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -783,6 +1027,8 @@ async def delete_project_chapter(
         entity_id=target.id,
         extra={"chapter_ids": [target.id]},
     )
+    if project.ontology_schema and _project_has_text_content(project) and _project_auto_graph_sync_enabled(project):
+        background_tasks.add_task(_schedule_chapter_graph_refresh, project.id, user.id, "delete", target.id)
     return None
 
 
@@ -1241,7 +1487,7 @@ async def create_operation(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="CREATE is only allowed when the workspace is empty (0 text).",
             )
-    elif not project.cognee_dataset_id:
+    elif not project.graph_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Knowledge graph is required before running operations.",
@@ -1263,16 +1509,19 @@ async def create_operation(
     character_context, source_character_ids, source_characters = await _resolve_operation_characters(
         project=project,
         character_ids=body.character_ids,
+        include_all=body.include_all_characters,
         db=db,
     )
     glossary_context, source_glossary_term_ids, source_glossary_terms = await _resolve_operation_glossary_terms(
         project=project,
         glossary_term_ids=body.glossary_term_ids,
+        include_all=body.include_all_glossary_terms,
         db=db,
     )
     worldbook_context, source_worldbook_entry_ids, source_worldbook_entries = await _resolve_operation_worldbook_entries(
         project=project,
         worldbook_entry_ids=body.worldbook_entry_ids,
+        include_all=body.include_all_worldbook_entries,
         db=db,
     )
     reference_context = _compose_reference_context(
@@ -1350,7 +1599,7 @@ async def create_operation_stream(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="CREATE is only allowed when the workspace is empty (0 text).",
             )
-    elif not project.cognee_dataset_id:
+    elif not project.graph_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Knowledge graph is required before running operations.",
@@ -1372,16 +1621,19 @@ async def create_operation_stream(
     character_context, source_character_ids, source_characters = await _resolve_operation_characters(
         project=project,
         character_ids=body.character_ids,
+        include_all=body.include_all_characters,
         db=db,
     )
     glossary_context, source_glossary_term_ids, source_glossary_terms = await _resolve_operation_glossary_terms(
         project=project,
         glossary_term_ids=body.glossary_term_ids,
+        include_all=body.include_all_glossary_terms,
         db=db,
     )
     worldbook_context, source_worldbook_entry_ids, source_worldbook_entries = await _resolve_operation_worldbook_entries(
         project=project,
         worldbook_entry_ids=body.worldbook_entry_ids,
+        include_all=body.include_all_worldbook_entries,
         db=db,
     )
     reference_context = _compose_reference_context(
@@ -1419,6 +1671,7 @@ async def create_operation_stream(
     )
     db.add(operation)
     await db.flush()
+    await db.commit()
 
     asyncio.create_task(
         run_operation_async(
@@ -1543,7 +1796,7 @@ async def create_operation_upload(
     project = await _get_project_for_user(project_id, user, db)
     if project.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-    if not project.cognee_dataset_id:
+    if not project.graph_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Knowledge graph is required before running operations.",
@@ -1577,16 +1830,19 @@ async def create_operation_upload(
     character_context, source_character_ids, source_characters = await _resolve_operation_characters(
         project=project,
         character_ids=character_ids,
+        include_all=True,
         db=db,
     )
     glossary_context, source_glossary_term_ids, source_glossary_terms = await _resolve_operation_glossary_terms(
         project=project,
         glossary_term_ids=glossary_term_ids,
+        include_all=True,
         db=db,
     )
     worldbook_context, source_worldbook_entry_ids, source_worldbook_entries = await _resolve_operation_worldbook_entries(
         project=project,
         worldbook_entry_ids=worldbook_entry_ids,
+        include_all=True,
         db=db,
     )
     reference_context = _compose_reference_context(

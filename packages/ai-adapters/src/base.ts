@@ -57,6 +57,7 @@ export interface AIProviderConfig {
   apiKey: string;
   baseUrl?: string;
   defaultModel?: string;
+  apiStyle?: 'responses' | 'chat_completions';
   models: string[];
 }
 

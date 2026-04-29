@@ -214,10 +214,19 @@ export interface Project {
   component_models?: ComponentModelConfig | null
   ontology_schema?: ProjectOntology | null
   oasis_analysis?: ProjectOasisAnalysis | null
-  cognee_dataset_id: string | null
+  graph_id: string | null
   chapters?: ProjectChapter[]
   created_at: string
   updated_at: string
+}
+
+export interface ProjectSearchResult {
+  item_type: 'chapter' | 'character' | 'glossary_term' | 'worldbook_entry'
+  item_id: string
+  title: string
+  matched_field: string
+  snippet: string
+  order_index: number
 }
 
 export interface Operation {
@@ -258,7 +267,7 @@ export interface GraphData {
 }
 
 export interface GraphStatus {
-  dataset_id?: string | null
+  graph_id?: string | null
   status: string
   ontology_status?: string | null
   oasis_status?: string | null
@@ -271,6 +280,9 @@ export interface GraphStatus {
   graph_last_build_at?: string | null
   graph_mode?: string | null
   graph_syncing_task_id?: string | null
+  graph_resume_available?: boolean | null
+  graph_resume_failed_chunks?: number | null
+  graph_resume_mode?: string | null
 }
 
 export interface AuthResponse {
@@ -371,6 +383,7 @@ export interface Provider {
   base_url: string | null
   models: string[] | null
   embedding_models?: string[] | null
+  reranker_models?: string[] | null
   is_active: boolean
   priority: number
 }
@@ -393,6 +406,8 @@ export interface OasisConfig {
   llm_retry_interval_seconds: number
   llm_prefer_stream: boolean
   llm_stream_fallback_nonstream: boolean
+  llm_openai_api_style: string
+  llm_reasoning_effort: string
   llm_task_concurrency: number
   llm_model_default_concurrency: number
   llm_model_concurrency_overrides: Record<string, number>

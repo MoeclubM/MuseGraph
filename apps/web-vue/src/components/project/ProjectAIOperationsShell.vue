@@ -12,7 +12,6 @@ const props = defineProps<{
   rightPanelTab: RightPanelTabKey
   rightPanelTabs: Array<{ key: RightPanelTabKey; label: string; icon: Component }>
   graphReady: boolean
-  operationType: string
 }>()
 
 const emit = defineEmits<{
@@ -35,16 +34,16 @@ function switchToGraphTab() {
     :class="
       rightPanelCollapsed
         ? 'w-0 min-w-0 max-w-0'
-        : (isMobileLayout ? 'w-full min-w-0 max-w-none' : 'w-[44%] min-w-[420px] max-w-[760px]')
+        : (isMobileLayout ? 'w-full min-w-0 max-w-none' : 'w-[min(46vw,720px)] min-w-[360px] max-w-[720px]')
     "
   >
-    <div class="px-5 py-4 border-b border-stone-300/70 dark:border-zinc-700/50 space-y-3">
+    <div class="space-y-3 border-b border-stone-300/70 px-5 py-5 dark:border-zinc-700/50">
       <div>
         <p class="text-[11px] uppercase tracking-[0.16em] text-stone-500 dark:text-zinc-400">
           AI Operations
         </p>
         <p class="text-base font-semibold text-stone-800 dark:text-zinc-100">
-          Graph, Create, OASIS
+          {{ rightPanelTabs.map((tab) => tab.label).join(' · ') }}
         </p>
       </div>
       <Tabs v-model="rightPanelTabValue" class="w-full">
@@ -64,17 +63,17 @@ function switchToGraphTab() {
 
     <div v-show="rightPanelTabValue !== 'graph'" class="flex-1 overflow-y-auto p-5 lg:p-6 space-y-5">
       <Alert
-        v-if="!graphReady && (rightPanelTabValue === 'oasis' || (rightPanelTabValue === 'ai' && operationType !== 'CREATE'))"
+        v-if="!graphReady && rightPanelTabValue === 'oasis'"
         variant="warning"
       >
-        RAG requires a built graph first. Complete Graph Build before this operation or OASIS simulation.
+        OASIS needs graph context first.
         <Button
           variant="ghost"
           size="sm"
           class="ml-1 h-auto px-0 py-0 underline decoration-dotted hover:bg-transparent hover:text-amber-700 dark:hover:bg-transparent dark:hover:text-amber-100"
           @click="switchToGraphTab"
         >
-          Go build graph
+          Go to graph
         </Button>
       </Alert>
 
