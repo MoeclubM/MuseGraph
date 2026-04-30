@@ -16,6 +16,7 @@ const selectedNode = ref<GraphNode | null>(null)
 const searchQuery = ref('')
 const selectedTypes = ref<Set<string>>(new Set())
 const markerId = `arrowhead-${Math.random().toString(36).slice(2)}`
+let currentZoomTransform = d3.zoomIdentity
 
 const NODE_COLORS: Record<string, string> = {
   Entity: '#a16207',
@@ -266,8 +267,12 @@ function renderGraph() {
   const zoom = d3
     .zoom<SVGSVGElement, unknown>()
     .scaleExtent([0.12, 5])
-    .on('zoom', (event) => g.attr('transform', event.transform))
+    .on('zoom', (event) => {
+      currentZoomTransform = event.transform
+      g.attr('transform', event.transform)
+    })
   svg.call(zoom)
+  svg.call(zoom.transform, currentZoomTransform)
 
   const nodeMap = new Map<string, any>()
   const ringRadius = Math.max(80, Math.min(width, height) * 0.28)
