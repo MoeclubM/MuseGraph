@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '@/components/graph/GraphPanel.vue'
 import GraphSearch from '@/components/graph/GraphSearch.vue'
 import Button from '@/components/ui/Button.vue'
-import { getVisualization } from '@/api/graph'
-import type { GraphData } from '@/types'
+import { getOasisTaskStatus, getVisualization, listGraphTasks } from '@/api/graph'
+import type { GraphData, OasisTask } from '@/types'
 import { ArrowLeft, Maximize2, Minimize2 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -16,6 +16,11 @@ const graphData = ref<GraphData>({ nodes: [], edges: [] })
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 const showSidebar = ref(true)
+const graphTask = ref<OasisTask | null>(null)
+const taskError = ref<string | null>(null)
+let graphTaskTimer: ReturnType<typeof setInterval> | null = null
+
+const TASK_POLL_MS = 3000
 
 const NODE_COLORS: Record<string, string> = {
   Entity: '#a16207',
@@ -50,20 +55,99 @@ function getNodeColor(type: string): string {
   return NODE_COLORS[normalized] || NODE_COLORS[normalized.toUpperCase()] || NODE_COLORS.DEFAULT
 }
 
-async function loadGraph() {
-  loading.value = true
-  loadError.value = null
+function parseError(e: any, fallback: string): string {
+  return e?.response?.data?.detail || e?.response?.data?.message || e?.message || fallback
+}
+
+function isRunningTaskStatus(status: string | undefined): boolean {
+  const normalized = String(status || '').toLowerCase()
+  return normalized === 'pending' || normalized === 'processing'
+}
+
+const graphBuildRunning = computed(() => graphTask.value?.task_type === 'graph_build' && isRunningTaskStatus(graphTask.value.status))
+const graphBuildProgress = computed(() => Math.max(0, Math.min(100, Number(graphTask.value?.progress || 0))))
+const graphBuildMessage = computed(() => graphTask.value?.message || (graphBuildRunning.value ? 'Building knowledge graph...' : ''))
+const graphBuildStatusLabel = computed(() => String(graphTask.value?.status || '').toLowerCase())
+const graphPreviewTaskId = computed(() => graphBuildRunning.value ? graphTask.value?.task_id : undefined)
+
+async function loadGraph(options: { preserveOnError?: boolean; previewTaskId?: string } = {}) {
+  if (!options.preserveOnError) {
+    loading.value = true
+    loadError.value = null
+  }
   try {
-    graphData.value = await getVisualization(projectId.value)
+    graphData.value = await getVisualization(projectId.value, { previewTaskId: options.previewTaskId })
+    loadError.value = null
   } catch (e: any) {
-    graphData.value = { nodes: [], edges: [] }
-    loadError.value = e?.response?.data?.detail || e?.response?.data?.message || e?.message || 'Failed to load graph visualization'
+    if (!options.preserveOnError) {
+      graphData.value = { nodes: [], edges: [] }
+      loadError.value = parseError(e, 'Failed to load graph visualization')
+    }
   } finally {
-    loading.value = false
+    if (!options.preserveOnError) loading.value = false
   }
 }
 
-onMounted(loadGraph)
+function stopGraphTaskPolling() {
+  if (graphTaskTimer) {
+    clearInterval(graphTaskTimer)
+    graphTaskTimer = null
+  }
+}
+
+async function pollGraphTask(taskId: string) {
+  try {
+    const response = await getOasisTaskStatus(projectId.value, taskId)
+    graphTask.value = response.task
+    taskError.value = null
+    if (graphBuildRunning.value) {
+      await loadGraph({ preserveOnError: true, previewTaskId: response.task.task_id })
+      return
+    }
+    stopGraphTaskPolling()
+    await loadGraph({ preserveOnError: true })
+  } catch (e: any) {
+    taskError.value = parseError(e, 'Failed to load graph build progress')
+  }
+}
+
+function startGraphTaskPolling(taskId: string) {
+  stopGraphTaskPolling()
+  graphTaskTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+    void pollGraphTask(taskId)
+  }, TASK_POLL_MS)
+}
+
+async function loadLatestGraphTask() {
+  try {
+    const response = await listGraphTasks(projectId.value, { task_type: 'graph_build', limit: 10 })
+    const tasks = [...(response.tasks || [])].sort((a, b) => {
+      const at = Date.parse(a.created_at || '') || 0
+      const bt = Date.parse(b.created_at || '') || 0
+      return bt - at
+    })
+    graphTask.value = tasks.find((task) => isRunningTaskStatus(task.status)) || tasks[0] || null
+    taskError.value = null
+  } catch (e: any) {
+    taskError.value = parseError(e, 'Failed to load graph build progress')
+  }
+}
+
+async function initializeGraphView() {
+  stopGraphTaskPolling()
+  await loadLatestGraphTask()
+  await loadGraph({ previewTaskId: graphPreviewTaskId.value })
+  if (graphPreviewTaskId.value) startGraphTaskPolling(graphPreviewTaskId.value)
+}
+
+onMounted(() => {
+  void initializeGraphView()
+})
+
+onUnmounted(() => {
+  stopGraphTaskPolling()
+})
 </script>
 
 <template>
@@ -79,6 +163,12 @@ onMounted(loadGraph)
         <span class="text-sm text-stone-600 dark:text-zinc-400">Knowledge Graph</span>
       </div>
       <div class="flex flex-wrap items-center justify-end gap-2">
+        <span
+          v-if="graphTask"
+          class="rounded-full border border-amber-300/70 bg-amber-50 px-2.5 py-1 text-xs text-amber-800 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200"
+        >
+          Graph Build: {{ graphBuildStatusLabel }} · {{ graphBuildProgress }}%
+        </span>
         <span class="text-xs text-stone-500 dark:text-zinc-500">
           {{ graphData.nodes.length }} nodes, {{ graphData.edges.length }} edges
         </span>
@@ -94,6 +184,24 @@ onMounted(loadGraph)
     <div class="flex flex-1 overflow-hidden px-4 pb-4 pt-4">
       <!-- Graph -->
       <div class="flex-1 relative">
+        <div
+          v-if="graphBuildRunning"
+          class="absolute left-4 right-4 top-4 z-10 rounded-md border border-amber-300/70 bg-amber-50/95 px-4 py-3 shadow-sm backdrop-blur dark:border-amber-700/60 dark:bg-amber-950/40"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span class="font-medium text-amber-800 dark:text-amber-200">
+              Graph build in progress · {{ graphBuildProgress }}%
+            </span>
+            <span class="text-amber-700 dark:text-amber-300">
+              {{ graphData.nodes.length > 0 ? 'Live preview is updating' : 'Waiting for preview data' }}
+            </span>
+          </div>
+          <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-amber-200/80 dark:bg-amber-950">
+            <div class="h-full rounded-full bg-amber-600 transition-all" :style="{ width: `${graphBuildProgress}%` }" />
+          </div>
+          <p v-if="graphBuildMessage" class="mt-2 text-xs text-amber-800 dark:text-amber-200">{{ graphBuildMessage }}</p>
+          <p v-if="taskError" class="mt-2 text-xs text-red-700 dark:text-red-300">{{ taskError }}</p>
+        </div>
         <div v-if="loading" class="absolute inset-0 flex items-center justify-center">
           <div class="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent" />
         </div>
@@ -102,7 +210,7 @@ onMounted(loadGraph)
             <p class="text-red-700 dark:text-red-300 mb-2">Failed to load graph data</p>
             <p class="text-xs text-stone-500 dark:text-zinc-500 mb-4 break-words">{{ loadError }}</p>
             <div class="flex items-center justify-center gap-2">
-              <Button variant="secondary" @click="loadGraph">Retry</Button>
+              <Button variant="secondary" @click="initializeGraphView">Retry</Button>
               <Button variant="ghost" @click="router.push(`/projects/${projectId}`)">
                 Back to Project
               </Button>
@@ -111,8 +219,10 @@ onMounted(loadGraph)
         </div>
         <div v-else-if="graphData.nodes.length === 0" class="absolute inset-0 flex items-center justify-center">
           <div class="text-center">
-            <p class="text-stone-500 dark:text-zinc-500 mb-4">No graph data available</p>
-            <Button variant="secondary" @click="router.push(`/projects/${projectId}`)">
+            <p class="text-stone-500 dark:text-zinc-500 mb-4">
+              {{ graphBuildRunning ? 'Graph build is running. Preview data will appear here when Graphiti writes the first nodes.' : 'No graph data available' }}
+            </p>
+            <Button v-if="!graphBuildRunning" variant="secondary" @click="router.push(`/projects/${projectId}`)">
               Go back and build a graph
             </Button>
           </div>
