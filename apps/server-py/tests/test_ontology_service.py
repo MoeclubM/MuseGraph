@@ -132,8 +132,9 @@ class TestOntologyService:
 
             assert result is not None
             assert "entity_types" in result
-            assert mock_llm.await_args_list[0].kwargs["prefer_stream_override"] is False
+            assert mock_llm.await_args_list[0].kwargs["prefer_stream_override"] is True
             assert mock_llm.await_args_list[0].kwargs["stream_fallback_nonstream_override"] is False
+            assert mock_llm.await_args_list[0].kwargs["max_tokens"] == 4096
             assert mock_llm.await_args_list[0].kwargs["minimum_timeout_seconds"] == 300
             assert mock_llm.await_args_list[0].kwargs["response_schema"].__name__ == "OntologyResponse"
 
@@ -188,8 +189,9 @@ class TestOntologyService:
             assert result["edge_types"][0]["source_type"] == "PERSON"
             assert result["edge_types"][0]["target_type"] == "ORGANIZATION"
             assert mock_llm.await_count == 2
-            assert mock_llm.await_args_list[0].kwargs["prefer_stream_override"] is False
+            assert mock_llm.await_args_list[0].kwargs["prefer_stream_override"] is True
             assert mock_llm.await_args_list[0].kwargs["stream_fallback_nonstream_override"] is False
+            assert mock_llm.await_args_list[1].kwargs["max_tokens"] == 4096
             assert mock_llm.await_args_list[1].kwargs["minimum_timeout_seconds"] == 300
             assert mock_llm.await_args_list[0].kwargs["response_schema"].__name__ == "OntologyResponse"
 

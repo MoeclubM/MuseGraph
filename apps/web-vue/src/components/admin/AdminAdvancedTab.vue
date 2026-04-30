@@ -77,6 +77,21 @@ const llmModelConcurrencyOverridesInputValue = computed({
             placeholder='{"your-model-id": 4}'
           />
         </div>
+        <div class="space-y-1">
+          <label class="text-xs text-stone-500 dark:text-zinc-400">graphiti_chunk_size</label>
+          <Input v-model.number="oasisConfig.graphiti_chunk_size" type="number" min="240" max="12000" />
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs text-stone-500 dark:text-zinc-400">graphiti_chunk_overlap</label>
+          <Input v-model.number="oasisConfig.graphiti_chunk_overlap" type="number" min="0" />
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs text-stone-500 dark:text-zinc-400">graphiti_llm_max_tokens</label>
+          <Input v-model.number="oasisConfig.graphiti_llm_max_tokens" type="number" min="256" max="16384" />
+        </div>
+        <div class="md:col-span-1 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-xs text-stone-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+          Larger chunks reduce episode count but increase each Graphiti LLM request size. Overlap is capped at 25% of chunk size. Max tokens controls each Graphiti extraction response.
+        </div>
         <label class="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
           <Checkbox v-model="oasisConfig.llm_prefer_stream" />
           llm_prefer_stream
@@ -101,6 +116,7 @@ const llmModelConcurrencyOverridesInputValue = computed({
             <option value="low">low</option>
             <option value="medium">medium</option>
             <option value="high">high</option>
+            <option value="max">max</option>
             <option value="xhigh">xhigh</option>
           </Select>
           <p class="text-xs text-stone-500 dark:text-zinc-400">

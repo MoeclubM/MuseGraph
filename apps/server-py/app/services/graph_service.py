@@ -12,6 +12,7 @@ from app.services.graphiti_graph import (
     GraphBuildPartialFailure,
     build_graph as build_graph_with_graphiti,
     delete_graph as delete_graph_with_graphiti,
+    get_graph_visualization_for_group as get_graph_visualization_for_group_with_graphiti,
     get_graph_visualization as get_graph_visualization_with_graphiti,
     has_graph_data as has_graphiti_graph_data,
     search_graph as search_graph_with_graphiti,
@@ -284,6 +285,16 @@ async def get_graph_visualization(
     _ensure_supported_graph_backend()
     _ = alias_model
     return await get_graph_visualization_with_graphiti(project_id, db=db)
+
+
+async def get_graph_visualization_for_group(
+    project_id: str,
+    *,
+    graph_id: str,
+    db: AsyncSession | None = None,
+) -> dict[str, Any]:
+    _ensure_supported_graph_backend()
+    return await get_graph_visualization_for_group_with_graphiti(project_id, graph_id=graph_id, db=db)
 
 
 async def has_graph_data(project_id: str, *, db: AsyncSession | None = None) -> bool:

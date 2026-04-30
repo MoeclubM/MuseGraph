@@ -46,6 +46,7 @@ export const useProjectStore = defineStore('project', () => {
       description?: string
       simulation_requirement?: string
       component_models?: Record<string, string>
+      operation_prompts?: Record<string, string>
     }
   ) {
     const project = await projectsApi.createProject(data)
@@ -55,7 +56,7 @@ export const useProjectStore = defineStore('project', () => {
 
   async function updateProject(
     id: string,
-    data: Partial<Pick<Project, 'title' | 'description' | 'simulation_requirement' | 'component_models' | 'oasis_analysis'>>
+    data: Partial<Pick<Project, 'title' | 'description' | 'simulation_requirement' | 'component_models' | 'operation_prompts' | 'oasis_analysis'>>
   ) {
     const updated = await projectsApi.updateProject(id, data)
     applyProjectUpdate(updated)

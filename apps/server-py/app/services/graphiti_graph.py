@@ -22,11 +22,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.config import AIProviderConfig
 from app.models.project import TextProject
-from app.services.ai import _load_llm_runtime_config, resolve_component_model
+from app.services.ai import (
+    _build_json_schema_example,
+    _consume_openai_stream_response,
+    _extract_openai_response_content,
+    _is_deepseek_model,
+    _load_llm_runtime_config,
+    resolve_component_model,
+)
 from app.services.llm_json import extract_json_object
 from app.services.llm_runtime import (
+    DEFAULT_GRAPHITI_CHUNK_OVERLAP,
+    DEFAULT_GRAPHITI_CHUNK_SIZE,
+    DEFAULT_GRAPHITI_LLM_MAX_TOKENS,
     DEFAULT_LLM_REASONING_EFFORT,
+    DEFAULT_LLM_OPENAI_API_STYLE,
     model_supports_reasoning_effort,
+    normalize_graphiti_chunk_config,
+    normalize_graphiti_llm_max_tokens,
+    normalize_openai_api_style,
     normalize_reasoning_effort,
 )
 from app.services.provider_models import (
@@ -37,11 +51,8 @@ from app.services.provider_models import (
 
 logger = logging.getLogger(__name__)
 
-_GRAPHITI_CHUNK_SIZE = 4000
-_GRAPHITI_CHUNK_OVERLAP = 160
 _GRAPHITI_MAX_VIS_NODES = 320
 _GRAPHITI_MAX_VIS_EDGES = 900
-_GRAPHITI_LLM_MAX_TOKENS = 4096
 _GRAPHITI_EPISODE_HEARTBEAT_SECONDS = 10.0
 _GRAPHITI_SETUP_LOCK = asyncio.Lock()
 _GRAPHITI_SETUP_COMPLETE: set[str] = set()
@@ -63,6 +74,10 @@ class _GraphitiRuntimeSelection:
     retry_count: int
     max_coroutines: int
     reasoning_effort: str | None
+    chunk_size: int
+    chunk_overlap: int
+    llm_max_tokens: int
+    openai_api_style: str = DEFAULT_LLM_OPENAI_API_STYLE
 
 
 @dataclass
@@ -85,7 +100,19 @@ class GraphBuildPartialFailure(RuntimeError):
 
 def _is_graphiti_store_io_error(exc: Exception) -> bool:
     message = str(exc or "").lower()
-    return "io exception" in message and "cannot read from file" in message
+    return (
+        ("io exception" in message and "cannot read from file" in message)
+        or ("load table failed" in message and "exist in catalog" in message)
+        or ("table" in message and "exist in catalog" in message)
+    )
+
+
+def _graphiti_store_unreadable_message(project_id: str) -> str:
+    return (
+        "Graphiti local graph store is unreadable for this project. "
+        "Rebuild the knowledge graph to recreate the local Kuzu store. "
+        f"project_id={project_id}"
+    )
 
 
 def _clear_graphiti_store(project_id: str) -> None:
@@ -158,10 +185,10 @@ def _graphiti_telemetry_enabled() -> str:
 
 def _graphiti_effective_max_tokens(value: int | None) -> int:
     try:
-        requested = int(value or _GRAPHITI_LLM_MAX_TOKENS)
+        requested = int(value or DEFAULT_GRAPHITI_LLM_MAX_TOKENS)
     except Exception:
-        requested = _GRAPHITI_LLM_MAX_TOKENS
-    return max(256, min(_GRAPHITI_LLM_MAX_TOKENS, requested))
+        requested = DEFAULT_GRAPHITI_LLM_MAX_TOKENS
+    return max(256, min(DEFAULT_GRAPHITI_LLM_MAX_TOKENS, requested))
 
 
 def _graphiti_exception_status_code(exc: Exception) -> int | None:
@@ -232,6 +259,9 @@ def _is_retryable_graphiti_llm_error(exc: Exception) -> bool:
         "temporarily unavailable",
         "bad gateway",
         "service unavailable",
+        "write transaction",
+        "only one write transaction",
+        "cannot start a new write transaction",
     )
     return any(marker in text for marker in retryable_markers)
 
@@ -255,10 +285,9 @@ def _graphiti_episode_timeout_seconds(timeout_seconds: int | None) -> int:
 
 
 def _graphiti_episode_worker_count(selected_count: int, max_coroutines: int) -> int:
-    safe_selected_count = max(1, int(selected_count or 1))
-    safe_max_coroutines = max(1, min(64, int(max_coroutines or 1)))
-    scaled_workers = 1 + max(0, safe_selected_count - 1) // 8
-    return max(1, min(safe_selected_count, safe_max_coroutines, scaled_workers))
+    _ = (selected_count, max_coroutines)
+    # Kuzu local permits one write transaction; serial episode writes prevent catalog corruption.
+    return 1
 
 
 def _build_graph_id() -> str:
@@ -271,12 +300,13 @@ def _project_graph_id(project: Any) -> str:
     ).strip()
 
 
-def _split_text(text: str, *, chunk_size: int = _GRAPHITI_CHUNK_SIZE, overlap: int = _GRAPHITI_CHUNK_OVERLAP) -> list[str]:
+def _split_text(text: str, *, chunk_size: int = DEFAULT_GRAPHITI_CHUNK_SIZE, overlap: int = DEFAULT_GRAPHITI_CHUNK_OVERLAP) -> list[str]:
     source = str(text or "").strip()
     if not source:
         return []
-    safe_chunk_size = max(240, min(12000, int(chunk_size or _GRAPHITI_CHUNK_SIZE)))
-    safe_overlap = max(0, min(safe_chunk_size // 4, int(overlap or _GRAPHITI_CHUNK_OVERLAP)))
+    safe_chunk_size, safe_overlap = normalize_graphiti_chunk_config(
+        {"graphiti_chunk_size": chunk_size, "graphiti_chunk_overlap": overlap}
+    )
     if len(source) <= safe_chunk_size:
         return [source]
 
@@ -588,6 +618,9 @@ async def _resolve_graphiti_runtime(
     reranker_base_url = str(getattr(reranker_provider, "base_url", "") or "").strip()
     max_coroutines = max(1, min(64, int(runtime_cfg.get("llm_task_concurrency", 4) or 4)))
     reasoning_effort = normalize_reasoning_effort(runtime_cfg.get("llm_reasoning_effort"))
+    chunk_size, chunk_overlap = normalize_graphiti_chunk_config(runtime_cfg)
+    llm_max_tokens = normalize_graphiti_llm_max_tokens(runtime_cfg)
+    openai_api_style = normalize_openai_api_style(runtime_cfg.get("llm_openai_api_style"))
 
     return _GraphitiRuntimeSelection(
         llm_provider_type=llm_provider_type,
@@ -604,6 +637,10 @@ async def _resolve_graphiti_runtime(
         retry_count=max(0, min(10, int(runtime_cfg.get("llm_retry_count", 2) or 2))),
         max_coroutines=max_coroutines,
         reasoning_effort=None if reasoning_effort == DEFAULT_LLM_REASONING_EFFORT else reasoning_effort,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        llm_max_tokens=llm_max_tokens,
+        openai_api_style=openai_api_style,
     )
 
 
@@ -816,6 +853,79 @@ def _patch_graphiti_llm_client(openai_generic_client_cls: type[Any]) -> type[Any
                     ),
                 )
                 instructions = "\n\n".join(part for part in instructions_parts if part).strip() or None
+                model_name = self.model or "gpt-4.1-mini"
+                openai_api_style = normalize_openai_api_style(
+                    getattr(getattr(self, "config", None), "openai_api_style", DEFAULT_LLM_OPENAI_API_STYLE)
+                )
+
+                if openai_api_style == "chat_completions" or _is_deepseek_model(model_name):
+                    chat_messages: list[dict[str, str]] = []
+                    if instructions:
+                        chat_messages.append({"role": "system", "content": instructions})
+                    for item in openai_input:
+                        role = "system" if item.get("role") == "developer" else str(item.get("role") or "user")
+                        text = "\n".join(
+                            str(part.get("text") or "")
+                            for part in item.get("content", [])
+                            if isinstance(part, dict)
+                        ).strip()
+                        if text:
+                            chat_messages.append({"role": role, "content": text})
+
+                    example_payload = _build_json_schema_example(response_model.model_json_schema()) if response_model else {}
+                    format_instruction = (
+                        "Return valid json only. Do not include markdown or commentary. "
+                        "The response must be a json object matching this example format.\n"
+                        f"EXAMPLE JSON OUTPUT:\n{json.dumps(example_payload, ensure_ascii=False, indent=2)}"
+                    )
+                    if chat_messages:
+                        chat_messages[-1]["content"] = f"{chat_messages[-1]['content']}\n\n{format_instruction}"
+                    else:
+                        chat_messages.append({"role": "user", "content": format_instruction})
+
+                    request_kwargs: dict[str, Any] = {
+                        "model": model_name,
+                        "messages": chat_messages,
+                        "max_tokens": effective_max_tokens,
+                        "timeout": timeout_seconds,
+                        "response_format": {"type": "json_object"},
+                        "stream": True,
+                    }
+                    if _is_deepseek_model(model_name):
+                        request_kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+                    reasoning_effort = str(
+                        getattr(getattr(self, "config", None), "reasoning_effort", "") or ""
+                    ).strip().lower()
+                    if (
+                        reasoning_effort
+                        and model_supports_reasoning_effort(model_name)
+                        and not (_is_deepseek_model(model_name) and reasoning_effort in {"none", "minimal"})
+                    ):
+                        request_kwargs["reasoning_effort"] = reasoning_effort
+
+                    try:
+                        response = await self.client.chat.completions.create(**request_kwargs)
+                        if hasattr(response, "__aiter__"):
+                            raw_content, _, _ = await _consume_openai_stream_response(response)
+                        else:
+                            raw_content = _extract_openai_response_content(response)
+                        parsed_payload = _parse_graphiti_response_content(response_model, raw_content)
+                        return _validate_graphiti_response_payload(response_model, parsed_payload)
+                    except openai.RateLimitError as exc:
+                        raise RateLimitError from exc
+                    except Exception as exc:
+                        logger.exception(
+                            "Graphiti Chat Completions streaming request failed. model=%s response_model=%s base_url=%s "
+                            "max_tokens=%s timeout=%s error_type=%s error=%r",
+                            model_name,
+                            getattr(response_model, "__name__", None),
+                            getattr(getattr(self, "config", None), "base_url", ""),
+                            effective_max_tokens,
+                            timeout_seconds,
+                            type(exc).__name__,
+                            exc,
+                        )
+                        raise
 
                 last_exc: Exception | None = None
                 for attempt_index, response_format in enumerate(response_formats, start=1):
@@ -994,7 +1104,7 @@ async def _create_graphiti(*, runtime: _GraphitiRuntimeSelection, project_id: st
     os.environ["SEMAPHORE_LIMIT"] = str(runtime.max_coroutines)
     os.environ["EMBEDDING_DIM"] = str(_embedding_dimension())
 
-    llm_max_tokens = _graphiti_effective_max_tokens(16384)
+    llm_max_tokens = _graphiti_effective_max_tokens(runtime.llm_max_tokens)
     llm_config = LLMConfig(
         api_key=runtime.llm_api_key,
         model=runtime.llm_model,
@@ -1005,6 +1115,7 @@ async def _create_graphiti(*, runtime: _GraphitiRuntimeSelection, project_id: st
     )
     llm_config.timeout_seconds = _graphiti_request_timeout_seconds(runtime.timeout_seconds)
     llm_config.reasoning_effort = runtime.reasoning_effort
+    llm_config.openai_api_style = runtime.openai_api_style
     reranker_config = LLMConfig(
         api_key=runtime.reranker_api_key,
         model=runtime.reranker_model,
@@ -1026,7 +1137,7 @@ async def _create_graphiti(*, runtime: _GraphitiRuntimeSelection, project_id: st
         KuzuDriver,
         db_path=db_path,
         project_id=project_id,
-        max_concurrent_queries=runtime.max_coroutines,
+        max_concurrent_queries=1,
     )
     if runtime.llm_provider_type == "anthropic_compatible":
         import anthropic
@@ -1140,8 +1251,19 @@ async def setup_graphiti(project_id: str | None = None) -> None:
             _recipes,
         ) = _import_graphiti_runtime()
         os.environ["GRAPHITI_TELEMETRY_ENABLED"] = _graphiti_telemetry_enabled()
-        try:
+        async def _initialize_store() -> None:
             driver = KuzuDriver(db=db_path)
+            try:
+                await driver.build_indices_and_constraints()
+            finally:
+                try:
+                    await driver.close()
+                finally:
+                    del driver
+                    gc.collect()
+
+        try:
+            await _initialize_store()
         except Exception as exc:
             if project_id and _is_graphiti_store_io_error(exc):
                 logger.warning(
@@ -1152,17 +1274,9 @@ async def setup_graphiti(project_id: str | None = None) -> None:
                     exc_info=True,
                 )
                 _clear_graphiti_store(project_id)
-                driver = KuzuDriver(db=db_path)
+                await _initialize_store()
             else:
                 raise
-        try:
-            await driver.build_indices_and_constraints()
-        finally:
-            try:
-                await driver.close()
-            finally:
-                del driver
-                gc.collect()
         _GRAPHITI_SETUP_COMPLETE.add(db_path)
 
 
@@ -1179,10 +1293,6 @@ async def build_graph(
     chunk_indices: list[int] | None = None,
     continue_on_error: bool = False,
 ) -> str:
-    chunks = _split_text(text)
-    if not chunks:
-        raise ValueError("No graph input text provided")
-
     await setup_graphiti(project_id)
     project = await _load_project(project_id, db)
     graph_id = str(graph_id_override or "").strip() or _project_graph_id(project) or _build_graph_id()
@@ -1192,6 +1302,9 @@ async def build_graph(
         model=model,
         embedding_model=embedding_model,
     )
+    chunks = _split_text(text, chunk_size=runtime.chunk_size, overlap=runtime.chunk_overlap)
+    if not chunks:
+        raise ValueError("No graph input text provided")
     entity_types, edge_types, edge_type_map = _prepare_graphiti_ontology(ontology)
     graphiti = await _create_graphiti(runtime=runtime, project_id=project_id)
     (
@@ -1218,6 +1331,11 @@ async def build_graph(
         emit(25, "Preparing Graphiti local runtime...")
         await graphiti.build_indices_and_constraints()
         total_chunks = len(chunks)
+        emit(
+            28,
+            f"Graphiti split source into {total_chunks} episodes "
+            f"(chunk size {runtime.chunk_size}, overlap {runtime.chunk_overlap})...",
+        )
         normalized_chunk_indices = [
             index
             for index in (chunk_indices or list(range(1, total_chunks + 1)))
@@ -1423,6 +1541,11 @@ async def search_graph(
                 }
             )
         return items
+    except Exception as exc:
+        if _is_graphiti_store_io_error(exc):
+            logger.warning("Graphiti search store is unreadable for project %s", project_id, exc_info=True)
+            raise RuntimeError(_graphiti_store_unreadable_message(project_id)) from exc
+        raise
     finally:
         try:
             await graphiti.close()
@@ -1481,6 +1604,19 @@ def _record_to_dict(record: Any) -> dict[str, Any]:
 async def get_graph_visualization(project_id: str, *, db: AsyncSession | None = None) -> dict[str, Any]:
     project = await _load_project(project_id, db)
     graph_id = _project_graph_id(project)
+    if not graph_id:
+        return {"nodes": [], "edges": []}
+
+    return await get_graph_visualization_for_group(project_id, graph_id=graph_id, db=db)
+
+
+async def get_graph_visualization_for_group(
+    project_id: str,
+    *,
+    graph_id: str,
+    db: AsyncSession | None = None,
+) -> dict[str, Any]:
+    graph_id = str(graph_id or "").strip()
     if not graph_id:
         return {"nodes": [], "edges": []}
 
@@ -1567,6 +1703,11 @@ async def get_graph_visualization(project_id: str, *, db: AsyncSession | None = 
             )
 
         return {"nodes": nodes, "edges": edges}
+    except Exception as exc:
+        if _is_graphiti_store_io_error(exc):
+            logger.warning("Graphiti visualization store is unreadable for project %s", project_id, exc_info=True)
+            raise RuntimeError(_graphiti_store_unreadable_message(project_id)) from exc
+        raise
     finally:
         try:
             await graphiti.close()

@@ -3,7 +3,7 @@ import hashlib
 import inspect
 import json
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 from typing import Any, Callable, Coroutine
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -40,6 +40,7 @@ from app.services.graph_service import (
     build_graph,
     delete_graph as delete_graph_data,
     get_graph_visualization,
+    get_graph_visualization_for_group,
     has_graph_data,
     search_graph,
 )
@@ -99,6 +100,17 @@ def _describe_task_exception(exc: Exception) -> str:
     if message:
         return message
     return f"{type(exc).__name__}: {exc!r}"
+
+
+def _preview_graph_id_from_task(task: TaskRecord | None) -> str:
+    if not task:
+        return ""
+    detail = task.progress_detail if isinstance(task.progress_detail, dict) else None
+    graph_id = str((detail or {}).get("preview_graph_id") or "").strip()
+    if graph_id:
+        return graph_id
+    metadata = task.metadata if isinstance(task.metadata, dict) else {}
+    return str(metadata.get("preview_graph_id") or "").strip()
 
 
 async def _await_if_needed(value: Any) -> Any:
@@ -1128,15 +1140,23 @@ async def _execute_graph_build(
     resume_failed: bool = False,
     db: AsyncSession,
     progress_callback: Callable[[int, str], None] | None = None,
+    preview_graph_id_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     if ontology:
         project.ontology_schema = ontology
     if not project.ontology_schema:
         raise RuntimeError("Ontology not generated. Please generate ontology first.")
 
+    resume_state = _extract_graph_build_resume_state(project)
+    plan_chapter_ids = chapter_ids
+    if resume_failed and not _normalize_chapter_ids(chapter_ids):
+        resume_source_ids = _normalize_chapter_ids(resume_state.get("source_chapter_ids"))
+        if resume_source_ids:
+            plan_chapter_ids = resume_source_ids
+
     plan = await _resolve_graph_build_plan(
         body_text=body_text,
-        chapter_ids=chapter_ids,
+        chapter_ids=plan_chapter_ids,
         project=project,
         mode=mode,
         db=db,
@@ -1152,7 +1172,6 @@ async def _execute_graph_build(
     modified_chapter_ids: list[str] = list(plan.get("modified_chapter_ids") or [])
     removed_chapter_ids: list[str] = list(plan.get("removed_chapter_ids") or [])
     build_provenance: dict[str, Any] = dict(plan["build_provenance"])
-    resume_state = _extract_graph_build_resume_state(project)
     resume_graph_id = ""
     resume_chunk_indices: list[int] = []
 
@@ -1211,6 +1230,10 @@ async def _execute_graph_build(
         effective_mode = _normalize_graph_build_mode(resume_state.get("mode") or effective_mode)
         mode_reason = "Continuing previously failed graph build chunks."
 
+    preview_graph_id = resume_graph_id or project.graph_id or f"graphiti_{uuid4().hex[:16]}"
+    if preview_graph_id_callback:
+        preview_graph_id_callback(preview_graph_id)
+
     if not resume_failed and effective_mode == GRAPH_BUILD_REBUILD and project.graph_id:
         if progress_callback:
             progress_callback(25, "Cleaning previous graph...")
@@ -1237,7 +1260,7 @@ async def _execute_graph_build(
             ontology=project.ontology_schema,
             db=db,
             progress_callback=progress_callback,
-            graph_id_override=resume_graph_id or None,
+            graph_id_override=preview_graph_id,
             chunk_indices=resume_chunk_indices or None,
             continue_on_error=True,
         )
@@ -1350,9 +1373,17 @@ async def _run_graph_build_task(
 
             task_manager.update_task(task_id, progress=12, message="Resolving chapter source text...")
 
+            def _on_preview_graph_id(graph_id: str) -> None:
+                task = task_manager.get_task(task_id)
+                detail = dict(task.progress_detail or {}) if task and isinstance(task.progress_detail, dict) else {}
+                detail["preview_graph_id"] = graph_id
+                task_manager.update_task(task_id, progress_detail=detail)
+
             def _on_build_progress(progress: int, message: str) -> None:
                 bounded_progress = max(25, min(97, int(progress)))
-                task_manager.update_task(task_id, progress=bounded_progress, message=message)
+                task = task_manager.get_task(task_id)
+                detail = task.progress_detail if task and isinstance(task.progress_detail, dict) else None
+                task_manager.update_task(task_id, progress=bounded_progress, message=message, progress_detail=detail)
 
             task_manager.update_task(task_id, progress=28, message="Building graph in segments...")
             build_result = await _execute_graph_build(
@@ -1365,6 +1396,7 @@ async def _run_graph_build_task(
                 resume_failed=resume_failed,
                 db=db,
                 progress_callback=_on_build_progress,
+                preview_graph_id_callback=_on_preview_graph_id,
             )
             await db.commit()
             status = str(build_result.get("status") or "ok")
@@ -2454,10 +2486,18 @@ async def search(
 @router.get("/visualization", response_model=GraphVisualizationResponse)
 async def visualization(
     project_id: str,
+    preview_task_id: str | None = Query(default=None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     project = await _get_project(project_id, user, db)
+    preview_graph_id = ""
+    if preview_task_id:
+        preview_task = _ensure_task_project(task_manager.get_task(preview_task_id), project_id)
+        if preview_task.task_type != "graph_build":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Preview task is not a graph build task")
+        preview_graph_id = _preview_graph_id_from_task(preview_task)
+
     model_project = project if hasattr(project, "component_models") else None
     graph_model = resolve_component_model(model_project, "graph_build")
     alias_model = resolve_component_model(
@@ -2470,11 +2510,14 @@ async def visualization(
             user_id=user.id,
             project_id=project.id,
         ):
-            data = await get_graph_visualization(
-                project_id,
-                db=db,
-                alias_model=alias_model,
-            )
+            if preview_graph_id:
+                data = await get_graph_visualization_for_group(project_id, graph_id=preview_graph_id, db=db)
+            else:
+                data = await get_graph_visualization(
+                    project_id,
+                    db=db,
+                    alias_model=alias_model,
+                )
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

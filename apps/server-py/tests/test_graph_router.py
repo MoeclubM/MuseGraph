@@ -61,6 +61,14 @@ def _scalar_one_or_none(value):
     return result
 
 
+def _scalars_all(values):
+    result = MagicMock()
+    scalars = MagicMock()
+    scalars.all.return_value = values
+    result.scalars.return_value = scalars
+    return result
+
+
 def _endpoint(path: str, method: str):
     method_upper = method.upper()
     for route in app_instance.routes:
@@ -463,6 +471,96 @@ class TestGraphGraphFlow:
         assert stored.result["resume_available"] is True
         assert stored.result["failed_chunk_indices"] == [2]
         assert stored.error == "1/3 graph chunks failed. Continue is available."
+
+    @pytest.mark.asyncio
+    async def test_execute_graph_build_resume_reuses_failed_source_chapters(
+        self,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from app.routers import graph as graph_router
+
+        project = _make_project(
+            project_id="11111111-1111-4111-8111-111111111111",
+            ontology_schema={"entity_types": [{"name": "Actor"}], "edge_types": []},
+            chapter_content="Base text",
+        )
+        chapter_id = project.chapters[0].id
+        project.oasis_analysis = {
+            "_graph_build_state": {
+                "resume": {
+                    "graph_id": "graph-resume-1",
+                    "mode": "rebuild",
+                    "content_hash": graph_router._hash_text("Base text"),
+                    "source_chapter_ids": [chapter_id],
+                    "failed_chunk_indices": [2, 4],
+                    "completed_chunk_indices": [1, 3],
+                    "selected_chunk_indices": [1, 2, 3, 4],
+                    "total_chunks": 4,
+                },
+            }
+        }
+        seen_chapter_ids: list[list[str] | None] = []
+
+        async def _fake_resolve_chapters(_project, chapter_ids, _db):
+            seen_chapter_ids.append(chapter_ids)
+            return project.chapters
+
+        build_mock = AsyncMock(return_value="graph-resume-1")
+        monkeypatch.setattr(graph_router, "_resolve_chapters_for_project", _fake_resolve_chapters)
+        monkeypatch.setattr(graph_router, "build_graph_input_with_ontology", lambda _text, _ontology: "graph input")
+        monkeypatch.setattr(graph_router, "build_graph", build_mock)
+
+        result = await graph_router._execute_graph_build(
+            project_id=project.id,
+            project=project,
+            body_text=None,
+            chapter_ids=None,
+            ontology=None,
+            mode="rebuild",
+            resume_failed=True,
+            db=mock_db,
+        )
+
+        assert result["status"] == "ok"
+        assert project.graph_id == "graph-resume-1"
+        assert seen_chapter_ids == [[chapter_id], [chapter_id]]
+        assert build_mock.await_args.kwargs["graph_id_override"] == "graph-resume-1"
+        assert build_mock.await_args.kwargs["chunk_indices"] == [2, 4]
+
+    @pytest.mark.asyncio
+    async def test_execute_graph_build_reports_preview_graph_id(
+        self,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from app.routers import graph as graph_router
+
+        project = _make_project(
+            project_id="11111111-1111-4111-8111-111111111111",
+            ontology_schema={"entity_types": [{"name": "Actor"}], "edge_types": []},
+            chapter_content="Base text",
+        )
+        preview_graph_ids: list[str] = []
+        build_mock = AsyncMock(return_value="graph-preview-1")
+        mock_db.execute.return_value = _scalars_all(project.chapters)
+        monkeypatch.setattr(graph_router, "build_graph_input_with_ontology", lambda _text, _ontology: "graph input")
+        monkeypatch.setattr(graph_router, "build_graph", build_mock)
+
+        result = await graph_router._execute_graph_build(
+            project_id=project.id,
+            project=project,
+            body_text=None,
+            chapter_ids=None,
+            ontology=None,
+            mode="rebuild",
+            db=mock_db,
+            preview_graph_id_callback=preview_graph_ids.append,
+        )
+
+        assert result["status"] == "ok"
+        assert preview_graph_ids == ["graph-preview-1"] or preview_graph_ids[0].startswith("graphiti_")
+        assert build_mock.await_args.kwargs["graph_id_override"] == preview_graph_ids[0]
 
     @pytest.mark.asyncio
     async def test_oasis_analyze_requires_graph(self, client: AsyncClient, mock_db: AsyncMock):

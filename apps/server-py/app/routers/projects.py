@@ -53,6 +53,7 @@ from app.services.task_state import TaskStatus, task_manager
 router = APIRouter()
 GRAPH_AUTO_SYNC_COMPONENT_KEY = "graph_auto_sync"
 GRAPH_AUTO_SYNC_DISABLED = "disabled"
+OPERATION_PROMPT_KEYS = {"CREATE", "CONTINUE", "ANALYZE", "REWRITE", "SUMMARIZE"}
 
 
 async def _get_project_for_user(project_id: str, user: User, db: AsyncSession) -> TextProject:
@@ -163,6 +164,18 @@ def _normalize_id_list(values: list[str] | None) -> list[str]:
         normalized.append(value)
         seen.add(value)
     return normalized
+
+
+def _normalize_operation_prompts(raw: dict[str, str] | None) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    prompts: dict[str, str] = {}
+    for key, value in raw.items():
+        normalized_key = str(key or "").strip().upper()
+        prompt = str(value or "").strip()
+        if normalized_key in OPERATION_PROMPT_KEYS and prompt:
+            prompts[normalized_key] = prompt
+    return prompts
 
 
 def _normalize_chapter_ids(chapter_ids: list[str] | None) -> list[str]:
@@ -720,6 +733,7 @@ async def create_project(
         description=body.description,
         simulation_requirement=body.simulation_requirement,
         component_models=body.component_models,
+        operation_prompts=_normalize_operation_prompts(body.operation_prompts),
     )
     db.add(project)
     await db.flush()
@@ -864,6 +878,8 @@ async def update_project(
         project.simulation_requirement = body.simulation_requirement
     if body.component_models is not None:
         project.component_models = body.component_models
+    if body.operation_prompts is not None:
+        project.operation_prompts = _normalize_operation_prompts(body.operation_prompts)
     if body.oasis_analysis is not None:
         project.oasis_analysis = body.oasis_analysis
 

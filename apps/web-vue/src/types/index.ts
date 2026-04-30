@@ -85,6 +85,7 @@ export interface OasisTask {
   message: string
   result?: Record<string, any> | null
   error?: string | null
+  progress_detail?: Record<string, any> | null
   metadata?: Record<string, any> | null
 }
 
@@ -97,6 +98,7 @@ export interface AdminTaskListResponse {
 }
 
 export type ComponentModelConfig = Record<string, string>
+export type OperationPromptConfig = Record<string, string>
 
 export interface User {
   id: string
@@ -212,6 +214,7 @@ export interface Project {
   description: string | null
   simulation_requirement?: string | null
   component_models?: ComponentModelConfig | null
+  operation_prompts?: OperationPromptConfig | null
   ontology_schema?: ProjectOntology | null
   oasis_analysis?: ProjectOasisAnalysis | null
   graph_id: string | null
@@ -411,6 +414,9 @@ export interface OasisConfig {
   llm_task_concurrency: number
   llm_model_default_concurrency: number
   llm_model_concurrency_overrides: Record<string, number>
+  graphiti_chunk_size: number
+  graphiti_chunk_overlap: number
+  graphiti_llm_max_tokens: number
 }
 
 export interface PaymentOrder {

@@ -143,6 +143,9 @@ class TestHelperFunctions:
         assert cfg["llm_task_concurrency"] == 4
         assert cfg["llm_model_default_concurrency"] == 8
         assert cfg["llm_model_concurrency_overrides"] == {}
+        assert cfg["graphiti_chunk_size"] == 4000
+        assert cfg["graphiti_chunk_overlap"] == 160
+        assert cfg["graphiti_llm_max_tokens"] == 16384
 
     def test_normalize_oasis_config_clamps_llm_retry(self):
         cfg = normalize_oasis_config(
@@ -155,6 +158,9 @@ class TestHelperFunctions:
                 "llm_task_concurrency": 999,
                 "llm_model_default_concurrency": 0,
                 "llm_model_concurrency_overrides": {"gpt-4o-mini": 999, "": 2, "bad": "x"},
+                "graphiti_chunk_size": 20000,
+                "graphiti_chunk_overlap": 9999,
+                "graphiti_llm_max_tokens": 100,
             }
         )
         assert cfg["llm_request_timeout_seconds"] == 1800
@@ -165,6 +171,9 @@ class TestHelperFunctions:
         assert cfg["llm_task_concurrency"] == 64
         assert cfg["llm_model_default_concurrency"] == 1
         assert cfg["llm_model_concurrency_overrides"] == {"gpt-4o-mini": 64}
+        assert cfg["graphiti_chunk_size"] == 12000
+        assert cfg["graphiti_chunk_overlap"] == 3000
+        assert cfg["graphiti_llm_max_tokens"] == 256
 
 
 class TestSanitizeOasisSimulationConfig:

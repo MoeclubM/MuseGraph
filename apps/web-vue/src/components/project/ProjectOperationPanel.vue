@@ -25,6 +25,9 @@ const props = defineProps<{
   modelsLoading: boolean
   models: ModelInfo[]
   operationModel: string
+  createSystemPrompt: string
+  createSystemPromptSaving: boolean
+  createSystemPromptError: string | null
   continuationApplyMode: ContinuationApplyMode
   createUserPrompt: string
   createOutline: string
@@ -49,6 +52,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:operationType': [value: OperationTypeValue]
   'update:operationModel': [value: string]
+  'update:createSystemPrompt': [value: string]
+  'save-create-system-prompt': []
+  'reset-create-system-prompt': []
   'update:continuationApplyMode': [value: ContinuationApplyMode]
   'update:createUserPrompt': [value: string]
   'update:createOutline': [value: string]
@@ -62,6 +68,11 @@ const emit = defineEmits<{
 const operationModelValue = computed({
   get: () => props.operationModel,
   set: (value: string | number) => emit('update:operationModel', String(value || '')),
+})
+
+const createSystemPromptValue = computed({
+  get: () => props.createSystemPrompt,
+  set: (value: string | number) => emit('update:createSystemPrompt', String(value || '')),
 })
 
 const continuationApplyModeValue = computed({
@@ -146,6 +157,40 @@ const runDisabled = computed(() =>
     </div>
 
     <div v-if="props.operationType === 'CREATE'" class="space-y-3 rounded-md border border-stone-300/80 bg-stone-100/80 p-4 dark:border-zinc-700/60 dark:bg-zinc-800/45">
+      <div class="space-y-2 rounded-md border border-amber-300/60 bg-amber-50/80 p-3 dark:border-amber-700/50 dark:bg-amber-950/20">
+        <div class="flex items-center justify-between gap-2">
+          <div>
+            <p class="text-xs font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">Project CREATE Prompt</p>
+            <p class="mt-1 text-xs text-stone-500 dark:text-zinc-400">Saved with this project. Leave empty to use the built-in/global prompt. Include <code>{input}</code> where the goal and outline should be inserted.</p>
+          </div>
+          <div class="flex shrink-0 items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              :disabled="props.createSystemPromptSaving || !props.createSystemPrompt.trim()"
+              @click="emit('reset-create-system-prompt')"
+            >
+              Reset
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              :loading="props.createSystemPromptSaving"
+              @click="emit('save-create-system-prompt')"
+            >
+              Save
+            </Button>
+          </div>
+        </div>
+        <Textarea
+          v-model="createSystemPromptValue"
+          :rows="5"
+          placeholder="Example: Write a polished fiction draft from the request below. Keep coherent pacing and vivid scene detail.\n\n{input}"
+          class="min-h-28"
+        />
+        <p v-if="props.createSystemPromptError" class="text-xs text-red-700 dark:text-red-300">{{ props.createSystemPromptError }}</p>
+      </div>
+
       <p class="text-xs font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">Step 1. Describe Draft Goal</p>
       <Textarea
         v-model="createUserPromptValue"

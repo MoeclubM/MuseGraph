@@ -386,6 +386,7 @@ class TestUpdateProject:
             ],
             simulation_requirement=None,
             component_models=None,
+            operation_prompts=None,
             oasis_analysis=None,
             ontology_schema=None,
             graph_id=None,
@@ -402,6 +403,7 @@ class TestUpdateProject:
                 "description": "New desc",
                 "simulation_requirement": "Must handle 1000 users",
                 "component_models": {"operation_create": "gpt-4o"},
+                "operation_prompts": {"CREATE": "Project create prompt: {input}", "UNKNOWN": "ignored"},
                 "oasis_analysis": {"score": 95},
             },
         )
@@ -410,6 +412,7 @@ class TestUpdateProject:
         assert project.title == "New Title"
         assert project.simulation_requirement == "Must handle 1000 users"
         assert project.component_models == {"operation_create": "gpt-4o"}
+        assert project.operation_prompts == {"CREATE": "Project create prompt: {input}"}
         assert project.oasis_analysis == {"score": 95}
 
     @pytest.mark.asyncio

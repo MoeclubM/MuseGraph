@@ -33,6 +33,7 @@ class OntologyResponse(StrictJsonSchemaModel):
 
 _ONTOLOGY_PROMPT_MAX_CHARS = 8000
 _ONTOLOGY_MIN_TIMEOUT_SECONDS = 300
+_ONTOLOGY_MAX_TOKENS = 4096
 
 
 def _normalize_name(name: str) -> str:
@@ -120,7 +121,7 @@ def _sanitize_ontology(data: dict[str, Any]) -> dict[str, Any]:
                 "examples": [str(x).strip() for x in (item.get("examples") or []) if str(x).strip()][:8],
             }
         )
-        if len(entity_types) >= 16:
+        if len(entity_types) >= 24:
             break
 
     edge_types: list[dict[str, Any]] = []
@@ -143,7 +144,7 @@ def _sanitize_ontology(data: dict[str, Any]) -> dict[str, Any]:
                 "description": str(item.get("description") or "").strip(),
             }
         )
-        if len(edge_types) >= 24:
+        if len(edge_types) >= 40:
             break
 
     return {
@@ -221,7 +222,9 @@ def _build_ontology_prompt(text: str, requirement: str | None) -> str:
     return (
         "You are an ontology architect. Read the input text and propose an ontology.\n"
         "Use the provided response schema.\n"
-        "Rules: 6-16 entity types, 8-24 edge types, concise names in uppercase snake case.\n"
+        "Rules: 8-24 entity types, 12-40 edge types, concise names in uppercase snake case.\n"
+        "Cover narrative roles, factions, places, objects, events, abilities, conflicts, motives, time points, and supernatural concepts when present.\n"
+        "Prefer concrete domain relations over generic RELATED_TO, including family, location, possession, transformation, conflict, obligation, and event participation.\n"
         "Do not add commentary.\n\n"
         f"Requirement:\n{(requirement or '').strip()}\n\n"
         f"Text:\n{sampled_text}"
@@ -234,10 +237,11 @@ def _build_retry_prompt(text: str, requirement: str | None) -> str:
         "Build a rich ontology for the text.\n"
         "Use the provided response schema.\n"
         "Hard constraints:\n"
-        "1) At least 6 entity_types and at least 8 edge_types.\n"
+        "1) At least 8 entity_types and at least 12 edge_types when the text supports them.\n"
         "2) Do not use generic placeholders like only CONCEPT/RELATED_TO.\n"
         "3) Use concrete relation names and valid source_type/target_type.\n"
-        "4) Return only the structured result.\n\n"
+        "4) Preserve narrative completeness: people, places, groups, objects, events, abilities, conflicts, motives, and temporal relations.\n"
+        "5) Return only the structured result.\n\n"
         f"Requirement:\n{(requirement or '').strip()}\n\n"
         f"Text:\n{sampled_text}"
     )
@@ -299,8 +303,8 @@ async def generate_ontology(
             selected_model,
             _build_ontology_prompt(payload_text, requirement),
             db,
-            max_tokens=2200,
-            prefer_stream_override=False,
+            max_tokens=_ONTOLOGY_MAX_TOKENS,
+            prefer_stream_override=True,
             stream_fallback_nonstream_override=False,
             minimum_timeout_seconds=_ONTOLOGY_MIN_TIMEOUT_SECONDS,
             response_schema=OntologyResponse,
@@ -334,8 +338,8 @@ async def generate_ontology(
                 selected_model,
                 _build_retry_prompt(payload_text, requirement),
                 db,
-                max_tokens=2200,
-                prefer_stream_override=False,
+                max_tokens=_ONTOLOGY_MAX_TOKENS,
+                prefer_stream_override=True,
                 stream_fallback_nonstream_override=False,
                 minimum_timeout_seconds=_ONTOLOGY_MIN_TIMEOUT_SECONDS,
                 response_schema=OntologyResponse,
@@ -415,6 +419,8 @@ def build_graph_input_with_ontology(text: str, ontology: dict[str, Any] | None) 
             "1) People, organizations, and other entities must use canonical names. Treat aliases as aliases of the same entity instead of creating new entities.\n"
             "2) Event phrases such as deaths, funerals, or ceremonies must be modeled as event nodes instead of person entities.\n"
             "3) Scene or location phrases must not be used as person aliases.\n"
+            "4) Preserve concrete narrative facts: kinship, meetings, travel, residence, ownership, role changes, conflicts, promises, transformations, and cause-effect events.\n"
+            "5) Keep important objects, places, factions, supernatural beings, and time points as separate nodes when they affect the story.\n"
             "[/GRAPH_EXTRACTION_RULES]\n\n"
         )
         return (

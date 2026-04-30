@@ -310,6 +310,9 @@ const DEFAULT_OASIS_CONFIG: OasisConfig = {
   llm_task_concurrency: 4,
   llm_model_default_concurrency: 8,
   llm_model_concurrency_overrides: {},
+  graphiti_chunk_size: 4000,
+  graphiti_chunk_overlap: 160,
+  graphiti_llm_max_tokens: 16384,
 }
 
 function normalizeModelConcurrencyOverrides(raw: unknown): Record<string, number> {
@@ -369,6 +372,11 @@ function normalizeOasisConfig(payload: RawOasisConfig | null | undefined): Oasis
     ),
     llm_model_concurrency_overrides: normalizeModelConcurrencyOverrides(
       payload?.llm_model_concurrency_overrides
+    ),
+    graphiti_chunk_size: Number(payload?.graphiti_chunk_size ?? DEFAULT_OASIS_CONFIG.graphiti_chunk_size),
+    graphiti_chunk_overlap: Number(payload?.graphiti_chunk_overlap ?? DEFAULT_OASIS_CONFIG.graphiti_chunk_overlap),
+    graphiti_llm_max_tokens: Number(
+      payload?.graphiti_llm_max_tokens ?? DEFAULT_OASIS_CONFIG.graphiti_llm_max_tokens
     ),
   }
 }

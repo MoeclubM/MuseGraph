@@ -239,6 +239,17 @@ class TestGetPrompt:
 
         assert "user input" in prompt
 
+    @pytest.mark.asyncio
+    async def test_get_prompt_project_override_takes_precedence(self, mock_db: AsyncMock):
+        from app.services.ai import get_prompt
+
+        project = SimpleNamespace(operation_prompts={"CREATE": "Project prompt: {input}"})
+
+        prompt = await get_prompt("CREATE", "user input", mock_db, project=project)
+
+        assert prompt == "Project prompt: user input"
+        mock_db.execute.assert_not_awaited()
+
 
 class TestCalculateCost:
     """Test calculate_cost function."""
@@ -518,6 +529,61 @@ class TestCallLLM:
             assert request_kwargs["response_format"]["json_schema"]["schema"]["type"] == "object"
 
     @pytest.mark.asyncio
+    async def test_call_llm_deepseek_chat_completions_uses_json_object_with_example(self, mock_db: AsyncMock):
+        from app.services.ai import call_llm
+
+        class StructuredResponse(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+
+            answer: str
+
+        config = SimpleNamespace(
+            provider="openai_compatible",
+            api_key="test-key",
+            base_url=None,
+            models=["deepseek-v4-pro"],
+            is_active=True,
+        )
+
+        result_mock = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = [config]
+        result_mock.scalars.return_value = scalars_mock
+        mock_db.execute.return_value = result_mock
+
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 0,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": False,
+            "llm_stream_fallback_nonstream": True,
+            "llm_openai_api_style": "chat_completions",
+        }
+
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(
+                return_value=_mock_openai_chat_response('{"answer":"ok"}', 12, 5)
+            )
+            mock_openai.return_value = mock_client
+
+            await call_llm(
+                "deepseek-v4-pro",
+                "Test prompt",
+                mock_db,
+                response_schema=StructuredResponse,
+            )
+
+            request_kwargs = mock_client.chat.completions.create.await_args.kwargs
+            assert request_kwargs["response_format"] == {"type": "json_object"}
+            assert request_kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+            message = request_kwargs["messages"][0]["content"]
+            assert "Return valid json only" in message
+            assert "EXAMPLE JSON OUTPUT" in message
+            assert '"answer"' in message
+
+    @pytest.mark.asyncio
     async def test_call_llm_openai_chat_completions_passes_reasoning_effort_for_gpt5(self, mock_db: AsyncMock):
         from app.services.ai import call_llm
 
@@ -555,6 +621,46 @@ class TestCallLLM:
 
             request_kwargs = mock_client.chat.completions.create.await_args.kwargs
             assert request_kwargs["reasoning_effort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_call_llm_deepseek_chat_completions_enables_thinking(self, mock_db: AsyncMock):
+        from app.services.ai import call_llm
+
+        config = SimpleNamespace(
+            provider="openai_compatible",
+            api_key="test-key",
+            base_url=None,
+            models=["deepseek-v4-pro"],
+            is_active=True,
+        )
+
+        result_mock = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = [config]
+        result_mock.scalars.return_value = scalars_mock
+        mock_db.execute.return_value = result_mock
+
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 0,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": False,
+            "llm_stream_fallback_nonstream": True,
+            "llm_openai_api_style": "chat_completions",
+            "llm_reasoning_effort": "low",
+        }
+
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(return_value=_mock_openai_chat_response("ok", 12, 5))
+            mock_openai.return_value = mock_client
+
+            await call_llm("deepseek-v4-pro", "Test prompt", mock_db)
+
+            request_kwargs = mock_client.chat.completions.create.await_args.kwargs
+            assert request_kwargs["reasoning_effort"] == "low"
+            assert request_kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
 
     @pytest.mark.asyncio
     async def test_call_llm_openai_chat_completions_empty_content_raises(self, mock_db: AsyncMock):
@@ -627,6 +733,69 @@ class TestCallLLM:
 
             assert result["content"] == "Claude response"
             assert result["input_tokens"] == 80
+
+    @pytest.mark.asyncio
+    async def test_call_llm_anthropic_structured_schema_uses_json_prompt(self, mock_db: AsyncMock):
+        from app.services.ai import call_llm
+
+        class StructuredResponse(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+
+            answer: str
+
+        config = SimpleNamespace(
+            provider="anthropic_compatible",
+            api_key="test-key",
+            base_url="https://api.deepseek.com/anthropic",
+            models=["deepseek-v4-pro"],
+            is_active=True,
+        )
+
+        result_mock = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = [config]
+        result_mock.scalars.return_value = scalars_mock
+        mock_db.execute.return_value = result_mock
+
+        mock_response = MagicMock()
+        mock_response.content = [
+            SimpleNamespace(type="thinking", text="internal"),
+            SimpleNamespace(type="text", text='{"answer":"ok"}'),
+        ]
+        mock_response.usage = MagicMock(input_tokens=80, output_tokens=40)
+
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 0,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": False,
+            "llm_stream_fallback_nonstream": True,
+            "llm_reasoning_effort": "high",
+        }
+
+        with patch("anthropic.AsyncAnthropic") as mock_anthropic, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
+            mock_client = MagicMock()
+            mock_client.messages.create = AsyncMock(return_value=mock_response)
+            mock_anthropic.return_value = mock_client
+
+            result = await call_llm(
+                "deepseek-v4-pro",
+                "Test prompt",
+                mock_db,
+                response_schema=StructuredResponse,
+            )
+
+            request_kwargs = mock_client.messages.create.await_args.kwargs
+            assert result["content"] == '{"answer":"ok"}'
+            assert request_kwargs["extra_body"] == {
+                "thinking": {"type": "enabled"},
+                "output_config": {"effort": "high"},
+            }
+            message = request_kwargs["messages"][0]["content"]
+            assert "Return valid json only" in message
+            assert "EXAMPLE JSON OUTPUT" in message
+            assert '"answer"' in message
 
     @pytest.mark.asyncio
     async def test_call_llm_requires_admin_provider_config(self, mock_db: AsyncMock):
@@ -1006,6 +1175,105 @@ class TestCallLLM:
             assert first_kwargs.get("stream") is True
             assert first_kwargs.get("stream_options") == {"include_usage": True}
             assert mock_client.responses.create.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_call_llm_chat_completions_stream_retries_empty_content(self, mock_db: AsyncMock):
+        from app.services.ai import call_llm
+
+        config = SimpleNamespace(
+            provider="openai_compatible",
+            api_key="test-key",
+            base_url=None,
+            models=["deepseek-v4-flash"],
+            is_active=True,
+        )
+        result_mock = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = [config]
+        result_mock.scalars.return_value = scalars_mock
+        mock_db.execute.return_value = result_mock
+
+        async def _empty_stream():
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=None), finish_reason="stop")],
+                usage={"prompt_tokens": 20, "completion_tokens": 0},
+            )
+
+        async def _success_stream():
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content='{"ok":true}'), finish_reason=None)],
+                usage=None,
+            )
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=None), finish_reason="stop")],
+                usage={"prompt_tokens": 30, "completion_tokens": 8},
+            )
+
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 1,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": True,
+            "llm_stream_fallback_nonstream": False,
+            "llm_openai_api_style": "chat_completions",
+        }
+
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(side_effect=[_empty_stream(), _success_stream()])
+            mock_openai.return_value = mock_client
+
+            result = await call_llm("deepseek-v4-flash", "Chat stream prompt", mock_db)
+
+            assert result["content"] == '{"ok":true}'
+            assert result["input_tokens"] == 30
+            assert result["output_tokens"] == 8
+            assert mock_client.chat.completions.create.await_count == 2
+            first_kwargs = mock_client.chat.completions.create.await_args_list[0].kwargs
+            assert first_kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+
+    @pytest.mark.asyncio
+    async def test_call_llm_chat_completions_stream_empty_after_retries_raises(self, mock_db: AsyncMock):
+        from app.services.ai import call_llm
+
+        config = SimpleNamespace(
+            provider="openai_compatible",
+            api_key="test-key",
+            base_url=None,
+            models=["deepseek-v4-flash"],
+            is_active=True,
+        )
+        result_mock = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = [config]
+        result_mock.scalars.return_value = scalars_mock
+        mock_db.execute.return_value = result_mock
+
+        async def _empty_stream():
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=None), finish_reason="stop")],
+                usage={"prompt_tokens": 20, "completion_tokens": 0},
+            )
+
+        runtime_cfg = {
+            "llm_request_timeout_seconds": 180,
+            "llm_retry_count": 1,
+            "llm_retry_interval_seconds": 0.0,
+            "llm_prefer_stream": True,
+            "llm_stream_fallback_nonstream": False,
+            "llm_openai_api_style": "chat_completions",
+        }
+
+        with patch("openai.AsyncOpenAI") as mock_openai, \
+             patch("app.services.ai._load_llm_runtime_config", AsyncMock(return_value=runtime_cfg)):
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(side_effect=[_empty_stream(), _empty_stream()])
+            mock_openai.return_value = mock_client
+
+            with pytest.raises(RuntimeError, match='LLM returned empty content.*deepseek-v4-flash'):
+                await call_llm("deepseek-v4-flash", "Chat stream prompt", mock_db)
+            assert mock_client.chat.completions.create.await_count == 2
 
     @pytest.mark.asyncio
     async def test_call_llm_openai_nonstream_when_prefer_stream_disabled(self, mock_db: AsyncMock):

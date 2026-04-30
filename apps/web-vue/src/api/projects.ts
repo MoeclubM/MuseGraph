@@ -66,6 +66,7 @@ export async function createProject(payload: {
   description?: string
   simulation_requirement?: string
   component_models?: Record<string, string>
+  operation_prompts?: Record<string, string>
 }): Promise<Project> {
   const { data } = await api.post<Project>('/api/projects', payload)
   return data
@@ -73,7 +74,7 @@ export async function createProject(payload: {
 
 export async function updateProject(
   id: string,
-  payload: Partial<Pick<Project, 'title' | 'description' | 'simulation_requirement' | 'component_models' | 'oasis_analysis'>>
+  payload: Partial<Pick<Project, 'title' | 'description' | 'simulation_requirement' | 'component_models' | 'operation_prompts' | 'oasis_analysis'>>
 ): Promise<Project> {
   const { data } = await api.put<Project>(`/api/projects/${id}`, payload)
   return data
