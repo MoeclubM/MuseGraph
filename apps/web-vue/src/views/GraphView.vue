@@ -181,12 +181,12 @@ onUnmounted(() => {
     </div>
 
     <!-- Content -->
-    <div class="flex flex-1 overflow-hidden px-4 pb-4 pt-4">
+    <div class="flex flex-1 gap-4 overflow-hidden px-4 pb-4 pt-4">
       <!-- Graph -->
-      <div class="flex-1 relative">
+      <div class="flex min-w-0 flex-1 flex-col gap-3">
         <div
           v-if="graphBuildRunning"
-          class="absolute left-4 right-4 top-4 z-10 rounded-md border border-amber-300/70 bg-amber-50/95 px-4 py-3 shadow-sm backdrop-blur dark:border-amber-700/60 dark:bg-amber-950/40"
+          class="shrink-0 rounded-md border border-amber-300/70 bg-amber-50 px-4 py-3 shadow-sm dark:border-amber-700/60 dark:bg-amber-950/40"
         >
           <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
             <span class="font-medium text-amber-800 dark:text-amber-200">
@@ -202,32 +202,34 @@ onUnmounted(() => {
           <p v-if="graphBuildMessage" class="mt-2 text-xs text-amber-800 dark:text-amber-200">{{ graphBuildMessage }}</p>
           <p v-if="taskError" class="mt-2 text-xs text-red-700 dark:text-red-300">{{ taskError }}</p>
         </div>
-        <div v-if="loading" class="absolute inset-0 flex items-center justify-center">
-          <div class="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent" />
-        </div>
-        <div v-else-if="loadError" class="absolute inset-0 flex items-center justify-center">
-          <div class="text-center max-w-[440px] px-4">
-            <p class="text-red-700 dark:text-red-300 mb-2">Failed to load graph data</p>
-            <p class="text-xs text-stone-500 dark:text-zinc-500 mb-4 break-words">{{ loadError }}</p>
-            <div class="flex items-center justify-center gap-2">
-              <Button variant="secondary" @click="initializeGraphView">Retry</Button>
-              <Button variant="ghost" @click="router.push(`/projects/${projectId}`)">
-                Back to Project
+        <div class="relative min-h-0 flex-1 overflow-hidden rounded-lg">
+          <div v-if="loading" class="absolute inset-0 flex items-center justify-center">
+            <div class="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent" />
+          </div>
+          <div v-else-if="loadError" class="absolute inset-0 flex items-center justify-center">
+            <div class="text-center max-w-[440px] px-4">
+              <p class="text-red-700 dark:text-red-300 mb-2">Failed to load graph data</p>
+              <p class="text-xs text-stone-500 dark:text-zinc-500 mb-4 break-words">{{ loadError }}</p>
+              <div class="flex items-center justify-center gap-2">
+                <Button variant="secondary" @click="initializeGraphView">Retry</Button>
+                <Button variant="ghost" @click="router.push(`/projects/${projectId}`)">
+                  Back to Project
+                </Button>
+              </div>
+            </div>
+          </div>
+          <div v-else-if="graphData.nodes.length === 0" class="absolute inset-0 flex items-center justify-center">
+            <div class="text-center">
+              <p class="text-stone-500 dark:text-zinc-500 mb-4">
+                {{ graphBuildRunning ? 'Graph build is running. Preview data will appear here when Graphiti writes the first nodes.' : 'No graph data available' }}
+              </p>
+              <Button v-if="!graphBuildRunning" variant="secondary" @click="router.push(`/projects/${projectId}`)">
+                Go back and build a graph
               </Button>
             </div>
           </div>
+          <GraphPanel v-else :data="graphData" class="w-full h-full" />
         </div>
-        <div v-else-if="graphData.nodes.length === 0" class="absolute inset-0 flex items-center justify-center">
-          <div class="text-center">
-            <p class="text-stone-500 dark:text-zinc-500 mb-4">
-              {{ graphBuildRunning ? 'Graph build is running. Preview data will appear here when Graphiti writes the first nodes.' : 'No graph data available' }}
-            </p>
-            <Button v-if="!graphBuildRunning" variant="secondary" @click="router.push(`/projects/${projectId}`)">
-              Go back and build a graph
-            </Button>
-          </div>
-        </div>
-        <GraphPanel v-else :data="graphData" class="w-full h-full" />
       </div>
 
       <!-- Sidebar -->
@@ -239,7 +241,7 @@ onUnmounted(() => {
       >
         <div
           v-if="showSidebar"
-          class="w-80 shrink-0 border-l border-stone-300/80 dark:border-zinc-700/50 bg-[#efe8da]/80 dark:bg-zinc-900/80 p-4 overflow-y-auto"
+          class="w-96 max-w-[34vw] shrink-0 overflow-y-auto rounded-md border border-stone-300/80 bg-[#efe8da]/80 p-4 dark:border-zinc-700/50 dark:bg-zinc-900/80"
         >
           <h3 class="text-sm font-semibold text-stone-700 dark:text-zinc-300 mb-4">Search Graph</h3>
           <GraphSearch :project-id="projectId" />

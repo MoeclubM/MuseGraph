@@ -70,8 +70,8 @@ async function handleSearch() {
 
 <template>
   <div class="flex flex-col gap-3">
-    <div class="flex gap-2">
-      <div class="relative flex-1">
+    <div class="flex flex-col gap-2">
+      <div class="relative w-full">
         <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-500 dark:text-zinc-500" />
         <Input
           v-model="query"
@@ -81,9 +81,10 @@ async function handleSearch() {
           @keydown.enter="handleSearch"
         />
       </div>
+      <div class="flex gap-2">
       <Select
         v-model="searchType"
-        class="w-44"
+        class="min-w-0 flex-1"
       >
         <option v-for="st in searchTypes" :key="st.value" :value="st.value">
           {{ st.label }}
@@ -96,6 +97,7 @@ async function handleSearch() {
       >
         Search
       </Button>
+      </div>
     </div>
 
     <div
