@@ -844,6 +844,8 @@ async def test_resolve_graphiti_runtime_allows_anthropic_llm_with_openai_embeddi
         AsyncMock(
             return_value={
                 "llm_task_concurrency": 4,
+                "llm_model_default_concurrency": 48,
+                "llm_model_concurrency_overrides": {"claude-3-5-sonnet": 12},
                 "llm_request_timeout_seconds": 180,
                 "llm_retry_count": 2,
                 "llm_reasoning_effort": "high",
@@ -860,7 +862,49 @@ async def test_resolve_graphiti_runtime_allows_anthropic_llm_with_openai_embeddi
     assert runtime.embedding_base_url == "https://openai-proxy.example/v1"
     assert runtime.reranker_model == "bge-reranker-v2-m3"
     assert runtime.reranker_base_url == "https://openai-proxy.example/v1"
+    assert runtime.max_coroutines == 12
     assert runtime.reasoning_effort == "high"
+
+
+@pytest.mark.asyncio
+async def test_resolve_graphiti_runtime_uses_model_default_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    project = SimpleNamespace(component_models={"graph_build": "deepseek-v4-flash"})
+    provider = SimpleNamespace(
+        provider="openai_compatible",
+        api_key="newapi-key",
+        base_url="https://newapi.example/v1",
+        models={
+            "models": ["deepseek-v4-flash"],
+            "embedding_models": ["Qwen3-Embedding-0.6B"],
+            "reranker_models": ["Qwen3-Reranker-0.6B"],
+        },
+        is_active=True,
+        name="NewAPI",
+    )
+    db = AsyncMock()
+    db.execute.return_value = SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [provider]))
+    monkeypatch.setattr(graphiti_graph, "_load_project", AsyncMock(return_value=project))
+    monkeypatch.setattr(
+        graphiti_graph,
+        "_load_llm_runtime_config",
+        AsyncMock(
+            return_value={
+                "llm_task_concurrency": 4,
+                "llm_model_default_concurrency": 48,
+                "llm_model_concurrency_overrides": {},
+                "llm_request_timeout_seconds": 180,
+                "llm_retry_count": 2,
+                "llm_reasoning_effort": "medium",
+            }
+        ),
+    )
+
+    runtime = await graphiti_graph._resolve_graphiti_runtime(project_id="proj-1", db=db)
+
+    assert runtime.llm_model == "deepseek-v4-flash"
+    assert runtime.max_coroutines == 48
 
 
 @pytest.mark.asyncio

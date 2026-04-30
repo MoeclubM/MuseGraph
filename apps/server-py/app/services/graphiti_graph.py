@@ -35,11 +35,14 @@ from app.services.llm_runtime import (
     DEFAULT_GRAPHITI_CHUNK_OVERLAP,
     DEFAULT_GRAPHITI_CHUNK_SIZE,
     DEFAULT_GRAPHITI_LLM_MAX_TOKENS,
+    DEFAULT_LLM_MODEL_DEFAULT_CONCURRENCY,
     DEFAULT_LLM_REASONING_EFFORT,
     DEFAULT_LLM_OPENAI_API_STYLE,
+    coerce_limiter_limit,
     model_supports_reasoning_effort,
     normalize_graphiti_chunk_config,
     normalize_graphiti_llm_max_tokens,
+    normalize_model_concurrency_overrides,
     normalize_openai_api_style,
     normalize_reasoning_effort,
 )
@@ -288,6 +291,15 @@ def _graphiti_episode_worker_count(selected_count: int, max_coroutines: int) -> 
     _ = (selected_count, max_coroutines)
     # Kuzu local permits one write transaction; serial episode writes prevent catalog corruption.
     return 1
+
+
+def _resolve_graphiti_model_concurrency(model: str, runtime_cfg: dict[str, Any]) -> int:
+    fallback = coerce_limiter_limit(
+        runtime_cfg.get("llm_model_default_concurrency", DEFAULT_LLM_MODEL_DEFAULT_CONCURRENCY),
+        DEFAULT_LLM_MODEL_DEFAULT_CONCURRENCY,
+    )
+    overrides = normalize_model_concurrency_overrides(runtime_cfg.get("llm_model_concurrency_overrides"))
+    return overrides.get(str(model or "").strip().lower(), fallback)
 
 
 def _build_graph_id() -> str:
@@ -616,7 +628,7 @@ async def _resolve_graphiti_runtime(
     llm_base_url = str(getattr(llm_provider, "base_url", "") or "").strip()
     embedding_base_url = str(getattr(embedding_provider, "base_url", "") or "").strip()
     reranker_base_url = str(getattr(reranker_provider, "base_url", "") or "").strip()
-    max_coroutines = max(1, min(64, int(runtime_cfg.get("llm_task_concurrency", 4) or 4)))
+    max_coroutines = _resolve_graphiti_model_concurrency(llm_model, runtime_cfg)
     reasoning_effort = normalize_reasoning_effort(runtime_cfg.get("llm_reasoning_effort"))
     chunk_size, chunk_overlap = normalize_graphiti_chunk_config(runtime_cfg)
     llm_max_tokens = normalize_graphiti_llm_max_tokens(runtime_cfg)
