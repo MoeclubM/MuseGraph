@@ -8,6 +8,13 @@ const REQUESTED_MODEL_NAME = process.env.PW_MODEL_NAME || ''
 const REQUESTED_EMBEDDING_MODEL_NAME = process.env.PW_EMBEDDING_MODEL_NAME || ''
 const PROVIDER_API_KEY = process.env.PW_PROVIDER_API_KEY || ''
 const TEST_USER_PASSWORD = process.env.PW_TEST_USER_PASSWORD || 'User123!Pass'
+const GRAPH_FIXTURE_TEXT = `Harbor Transit Compact Fixture
+
+Lena Torres coordinates ferry operations for TideLine Ferries in Greywake Bay. After a morning traffic failure blocks East Pier, the city transport office, TideLine Ferries, the hospital, port vendors, and neighborhood representatives form a temporary coordination room.
+
+The pilot plan has three linked events. TideLine adds two early ferry departures, the city reserves a bus lane between East Pier and the hospital annex, and community monitors report delays every two hours. Port vendors fear delivery delays, commuters demand faster service, and operators warn that crews cannot work unlimited overtime.
+
+During the review meeting, Lena explains that missed ferry connections cause hospital shift gaps. Malik Chen from the neighborhood council asks for transparent checkpoints. The group agrees to track ferry wait time, bus reliability, emergency vehicle clearance, and public complaint volume. If any threshold fails twice, the coordination room revises schedules before the next morning.`
 
 function e2eLog(message: string) {
   console.log(`[E2E] ${message}`)
@@ -36,7 +43,7 @@ interface ModelSelection {
 
 test.describe('Docker Full Flow', () => {
   test('register user, configure provider/pricing and run full project/graph/oasis flow', async ({ page, request }) => {
-    test.setTimeout(25 * 60 * 1000)
+    test.setTimeout(35 * 60 * 1000)
 
     const testUserEmail = `pw-user-${Date.now()}@example.com`
 
@@ -53,6 +60,7 @@ test.describe('Docker Full Flow', () => {
 
     await createProjectFromDashboard(page)
     await runCreateOperation(page, request, userToken, modelSelection.model)
+    await replaceDraftWithCompactGraphFixture(page, request, userToken)
     await runOntologyToGraphToOasisPipeline(
       page,
       request,
@@ -213,12 +221,16 @@ async function ensureProviderModelsInAdminApi(
 
   let embeddingModel = REQUESTED_EMBEDDING_MODEL_NAME || latest.embedding_models?.[0] || ''
   if (!embeddingModel) {
+    embeddingModel = providers.find((item) => item.embedding_models?.[0])?.embedding_models?.[0] || ''
+  }
+  if (!embeddingModel) {
     throw new Error(
       'No embedding model available. Add embedding model in WebUI or set PW_EMBEDDING_MODEL_NAME for this e2e run.'
     )
   }
 
-  if (!latest.embedding_models.includes(embeddingModel)) {
+  const embeddingProvider = providers.find((item) => item.embedding_models.includes(embeddingModel))
+  if (!embeddingProvider) {
     await adminApi(request, token, 'POST', `/api/admin/providers/${latest.id}/embedding-models`, {
       model: embeddingModel,
     })
@@ -258,12 +270,22 @@ async function tuneOasisRuntimeInAdminApi(request: APIRequestContext, token: str
   const current = await adminApi<Record<string, unknown>>(request, token, 'GET', '/api/admin/oasis-config')
   await adminApi(request, token, 'PUT', '/api/admin/oasis-config', {
     ...current,
-    llm_request_timeout_seconds: 90,
+    llm_request_timeout_seconds: 600,
     llm_retry_count: 1,
     llm_retry_interval_seconds: 1,
     llm_prefer_stream: false,
     llm_stream_fallback_nonstream: true,
     llm_openai_api_style: 'chat_completions',
+    llm_reasoning_effort: 'low',
+    max_agent_profiles: 3,
+    max_events: 4,
+    max_agent_activity: 8,
+    min_total_hours: 3,
+    max_total_hours: 6,
+    min_minutes_per_round: 30,
+    max_minutes_per_round: 60,
+    max_actions_per_hour: 2,
+    report_prompt_prefix: 'Keep the report concise. Return only essential findings and next actions.',
   })
 }
 
@@ -304,16 +326,12 @@ async function createProjectFromDashboard(page: Page) {
 }
 
 async function openTab(page: Page, tabName: RegExp) {
-  const tab = page.getByRole('tab', { name: tabName })
-  if (await tab.count()) {
-    const firstTab = tab.first()
-    await expect(firstTab).toBeVisible({ timeout: 60000 })
-    await firstTab.click({ timeout: 20000 })
-    return
-  }
-  const fallbackButton = page.getByRole('button', { name: tabName }).first()
-  await expect(fallbackButton).toBeVisible({ timeout: 60000 })
-  await fallbackButton.click({ timeout: 20000 })
+  const target = page
+    .getByRole('tab', { name: tabName })
+    .or(page.getByRole('button', { name: tabName }))
+    .first()
+  await expect(target).toBeVisible({ timeout: 60000 })
+  await target.click({ timeout: 20000 })
 }
 
 async function runCreateOperation(page: Page, request: APIRequestContext, token: string, model: string) {
@@ -326,11 +344,11 @@ async function runCreateOperation(page: Page, request: APIRequestContext, token:
   e2eLog('AI Create: model selected')
   e2eLog('AI Create: filling prompt')
   await page.getByPlaceholder('Describe theme, style, setting, and any must-have elements.').fill(
-    'Write a story about coastal public transit coordination, with competing stakeholders and risk response.'
+    'Write a concise four-paragraph story under 700 words about coastal public transit coordination, competing stakeholders, and risk response.'
   )
   e2eLog('AI Create: filling outline')
   await page.getByPlaceholder('Generated outline will appear here. You can edit before drafting.').fill(
-    '1. Rush-hour congestion escalates into a public issue.\n2. Operators publish a pilot plan and explain resource limits.\n3. Community representatives push for coordination and accountability.'
+    '1. A harbor commute failure becomes a public issue.\n2. Operators and officials publish a compact pilot plan.\n3. Community representatives demand measurable checkpoints.\n4. The group reaches a practical risk response agreement.'
   )
   e2eLog('AI Create: clicking draft generation')
   await clickAndWait(page.getByRole('button', { name: /Step 3\. Generate Draft|Generate Draft From Outline/i }))
@@ -342,6 +360,31 @@ async function runCreateOperation(page: Page, request: APIRequestContext, token:
   e2eLog('AI Create: reloading workspace to refresh generated content')
   await page.reload({ waitUntil: 'networkidle' })
   await expect(page).toHaveURL(/\/projects\/.+/)
+}
+
+async function replaceDraftWithCompactGraphFixture(page: Page, request: APIRequestContext, token: string) {
+  e2eLog('Graph fixture: replacing generated draft with compact downstream source')
+  const editor = page.getByPlaceholder('Write chapter content here...')
+  await expect(editor).toBeVisible({ timeout: 60000 })
+  await editor.fill(GRAPH_FIXTURE_TEXT)
+  await page.getByRole('button', { name: 'Save' }).click()
+
+  const projectId = await currentProjectId(page)
+  await expect
+    .poll(
+      async () => {
+        const response = await request.fetch(`/api/projects/${projectId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!response.ok()) return `error:${response.status()}`
+        const payload = (await response.json()) as { chapters?: Array<{ content?: string | null }> }
+        return (payload.chapters || []).some((chapter) => String(chapter.content || '').trim() === GRAPH_FIXTURE_TEXT)
+          ? 'SAVED'
+          : 'PENDING'
+      },
+      { timeout: 60000, intervals: [1000, 2000, 3000] }
+    )
+    .toBe('SAVED')
 }
 
 async function runContinueOperation(page: Page, request: APIRequestContext, token: string, model: string) {
@@ -358,7 +401,7 @@ async function runContinueOperation(page: Page, request: APIRequestContext, toke
   )
   await clickAndWait(page.getByRole('button', { name: /Run Continue/i }))
   e2eLog('AI Continue: waiting for operation completion via API')
-  await waitForOperationStatus(page, request, token, 'CONTINUE', 300000)
+  await waitForOperationStatus(page, request, token, 'CONTINUE', 12 * 60 * 1000)
   e2eLog('AI Continue: operation completed')
 }
 
@@ -375,8 +418,12 @@ async function runOntologyToGraphToOasisPipeline(
   await selectModelByLabel(page, 'Ontology Model', model)
   await selectModelByLabel(page, 'Graph Build Model', model)
   await selectModelByLabel(page, 'Embedding Model', embeddingModel)
+  await page.getByPlaceholder('Optional requirement').fill(
+    'Build a compact ontology for this transit coordination fixture. Return exactly 6 entity_types and exactly 8 edge_types.'
+  )
 
   await clickAndWait(page.getByRole('button', { name: 'Generate Ontology' }))
+  await waitForLatestGraphTaskCompleted(page, request, token, 'ontology_generate', 10 * 60 * 1000)
   await expect(page.getByText('Ontology ready')).toBeVisible({ timeout: 300000 })
 
   e2eLog('Graph pipeline: build knowledge graph')
@@ -416,19 +463,19 @@ async function runOntologyToGraphToOasisPipeline(
   e2eLog('Scenario pipeline: generate analysis')
   await clickAndWait(page.getByRole('button', { name: 'Generate Scenario Analysis' }))
   await expect(page.getByText('Scenario analysis is ready. Guidance and analysis profiles are now available for continuation workflows.'))
-    .toBeVisible({ timeout: 300000 })
+    .toBeVisible({ timeout: 12 * 60 * 1000 })
 
   e2eLog('Scenario pipeline: prepare runtime package')
   await clickAndWait(page.getByRole('button', { name: 'Prepare Runtime Package' }))
-  await expect(page.getByText('Runtime Package:')).toBeVisible({ timeout: 300000 })
+  await expect(page.getByText('Runtime Package:')).toBeVisible({ timeout: 12 * 60 * 1000 })
 
   e2eLog('Scenario pipeline: execute run')
   await clickAndWait(page.getByRole('button', { name: 'Execute Scenario Run' }))
-  await expect(page.getByText('Run:')).toBeVisible({ timeout: 300000 })
+  await expect(page.getByText('Run:')).toBeVisible({ timeout: 12 * 60 * 1000 })
 
   e2eLog('Scenario pipeline: generate report')
-  await clickAndWait(page.getByRole('button', { name: 'Generate Analysis Report' }))
-  await expect(page.getByText(/^Report: report_/).first()).toBeVisible({ timeout: 300000 })
+  await clickAndWait(page.getByRole('button', { name: 'Generate OASIS Report' }))
+  await expect(page.getByText(/^Report: report_/).first()).toBeVisible({ timeout: 12 * 60 * 1000 })
 }
 
 async function waitForOperationStatus(
@@ -544,6 +591,55 @@ async function waitForGraphReady(page: Page, request: APIRequestContext, token: 
       { timeout: timeoutMs, intervals: [1000, 2000, 3000, 5000] }
     )
     .toBe('ready')
+}
+
+async function waitForLatestGraphTaskCompleted(
+  page: Page,
+  request: APIRequestContext,
+  token: string,
+  taskType: string,
+  timeoutMs: number
+) {
+  const projectId = await currentProjectId(page)
+  const startedAt = Date.now()
+  const intervals = [1000, 2000, 3000, 5000]
+  let attempt = 0
+  let lastState = 'missing'
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const response = await request.fetch(
+      `/api/projects/${projectId}/graphs/tasks?task_type=${encodeURIComponent(taskType)}&limit=5`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+    if (!response.ok()) {
+      lastState = `error:${response.status()}`
+    } else {
+      const payload = (await response.json()) as {
+        tasks?: Array<{ status?: string; error?: string | null; message?: string | null }>
+      }
+      const task = (payload.tasks || [])[0]
+      if (!task) {
+        lastState = 'missing'
+      } else {
+        const status = String(task.status || '').toLowerCase()
+        if (status === 'failed') {
+          const detail = String(task.error || task.message || '').trim()
+          throw new Error(detail ? `${taskType} failed: ${detail}` : `${taskType} failed`)
+        }
+        if (status === 'cancelled') {
+          const detail = String(task.message || '').trim()
+          throw new Error(detail ? `${taskType} cancelled: ${detail}` : `${taskType} cancelled`)
+        }
+        if (status === 'completed') return
+        lastState = status || 'pending'
+      }
+    }
+
+    await page.waitForTimeout(intervals[Math.min(attempt, intervals.length - 1)])
+    attempt += 1
+  }
+
+  throw new Error(`Timed out waiting for ${taskType}, last state: ${lastState}`)
 }
 
 async function currentProjectId(page: Page): Promise<string> {

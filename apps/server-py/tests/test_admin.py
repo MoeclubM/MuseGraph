@@ -780,6 +780,9 @@ class TestOasisConfig:
         assert body["llm_task_concurrency"] == 4
         assert body["llm_model_default_concurrency"] == 8
         assert body["llm_model_concurrency_overrides"] == {}
+        assert body["graphiti_chunk_size"] == 4000
+        assert body["graphiti_chunk_overlap"] == 160
+        assert body["graphiti_llm_max_tokens"] == 16384
 
     @pytest.mark.asyncio
     async def test_update_oasis_config_clamps_llm_retry_settings(self, admin_client: AsyncClient, mock_db: AsyncMock):
@@ -801,6 +804,9 @@ class TestOasisConfig:
                     "": 3,
                     "invalid": "abc",
                 },
+                "graphiti_chunk_size": 100,
+                "graphiti_chunk_overlap": 999,
+                "graphiti_llm_max_tokens": 99999,
             },
         )
 
@@ -814,6 +820,9 @@ class TestOasisConfig:
         assert body["llm_task_concurrency"] == 64
         assert body["llm_model_default_concurrency"] == 1
         assert body["llm_model_concurrency_overrides"] == {"gpt-4o-mini": 64}
+        assert body["graphiti_chunk_size"] == 240
+        assert body["graphiti_chunk_overlap"] == 60
+        assert body["graphiti_llm_max_tokens"] == 16384
 
     @pytest.mark.asyncio
     async def test_update_oasis_config_partial_merge_preserves_existing_fields(
@@ -837,6 +846,9 @@ class TestOasisConfig:
                 "llm_task_concurrency": 3,
                 "llm_model_default_concurrency": 6,
                 "llm_model_concurrency_overrides": {"gpt-4o-mini": 4},
+                "graphiti_chunk_size": 8000,
+                "graphiti_chunk_overlap": 400,
+                "graphiti_llm_max_tokens": 12000,
             },
         )
         mock_db.execute.return_value = _scalar_one_or_none(existing)
@@ -862,4 +874,7 @@ class TestOasisConfig:
         assert body["llm_task_concurrency"] == 3
         assert body["llm_model_default_concurrency"] == 6
         assert body["llm_model_concurrency_overrides"] == {"gpt-4o-mini": 4}
+        assert body["graphiti_chunk_size"] == 8000
+        assert body["graphiti_chunk_overlap"] == 400
+        assert body["graphiti_llm_max_tokens"] == 12000
 

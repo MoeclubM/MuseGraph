@@ -149,6 +149,9 @@ const oasisConfig = ref<OasisConfig>({
   llm_task_concurrency: 4,
   llm_model_default_concurrency: 8,
   llm_model_concurrency_overrides: {},
+  graphiti_chunk_size: 4000,
+  graphiti_chunk_overlap: 160,
+  graphiti_llm_max_tokens: 16384,
 })
 const llmModelConcurrencyOverridesInput = ref('{}')
 const llmRequestConfigMessage = ref('')
@@ -756,6 +759,9 @@ function applyLlmRequestFields(next: OasisConfig) {
   oasisConfig.value.llm_task_concurrency = next.llm_task_concurrency
   oasisConfig.value.llm_model_default_concurrency = next.llm_model_default_concurrency
   oasisConfig.value.llm_model_concurrency_overrides = { ...next.llm_model_concurrency_overrides }
+  oasisConfig.value.graphiti_chunk_size = next.graphiti_chunk_size
+  oasisConfig.value.graphiti_chunk_overlap = next.graphiti_chunk_overlap
+  oasisConfig.value.graphiti_llm_max_tokens = next.graphiti_llm_max_tokens
   llmModelConcurrencyOverridesInput.value = formatModelConcurrencyOverrides(
     next.llm_model_concurrency_overrides || {}
   )
@@ -792,6 +798,9 @@ async function saveLlmRequestConfig() {
       llm_task_concurrency: Number(oasisConfig.value.llm_task_concurrency || 0),
       llm_model_default_concurrency: Number(oasisConfig.value.llm_model_default_concurrency || 0),
       llm_model_concurrency_overrides: modelOverrides,
+      graphiti_chunk_size: Number(oasisConfig.value.graphiti_chunk_size || 0),
+      graphiti_chunk_overlap: Number(oasisConfig.value.graphiti_chunk_overlap || 0),
+      graphiti_llm_max_tokens: Number(oasisConfig.value.graphiti_llm_max_tokens || 0),
     })
     applyLlmRequestFields(updated)
     llmRequestConfigMessage.value = 'LLM request config updated'

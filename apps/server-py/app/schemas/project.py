@@ -151,6 +151,7 @@ class ProjectCreate(BaseModel):
     description: Optional[str] = None
     simulation_requirement: Optional[str] = None
     component_models: Optional[dict[str, str]] = None
+    operation_prompts: Optional[dict[str, str]] = None
 
     model_config = {"extra": "forbid"}
 
@@ -160,6 +161,7 @@ class ProjectUpdate(BaseModel):
     description: Optional[str] = None
     simulation_requirement: Optional[str] = None
     component_models: Optional[dict[str, str]] = None
+    operation_prompts: Optional[dict[str, str]] = None
     oasis_analysis: Optional[dict[str, Any]] = None
 
     model_config = {"extra": "forbid"}
@@ -172,6 +174,7 @@ class ProjectResponse(BaseModel):
     description: Optional[str] = None
     simulation_requirement: Optional[str] = None
     component_models: Optional[dict[str, str]] = None
+    operation_prompts: Optional[dict[str, str]] = None
     ontology_schema: Optional[dict[str, Any]] = None
     oasis_analysis: Optional[dict[str, Any]] = None
     graph_id: Optional[str] = None

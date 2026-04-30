@@ -145,6 +145,8 @@ def _resolve_reasoning_effort(model: str, runtime_cfg: dict[str, Any]) -> str | 
     reasoning_effort = normalize_reasoning_effort(runtime_cfg.get("llm_reasoning_effort"))
     if reasoning_effort == DEFAULT_LLM_REASONING_EFFORT:
         return None
+    if _is_deepseek_model(model) and reasoning_effort in {"none", "minimal"}:
+        return None
     return reasoning_effort
 
 
@@ -252,11 +254,23 @@ async def get_prompt(
     input_text: str,
     db: AsyncSession,
     *,
+    project: TextProject | None = None,
     character_context: str | None = None,
 ) -> str:
+    normalized_op_type = (op_type or "").upper()
+    project_prompts = getattr(project, "operation_prompts", None) if project is not None else None
+    if isinstance(project_prompts, dict):
+        project_template = project_prompts.get(normalized_op_type) or project_prompts.get(op_type)
+        if isinstance(project_template, str) and project_template.strip():
+            base_prompt = project_template.replace("{input}", input_text)
+            context = str(character_context or "").strip()
+            if not context:
+                return base_prompt
+            return f"{base_prompt}\n\n[Reference Cards]\n{context}"
+
     result = await db.execute(
         select(PromptTemplate).where(
-            PromptTemplate.type == op_type, PromptTemplate.is_active == True
+            PromptTemplate.type == normalized_op_type, PromptTemplate.is_active == True
         )
     )
     template = result.scalar_one_or_none()
@@ -264,7 +278,7 @@ async def get_prompt(
     if template:
         base_prompt = template.template.replace("{input}", input_text)
     else:
-        base_prompt = OPERATION_PROMPTS.get(op_type, "{input}").replace("{input}", input_text)
+        base_prompt = OPERATION_PROMPTS.get(normalized_op_type, "{input}").replace("{input}", input_text)
 
     context = str(character_context or "").strip()
     if not context:
@@ -358,16 +372,121 @@ def _resolve_response_schema(
     raise TypeError("response_schema must be a pydantic model class or JSON schema dict")
 
 
+def _is_deepseek_model(model: Any) -> bool:
+    value = str(model or "").strip().lower()
+    if "/" in value:
+        _, value = value.split("/", 1)
+    return value.startswith("deepseek")
+
+
+def _resolve_json_schema_ref(root_schema: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+    ref = str(schema.get("$ref") or "")
+    if not ref.startswith("#/$defs/"):
+        return schema
+    ref_name = ref.rsplit("/", 1)[-1]
+    defs = root_schema.get("$defs")
+    if isinstance(defs, dict) and isinstance(defs.get(ref_name), dict):
+        return defs[ref_name]
+    return schema
+
+
+def _build_json_schema_example(schema: dict[str, Any], root_schema: dict[str, Any] | None = None, depth: int = 0) -> Any:
+    if depth > 8:
+        return None
+    root = root_schema or schema
+    current = _resolve_json_schema_ref(root, schema)
+    if "const" in current:
+        return current["const"]
+    enum_values = current.get("enum")
+    if isinstance(enum_values, list) and enum_values:
+        return enum_values[0]
+    schema_type = current.get("type")
+    if schema_type == "object" or isinstance(current.get("properties"), dict):
+        properties = current.get("properties") if isinstance(current.get("properties"), dict) else {}
+        return {
+            str(key): _build_json_schema_example(value, root, depth + 1)
+            for key, value in properties.items()
+            if isinstance(value, dict)
+        }
+    if schema_type == "array":
+        items = current.get("items") if isinstance(current.get("items"), dict) else {}
+        return [_build_json_schema_example(items, root, depth + 1)]
+    if schema_type in {"integer", "number"}:
+        return 1
+    if schema_type == "boolean":
+        return True
+    return "string"
+
+
+def _append_chat_json_schema_instruction(
+    base_kwargs: dict[str, Any],
+    schema_name: str,
+    schema: dict[str, Any],
+) -> None:
+    messages = base_kwargs.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return
+    last_message = messages[-1]
+    if not isinstance(last_message, dict):
+        return
+    content = str(last_message.get("content") or "")
+    example_text = json.dumps(_build_json_schema_example(schema), ensure_ascii=False, indent=2)
+    last_message["content"] = (
+        f"{content}\n\n"
+        "Return valid json only. Do not include markdown or commentary. "
+        "The response must be a json object matching this example format.\n"
+        f"Schema name: {schema_name}\n"
+        f"EXAMPLE JSON OUTPUT:\n{example_text}"
+    )
+
+
+def _append_anthropic_json_schema_instruction(
+    prompt: str,
+    schema_name: str,
+    schema: dict[str, Any],
+) -> str:
+    example_text = json.dumps(_build_json_schema_example(schema), ensure_ascii=False, indent=2)
+    return (
+        f"{prompt}\n\n"
+        "Return valid json only. Do not include markdown or commentary. "
+        "The response must be a json object matching this example format.\n"
+        f"Schema name: {schema_name}\n"
+        f"EXAMPLE JSON OUTPUT:\n{example_text}"
+    )
+
+
+def _extract_anthropic_response_content(response: Any) -> str:
+    content_blocks = getattr(response, "content", None) or []
+    text_parts: list[str] = []
+    for block in content_blocks:
+        block_type = getattr(block, "type", None)
+        text = getattr(block, "text", None)
+        if block_type not in {"thinking", "redacted_thinking"} and isinstance(text, str) and text:
+            text_parts.append(text)
+            continue
+        if isinstance(block, dict):
+            block_type = block.get("type")
+            text = block.get("text")
+            if block_type not in {"thinking", "redacted_thinking"} and isinstance(text, str) and text:
+                text_parts.append(text)
+    return "".join(text_parts)
+
+
 def _apply_openai_response_schema(
     base_kwargs: dict[str, Any],
     *,
     openai_api_style: str,
     response_schema: tuple[str, dict[str, Any]] | None,
+    model: Any = None,
 ) -> None:
     if response_schema is None:
         return
     schema_name, schema = response_schema
     if openai_api_style == "chat_completions":
+        if _is_deepseek_model(model):
+            base_kwargs["response_format"] = {"type": "json_object"}
+            _append_chat_json_schema_instruction(base_kwargs, schema_name, schema)
+            return
         base_kwargs["response_format"] = {
             "type": "json_schema",
             "json_schema": {
@@ -513,6 +632,15 @@ def _extract_openai_response_usage(response: Any) -> tuple[int, int]:
     input_tokens = _usage_int(usage, "input_tokens", "prompt_tokens")
     output_tokens = _usage_int(usage, "output_tokens", "completion_tokens")
     return input_tokens, output_tokens
+
+
+def _empty_llm_content_error(model: str, provider: str, provider_response_model: str = "") -> RuntimeError:
+    detail = f'requested_model="{model}"'
+    if provider:
+        detail += f' provider="{provider}"'
+    if provider_response_model:
+        detail += f' provider_model="{provider_response_model}"'
+    return RuntimeError(f"LLM returned empty content ({detail})")
 
 
 async def _consume_openai_stream_response(stream: Any) -> tuple[str, int, int]:
@@ -682,23 +810,31 @@ async def call_llm(
         model_limit=model_concurrency_limit,
     ):
         if is_anthropic_provider(provider):
-            if resolved_response_schema is not None:
-                raise ValueError("structured_schema_not_supported_for_provider:anthropic_compatible")
             import anthropic
             client = anthropic.AsyncAnthropic(api_key=api_key, base_url=base_url or None)
+            anthropic_prompt = prompt
+            if resolved_response_schema is not None:
+                schema_name, schema = resolved_response_schema
+                anthropic_prompt = _append_anthropic_json_schema_instruction(prompt, schema_name, schema)
+            anthropic_kwargs: dict[str, Any] = {
+                "model": model,
+                "max_tokens": max(64, int(max_tokens or 1024)),
+                "messages": [{"role": "user", "content": anthropic_prompt}],
+            }
+            if _is_deepseek_model(model):
+                extra_body: dict[str, Any] = {"thinking": {"type": "enabled"}}
+                if reasoning_effort:
+                    extra_body["output_config"] = {"effort": reasoning_effort}
+                anthropic_kwargs["extra_body"] = extra_body
             response = await _run_with_retry(
-                lambda: client.messages.create(
-                    model=model,
-                    max_tokens=max(64, int(max_tokens or 1024)),
-                    messages=[{"role": "user", "content": prompt}],
-                ),
+                lambda: client.messages.create(**anthropic_kwargs),
                 timeout_seconds=timeout_seconds,
                 retry_count=retry_count,
                 retry_interval_seconds=retry_interval_seconds,
             )
             provider_response_model = str(getattr(response, "model", "") or "").strip()
             usage = response.usage if hasattr(response, "usage") else None
-            content = str(response.content[0].text or "")
+            content = _extract_anthropic_response_content(response)
             input_tokens = _usage_int(usage, "input_tokens", "prompt_tokens")
             output_tokens = _usage_int(usage, "output_tokens", "completion_tokens")
         else:
@@ -710,16 +846,25 @@ async def call_llm(
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": max(64, int(max_tokens or 1024)),
                 }
+                if _is_deepseek_model(model):
+                    base_kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
                 if reasoning_effort:
                     base_kwargs["reasoning_effort"] = reasoning_effort
                 _apply_openai_response_schema(
                     base_kwargs,
                     openai_api_style=openai_api_style,
                     response_schema=resolved_response_schema,
+                    model=model,
                 )
 
                 async def _request_openai_nonstream() -> Any:
-                    return await client.chat.completions.create(**base_kwargs)
+                    response = await client.chat.completions.create(**base_kwargs)
+                    response_content = _extract_openai_response_content(response)
+                    response_model = str(getattr(response, "model", "") or "").strip()
+                    if not str(response_content or "").strip():
+                        raise _empty_llm_content_error(model, provider, response_model)
+                    response_input_tokens, response_output_tokens = _extract_openai_response_usage(response)
+                    return response, response_content, response_input_tokens, response_output_tokens
 
                 async def _request_openai_stream() -> tuple[str, int, int]:
                     response = await client.chat.completions.create(
@@ -728,10 +873,15 @@ async def call_llm(
                         stream_options={"include_usage": True},
                     )
                     if hasattr(response, "__aiter__"):
-                        return await _consume_openai_stream_response(response)
-                    fallback_content = _extract_openai_response_content(response)
-                    fallback_input_tokens, fallback_output_tokens = _extract_openai_response_usage(response)
-                    return fallback_content, fallback_input_tokens, fallback_output_tokens
+                        stream_content, stream_input_tokens, stream_output_tokens = (
+                            await _consume_openai_stream_response(response)
+                        )
+                    else:
+                        stream_content = _extract_openai_response_content(response)
+                        stream_input_tokens, stream_output_tokens = _extract_openai_response_usage(response)
+                    if not str(stream_content or "").strip():
+                        raise _empty_llm_content_error(model, provider)
+                    return stream_content, stream_input_tokens, stream_output_tokens
             else:
                 base_kwargs = {
                     "model": model,
@@ -744,10 +894,17 @@ async def call_llm(
                     base_kwargs,
                     openai_api_style=openai_api_style,
                     response_schema=resolved_response_schema,
+                    model=model,
                 )
 
                 async def _request_openai_nonstream() -> Any:
-                    return await client.responses.create(**base_kwargs)
+                    response = await client.responses.create(**base_kwargs)
+                    response_content = _extract_openai_response_content(response)
+                    response_model = str(getattr(response, "model", "") or "").strip()
+                    if not str(response_content or "").strip():
+                        raise _empty_llm_content_error(model, provider, response_model)
+                    response_input_tokens, response_output_tokens = _extract_openai_response_usage(response)
+                    return response, response_content, response_input_tokens, response_output_tokens
 
                 async def _request_openai_stream() -> tuple[str, int, int]:
                     response = await client.responses.create(
@@ -757,10 +914,15 @@ async def call_llm(
                     )
                     # Some gateways ignore stream=true and still return a regular completion object.
                     if hasattr(response, "__aiter__"):
-                        return await _consume_openai_stream_response(response)
-                    fallback_content = _extract_openai_response_content(response)
-                    fallback_input_tokens, fallback_output_tokens = _extract_openai_response_usage(response)
-                    return fallback_content, fallback_input_tokens, fallback_output_tokens
+                        stream_content, stream_input_tokens, stream_output_tokens = (
+                            await _consume_openai_stream_response(response)
+                        )
+                    else:
+                        stream_content = _extract_openai_response_content(response)
+                        stream_input_tokens, stream_output_tokens = _extract_openai_response_usage(response)
+                    if not str(stream_content or "").strip():
+                        raise _empty_llm_content_error(model, provider)
+                    return stream_content, stream_input_tokens, stream_output_tokens
 
             if prefer_stream:
                 try:
@@ -776,33 +938,24 @@ async def call_llm(
                 except Exception:
                     if not stream_fallback_nonstream:
                         raise
-                    response = await _run_with_retry(
+                    response, content, input_tokens, output_tokens = await _run_with_retry(
                         _request_openai_nonstream,
                         timeout_seconds=timeout_seconds,
                         retry_count=retry_count,
                         retry_interval_seconds=retry_interval_seconds,
                     )
                     provider_response_model = str(getattr(response, "model", "") or "").strip()
-                    content = _extract_openai_response_content(response)
-                    input_tokens, output_tokens = _extract_openai_response_usage(response)
             else:
-                response = await _run_with_retry(
+                response, content, input_tokens, output_tokens = await _run_with_retry(
                     _request_openai_nonstream,
                     timeout_seconds=timeout_seconds,
                     retry_count=retry_count,
                     retry_interval_seconds=retry_interval_seconds,
                 )
                 provider_response_model = str(getattr(response, "model", "") or "").strip()
-                content = _extract_openai_response_content(response)
-                input_tokens, output_tokens = _extract_openai_response_usage(response)
 
     if not str(content or "").strip():
-        detail = f'requested_model="{model}"'
-        if provider:
-            detail += f' provider="{provider}"'
-        if provider_response_model:
-            detail += f' provider_model="{provider_response_model}"'
-        raise RuntimeError(f"LLM returned empty content ({detail})")
+        raise _empty_llm_content_error(model, provider, provider_response_model)
 
     usage_user_id, usage_project_id, usage_operation_id = _resolve_billing_context(
         billing_user_id=billing_user_id,
@@ -992,6 +1145,7 @@ async def run_operation(
             op_type,
             input_text or "",
             db,
+            project=project,
             character_context=character_context,
         )
 

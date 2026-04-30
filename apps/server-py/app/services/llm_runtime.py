@@ -10,6 +10,9 @@ DEFAULT_LLM_OPENAI_API_STYLE = "responses"
 DEFAULT_LLM_TASK_CONCURRENCY = 4
 DEFAULT_LLM_MODEL_DEFAULT_CONCURRENCY = 8
 DEFAULT_LLM_REASONING_EFFORT = "model_default"
+DEFAULT_GRAPHITI_CHUNK_SIZE = 4000
+DEFAULT_GRAPHITI_CHUNK_OVERLAP = 160
+DEFAULT_GRAPHITI_LLM_MAX_TOKENS = 16384
 SUPPORTED_LLM_REASONING_EFFORTS = {
     DEFAULT_LLM_REASONING_EFFORT,
     "none",
@@ -17,6 +20,7 @@ SUPPORTED_LLM_REASONING_EFFORTS = {
     "low",
     "medium",
     "high",
+    "max",
     "xhigh",
 }
 
@@ -79,7 +83,49 @@ def model_supports_reasoning_effort(model: Any) -> bool:
     value = str(model or "").strip().lower()
     if "/" in value:
         _, value = value.split("/", 1)
-    return value.startswith("gpt-5") or value.startswith("o1") or value.startswith("o3") or value.startswith("o4")
+    return (
+        value.startswith("gpt-5")
+        or value.startswith("o1")
+        or value.startswith("o3")
+        or value.startswith("o4")
+        or value.startswith("deepseek")
+    )
+
+
+def normalize_graphiti_chunk_config(raw: Any) -> tuple[int, int]:
+    current = raw if isinstance(raw, dict) else {}
+    try:
+        chunk_size = max(
+            240,
+            min(12000, int(current.get("graphiti_chunk_size", DEFAULT_GRAPHITI_CHUNK_SIZE))),
+        )
+    except (TypeError, ValueError):
+        chunk_size = DEFAULT_GRAPHITI_CHUNK_SIZE
+    try:
+        chunk_overlap = max(
+            0,
+            min(
+                chunk_size // 4,
+                int(current.get("graphiti_chunk_overlap", DEFAULT_GRAPHITI_CHUNK_OVERLAP)),
+            ),
+        )
+    except (TypeError, ValueError):
+        chunk_overlap = min(DEFAULT_GRAPHITI_CHUNK_OVERLAP, chunk_size // 4)
+    return chunk_size, chunk_overlap
+
+
+def normalize_graphiti_llm_max_tokens(raw: Any) -> int:
+    current = raw if isinstance(raw, dict) else {"graphiti_llm_max_tokens": raw}
+    try:
+        return max(
+            256,
+            min(
+                DEFAULT_GRAPHITI_LLM_MAX_TOKENS,
+                int(current.get("graphiti_llm_max_tokens", DEFAULT_GRAPHITI_LLM_MAX_TOKENS)),
+            ),
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_GRAPHITI_LLM_MAX_TOKENS
 
 
 def default_llm_runtime_config() -> dict[str, Any]:
@@ -94,6 +140,9 @@ def default_llm_runtime_config() -> dict[str, Any]:
         "llm_model_default_concurrency": int(DEFAULT_LLM_MODEL_DEFAULT_CONCURRENCY),
         "llm_model_concurrency_overrides": {},
         "llm_reasoning_effort": str(DEFAULT_LLM_REASONING_EFFORT),
+        "graphiti_chunk_size": int(DEFAULT_GRAPHITI_CHUNK_SIZE),
+        "graphiti_chunk_overlap": int(DEFAULT_GRAPHITI_CHUNK_OVERLAP),
+        "graphiti_llm_max_tokens": int(DEFAULT_GRAPHITI_LLM_MAX_TOKENS),
     }
 
 
@@ -146,4 +195,8 @@ def normalize_llm_runtime_config(raw: Any) -> dict[str, Any]:
     payload["llm_reasoning_effort"] = normalize_reasoning_effort(
         current.get("llm_reasoning_effort", payload["llm_reasoning_effort"])
     )
+    chunk_size, chunk_overlap = normalize_graphiti_chunk_config(current)
+    payload["graphiti_chunk_size"] = chunk_size
+    payload["graphiti_chunk_overlap"] = chunk_overlap
+    payload["graphiti_llm_max_tokens"] = normalize_graphiti_llm_max_tokens(current)
     return payload

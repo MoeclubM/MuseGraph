@@ -167,9 +167,15 @@ export async function searchGraph(
   return data.results
 }
 
-export async function getVisualization(projectId: string): Promise<GraphData> {
+export async function getVisualization(
+  projectId: string,
+  options: { previewTaskId?: string } = {}
+): Promise<GraphData> {
+  const params: Record<string, any> = {}
+  if (options.previewTaskId) params.preview_task_id = options.previewTaskId
   const { data } = await api.get<GraphData>(
-    `/api/projects/${assertProjectId(projectId)}/graphs/visualization`
+    `/api/projects/${assertProjectId(projectId)}/graphs/visualization`,
+    { params }
   )
   return data
 }

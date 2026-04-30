@@ -91,6 +91,10 @@ def _runtime_selection() -> graphiti_graph._GraphitiRuntimeSelection:
         retry_count=1,
         max_coroutines=2,
         reasoning_effort=None,
+        chunk_size=4000,
+        chunk_overlap=160,
+        llm_max_tokens=16384,
+        openai_api_style="responses",
     )
 
 
@@ -113,6 +117,12 @@ def test_graphiti_episode_timeout_seconds_scales_above_request_timeout():
     assert graphiti_graph._graphiti_episode_timeout_seconds(180) == 450
 
 
+def test_graphiti_store_io_error_detects_missing_catalog_table():
+    exc = RuntimeError("Runtime exception: Load table failed: table 3833738872973833261 doesn't exist in catalog.")
+
+    assert graphiti_graph._is_graphiti_store_io_error(exc) is True
+
+
 def test_split_text_prefers_sentence_boundaries_for_dense_text():
     text = " ".join(f"Sentence {index} ends here." for index in range(1, 80))
 
@@ -121,6 +131,42 @@ def test_split_text_prefers_sentence_boundaries_for_dense_text():
     assert len(chunks) > 3
     assert all(len(chunk) <= 264 for chunk in chunks)
     assert any(chunk.endswith(".") for chunk in chunks[:-1])
+
+
+def test_normalize_graphiti_chunk_config_clamps_overlap():
+    chunk_size, chunk_overlap = graphiti_graph.normalize_graphiti_chunk_config(
+        {"graphiti_chunk_size": 1000, "graphiti_chunk_overlap": 900}
+    )
+
+    assert chunk_size == 1000
+    assert chunk_overlap == 250
+
+
+@pytest.mark.asyncio
+async def test_build_graph_uses_runtime_chunk_config(monkeypatch: pytest.MonkeyPatch):
+    add_episode = AsyncMock(return_value=SimpleNamespace(episode=SimpleNamespace(uuid="ep-1")))
+    fake_graphiti = SimpleNamespace(
+        add_episode=add_episode,
+        build_indices_and_constraints=AsyncMock(),
+        close=AsyncMock(),
+    )
+    runtime = _runtime_selection()
+    runtime.chunk_size = 240
+    runtime.chunk_overlap = 0
+
+    monkeypatch.setattr(graphiti_graph, "setup_graphiti", AsyncMock())
+    monkeypatch.setattr(graphiti_graph, "_create_graphiti", AsyncMock(return_value=fake_graphiti))
+    monkeypatch.setattr(graphiti_graph, "_resolve_graphiti_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr(
+        graphiti_graph,
+        "_load_project",
+        AsyncMock(return_value=SimpleNamespace(title="Demo", graph_id="graph-existing")),
+    )
+    monkeypatch.setattr(graphiti_graph, "_import_graphiti_runtime", _fake_import_runtime)
+
+    await graphiti_graph.build_graph("proj-1", "A" * 700, db=AsyncMock())
+
+    assert add_episode.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -227,7 +273,7 @@ async def test_patch_graphiti_llm_client_propagates_transient_connection_error_w
     assert len(client.client.responses.calls) == 1
     assert client.client.responses.calls[0]["text_format"] is ExtractedEntities
     assert client.client.responses.calls[0]["timeout"] == 77
-    assert client.client.responses.calls[0]["max_output_tokens"] == 4096
+    assert client.client.responses.calls[0]["max_output_tokens"] == 16384
 
 
 @pytest.mark.asyncio
@@ -359,6 +405,165 @@ async def test_patch_graphiti_llm_client_retries_when_parsed_json_fails_validati
 
 
 @pytest.mark.asyncio
+async def test_patch_graphiti_llm_client_uses_chat_json_mode_when_configured():
+    class ExtractedEntities(BaseModel):
+        extracted_entities: list[dict]
+
+    async def _stream():
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content='{"extracted_entities":'))],
+            usage=None,
+        )
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="[]}"))],
+            usage={"prompt_tokens": 20, "completion_tokens": 7},
+        )
+
+    class _FakeChatCompletions:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return _stream()
+
+    class _DummyBase:
+        def __init__(self, *args, **kwargs):
+            completions = _FakeChatCompletions()
+            self.client = SimpleNamespace(
+                chat=SimpleNamespace(completions=completions),
+                responses=SimpleNamespace(parse=AsyncMock(), create=AsyncMock()),
+            )
+            self.model = "LongCat-Flash-Lite"
+            self.temperature = 0
+            self.max_tokens = 16384
+            self.MAX_RETRIES = 1
+            self.config = SimpleNamespace(
+                base_url="https://newapi.telecom.moe/v1",
+                timeout_seconds=77,
+                reasoning_effort="low",
+                openai_api_style="chat_completions",
+            )
+
+        def _clean_input(self, value):
+            return value
+
+    patched_cls = graphiti_graph._patch_graphiti_llm_client(_DummyBase)
+    client = patched_cls()
+
+    result = await client._generate_response(
+        [SimpleNamespace(role="user", content="Return entities only.")],
+        response_model=ExtractedEntities,
+        max_tokens=16384,
+    )
+
+    call = client.client.chat.completions.calls[0]
+    assert result == {"extracted_entities": []}
+    assert call["response_format"] == {"type": "json_object"}
+    assert "extra_body" not in call
+    assert "reasoning_effort" not in call
+    assert call["stream"] is True
+    assert "EXAMPLE JSON OUTPUT" in call["messages"][-1]["content"]
+    assert client.client.responses.parse.await_count == 0
+    assert client.client.responses.create.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_patch_graphiti_llm_client_enables_deepseek_thinking_in_chat_mode():
+    class ExtractedEntities(BaseModel):
+        extracted_entities: list[dict]
+
+    class _FakeChatCompletions:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"extracted_entities":[]}'))]
+            )
+
+    class _DummyBase:
+        def __init__(self, *args, **kwargs):
+            completions = _FakeChatCompletions()
+            self.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+            self.model = "deepseek-v4-flash"
+            self.temperature = 0
+            self.max_tokens = 16384
+            self.MAX_RETRIES = 1
+            self.config = SimpleNamespace(
+                base_url="https://newapi.telecom.moe/v1",
+                timeout_seconds=77,
+                reasoning_effort="low",
+                openai_api_style="chat_completions",
+            )
+
+        def _clean_input(self, value):
+            return value
+
+    patched_cls = graphiti_graph._patch_graphiti_llm_client(_DummyBase)
+    client = patched_cls()
+
+    result = await client._generate_response(
+        [SimpleNamespace(role="user", content="Return entities only.")],
+        response_model=ExtractedEntities,
+        max_tokens=16384,
+    )
+
+    call = client.client.chat.completions.calls[0]
+    assert result == {"extracted_entities": []}
+    assert call["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert call["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_patch_graphiti_llm_client_accepts_nonstream_gateway_response_for_deepseek():
+    class ExtractedEntities(BaseModel):
+        extracted_entities: list[dict]
+
+    class _FakeChatCompletions:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"extracted_entities":[]}'))]
+            )
+
+    class _DummyBase:
+        def __init__(self, *args, **kwargs):
+            completions = _FakeChatCompletions()
+            self.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+            self.model = "deepseek-v4-flash"
+            self.temperature = 0
+            self.max_tokens = 16384
+            self.MAX_RETRIES = 1
+            self.config = SimpleNamespace(
+                base_url="https://newapi.telecom.moe/v1",
+                timeout_seconds=77,
+                reasoning_effort="low",
+                openai_api_style="chat_completions",
+            )
+
+        def _clean_input(self, value):
+            return value
+
+    patched_cls = graphiti_graph._patch_graphiti_llm_client(_DummyBase)
+    client = patched_cls()
+
+    result = await client._generate_response(
+        [SimpleNamespace(role="user", content="Return entities only.")],
+        response_model=ExtractedEntities,
+        max_tokens=16384,
+    )
+
+    call = client.client.chat.completions.calls[0]
+    assert result == {"extracted_entities": []}
+    assert call["stream"] is True
+
+
+@pytest.mark.asyncio
 async def test_patch_graphiti_llm_client_propagates_gateway_504_without_internal_retry():
     class ExtractedEntities(BaseModel):
         extracted_entities: list[dict]
@@ -472,7 +677,7 @@ async def test_create_graphiti_disables_internal_retries_and_applies_token_cap(m
 
     llm_client = created["llm_client"]
     cross_encoder = created["cross_encoder"]
-    assert llm_client.max_tokens == 4096
+    assert llm_client.max_tokens == 16384
     assert llm_client.MAX_RETRIES == 0
     assert getattr(llm_client.config, "timeout_seconds") == graphiti_graph._graphiti_request_timeout_seconds(120)
     assert getattr(cross_encoder.config, "model") == "reranker-model"
@@ -577,6 +782,10 @@ async def test_create_graphiti_uses_anthropic_llm_client_when_runtime_provider_i
         retry_count=1,
         max_coroutines=2,
         reasoning_effort=None,
+        chunk_size=4000,
+        chunk_overlap=160,
+        llm_max_tokens=16384,
+        openai_api_style="responses",
     )
 
     await graphiti_graph._create_graphiti(runtime=runtime, project_id="proj-1")
@@ -811,7 +1020,7 @@ async def test_build_graph_accepts_ontology_source_type_target_type(monkeypatch:
         AsyncMock(return_value=SimpleNamespace(title="Demo", graph_id="graph-existing")),
     )
     monkeypatch.setattr(graphiti_graph, "_import_graphiti_runtime", _fake_import_runtime)
-    monkeypatch.setattr(graphiti_graph, "_split_text", lambda text: ["chunk-1"])
+    monkeypatch.setattr(graphiti_graph, "_split_text", lambda text, **kwargs: ["chunk-1"])
 
     graph_id = await graphiti_graph.build_graph(
         "proj-1",
@@ -856,7 +1065,7 @@ async def test_build_graph_retries_episode_at_upper_layer(monkeypatch: pytest.Mo
         AsyncMock(return_value=SimpleNamespace(title="Demo", graph_id="graph-existing")),
     )
     monkeypatch.setattr(graphiti_graph, "_import_graphiti_runtime", _fake_import_runtime)
-    monkeypatch.setattr(graphiti_graph, "_split_text", lambda text: ["chunk-1"])
+    monkeypatch.setattr(graphiti_graph, "_split_text", lambda text, **kwargs: ["chunk-1"])
 
     graph_id = await graphiti_graph.build_graph(
         "proj-1",
@@ -896,7 +1105,7 @@ async def test_build_graph_collects_failed_chunks_when_continue_on_error(monkeyp
         AsyncMock(return_value=SimpleNamespace(title="Demo", graph_id="graph-existing")),
     )
     monkeypatch.setattr(graphiti_graph, "_import_graphiti_runtime", _fake_import_runtime)
-    monkeypatch.setattr(graphiti_graph, "_split_text", lambda text: ["chunk-1", "chunk-2", "chunk-3"])
+    monkeypatch.setattr(graphiti_graph, "_split_text", lambda text, **kwargs: ["chunk-1", "chunk-2", "chunk-3"])
 
     with pytest.raises(graphiti_graph.GraphBuildPartialFailure) as exc_info:
         await graphiti_graph.build_graph(
@@ -918,7 +1127,7 @@ async def test_build_graph_collects_failed_chunks_when_continue_on_error(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_build_graph_keeps_small_build_single_worker(monkeypatch: pytest.MonkeyPatch):
+async def test_build_graph_uses_bounded_parallel_workers_for_small_batch(monkeypatch: pytest.MonkeyPatch):
     active = {"count": 0, "max": 0}
 
     async def _add_episode(**kwargs):
@@ -945,7 +1154,7 @@ async def test_build_graph_keeps_small_build_single_worker(monkeypatch: pytest.M
         AsyncMock(return_value=SimpleNamespace(title="Demo", graph_id="graph-existing")),
     )
     monkeypatch.setattr(graphiti_graph, "_import_graphiti_runtime", _fake_import_runtime)
-    monkeypatch.setattr(graphiti_graph, "_split_text", lambda text: ["chunk-1", "chunk-2", "chunk-3"])
+    monkeypatch.setattr(graphiti_graph, "_split_text", lambda text, **kwargs: ["chunk-1", "chunk-2", "chunk-3"])
 
     await graphiti_graph.build_graph("proj-1", "ignored", db=AsyncMock())
 
@@ -994,6 +1203,10 @@ async def test_build_graph_scales_parallel_workers_for_large_build(monkeypatch: 
                 retry_count=1,
                 max_coroutines=4,
                 reasoning_effort=None,
+                chunk_size=4000,
+                chunk_overlap=160,
+                llm_max_tokens=16384,
+                openai_api_style="responses",
             )
         ),
     )
@@ -1006,7 +1219,7 @@ async def test_build_graph_scales_parallel_workers_for_large_build(monkeypatch: 
     monkeypatch.setattr(
         graphiti_graph,
         "_split_text",
-        lambda text: [f"chunk-{index}" for index in range(1, 17)],
+        lambda text, **kwargs: [f"chunk-{index}" for index in range(1, 17)],
     )
 
     await graphiti_graph.build_graph(
@@ -1016,9 +1229,8 @@ async def test_build_graph_scales_parallel_workers_for_large_build(monkeypatch: 
         progress_callback=lambda _progress, message: progress_messages.append(message),
     )
 
-    assert active["max"] > 1
-    assert active["max"] <= 4
-    assert any("parallel ingest enabled" in message for message in progress_messages)
+    assert active["max"] == 1
+    assert not any("parallel ingest enabled" in message for message in progress_messages)
     fake_graphiti.close.assert_awaited_once()
 
 
@@ -1114,6 +1326,34 @@ async def test_get_graph_visualization_transforms_kuzu_records(monkeypatch: pyte
     assert payload["nodes"][0]["attributes"] == {"role": "lead"}
     assert payload["edges"][0]["source_label"] == "Alice"
     assert payload["edges"][0]["attributes"] == {"confidence": "high"}
+    fake_graphiti.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_graph_visualization_reports_unreadable_kuzu_store(monkeypatch: pytest.MonkeyPatch):
+    fake_graphiti = SimpleNamespace(
+        driver=SimpleNamespace(
+            execute_query=AsyncMock(
+                side_effect=RuntimeError(
+                    "Runtime exception: Load table failed: table 3833738872973833261 doesn't exist in catalog."
+                )
+            )
+        ),
+        close=AsyncMock(),
+    )
+
+    monkeypatch.setattr(graphiti_graph, "setup_graphiti", AsyncMock())
+    monkeypatch.setattr(graphiti_graph, "_resolve_graphiti_runtime", AsyncMock(return_value=_runtime_selection()))
+    monkeypatch.setattr(graphiti_graph, "_create_graphiti", AsyncMock(return_value=fake_graphiti))
+    monkeypatch.setattr(
+        graphiti_graph,
+        "_load_project",
+        AsyncMock(return_value=SimpleNamespace(graph_id="graph-1")),
+    )
+
+    with pytest.raises(RuntimeError, match="Graphiti local graph store is unreadable"):
+        await graphiti_graph.get_graph_visualization("proj-1", db=AsyncMock())
+
     fake_graphiti.close.assert_awaited_once()
 
 

@@ -20,6 +20,7 @@ class TextProject(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     simulation_requirement: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     component_models: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    operation_prompts: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     ontology_schema: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     oasis_analysis: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     graph_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

@@ -1180,6 +1180,30 @@ class TestGraphVisualizationSuccess:
             assert resp.status_code == 502
             assert "graph backend unavailable" in resp.json()["detail"]
 
+    @pytest.mark.asyncio
+    async def test_visualization_uses_preview_task_graph_id(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
+        project = SimpleNamespace(
+            id="11111111-1111-4111-8111-111111111111", user_id=fake_user.id,
+            graph_id=None,
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(project)
+        task = _cg_mod.task_manager.create_task(
+            "graph_build",
+            metadata={"project_id": project.id, "user_id": fake_user.id},
+        )
+        _cg_mod.task_manager.update_task(task.task_id, progress_detail={"preview_graph_id": "graph-preview-1"})
+        mock_viz = {"nodes": [], "edges": []}
+
+        with patch.object(_cg_mod, "get_graph_visualization_for_group", new_callable=AsyncMock, return_value=mock_viz) as mock_preview:
+            resp = await client.get(
+                f"/api/projects/{project.id}/graphs/visualization",
+                params={"preview_task_id": task.task_id},
+            )
+
+        assert resp.status_code == 200
+        mock_preview.assert_awaited_once()
+        assert mock_preview.await_args.kwargs["graph_id"] == "graph-preview-1"
+
 
 class TestAddToGraphOntologyFromBody:
     """Test POST /api/projects/{id}/graphs with ontology in body."""

@@ -40,6 +40,7 @@ import {
 } from '@/api/graph'
 import type {
   ComponentModelConfig,
+  OperationPromptConfig,
   Operation,
   GraphData,
   GraphStatus,
@@ -87,6 +88,10 @@ const saving = ref(false)
 type OperationType = 'CREATE' | 'CONTINUE' | 'ANALYZE' | 'REWRITE' | 'SUMMARIZE'
 const operationType = ref<OperationType>('CREATE')
 const componentModels = ref<ComponentModelConfig>({})
+const operationPrompts = ref<OperationPromptConfig>({})
+const createSystemPromptDraft = ref('')
+const createSystemPromptSaving = ref(false)
+const createSystemPromptError = ref<string | null>(null)
 const operationLoading = ref(false)
 const operationResult = ref<string | null>(null)
 const operationError = ref<string | null>(null)
@@ -1101,6 +1106,43 @@ function normalizeComponentModels(raw: ComponentModelConfig | null | undefined):
   return next
 }
 
+function normalizeOperationPrompts(raw: OperationPromptConfig | null | undefined): OperationPromptConfig {
+  if (!raw || typeof raw !== 'object') return {}
+  const next: OperationPromptConfig = {}
+  for (const [key, value] of Object.entries(raw)) {
+    const normalizedKey = String(key || '').trim().toUpperCase()
+    if (normalizedKey === 'CREATE' && typeof value === 'string' && value.trim()) {
+      next.CREATE = value.trim()
+    }
+  }
+  return next
+}
+
+async function persistOperationPrompts(nextPrompts: OperationPromptConfig) {
+  createSystemPromptSaving.value = true
+  createSystemPromptError.value = null
+  try {
+    const saved = normalizeOperationPrompts(nextPrompts)
+    operationPrompts.value = saved
+    await projectStore.updateProject(projectId.value, { operation_prompts: saved })
+    toast.success('CREATE prompt saved')
+  } catch (e: any) {
+    createSystemPromptError.value = parseError(e, 'Failed to save CREATE prompt')
+  } finally {
+    createSystemPromptSaving.value = false
+  }
+}
+
+async function saveCreateSystemPrompt() {
+  const prompt = createSystemPromptDraft.value.trim()
+  await persistOperationPrompts(prompt ? { ...operationPrompts.value, CREATE: prompt } : {})
+}
+
+async function resetCreateSystemPrompt() {
+  createSystemPromptDraft.value = ''
+  await persistOperationPrompts({})
+}
+
 async function persistComponentModels() {
   try {
     await projectStore.updateProject(projectId.value, { component_models: componentModels.value })
@@ -1605,6 +1647,8 @@ async function loadProject() {
         : null
     ontologyRequirement.value = projectStore.currentProject.simulation_requirement || ONTOLOGY_PRESET_PROMPT
     componentModels.value = normalizeComponentModels(projectStore.currentProject.component_models)
+    operationPrompts.value = normalizeOperationPrompts(projectStore.currentProject.operation_prompts)
+    createSystemPromptDraft.value = operationPrompts.value.CREATE || ''
     projectTitleDraft.value = projectStore.currentProject.title || ''
   }
   await ensureChapterStateInitialized()
@@ -2163,7 +2207,11 @@ async function handleGenerateOasisReport() {
 
 async function loadGraphData(options: { preserveOnError?: boolean } = {}) {
   try {
-    graphData.value = await getVisualization(projectId.value)
+    const previewTaskId =
+      pipelineTask.value?.task_type === 'graph_build' && isRunningTaskStatus(pipelineTask.value.status)
+        ? pipelineTask.value.task_id
+        : undefined
+    graphData.value = await getVisualization(projectId.value, { previewTaskId })
     graphError.value = null
   } catch (e: any) {
     if (!options.preserveOnError) {
@@ -2517,6 +2565,9 @@ watch(selectedChapterIds, () => {
               :models-loading="modelsLoading"
               :models="models"
               :operation-model="operationModel"
+              :create-system-prompt="createSystemPromptDraft"
+              :create-system-prompt-saving="createSystemPromptSaving"
+              :create-system-prompt-error="createSystemPromptError"
               :continuation-apply-mode="continuationApplyMode"
               :create-user-prompt="createUserPrompt"
               :create-outline="createOutline"
@@ -2545,6 +2596,9 @@ watch(selectedChapterIds, () => {
               @update:project-search-query="projectSearchQuery = $event"
               @update:operation-type="setOperationType"
               @update:operation-model="operationModel = $event"
+              @update:create-system-prompt="createSystemPromptDraft = $event"
+              @save-create-system-prompt="saveCreateSystemPrompt"
+              @reset-create-system-prompt="resetCreateSystemPrompt"
               @update:continuation-apply-mode="continuationApplyMode = $event"
               @update:create-user-prompt="createUserPrompt = $event"
               @update:create-outline="createOutline = $event"

@@ -107,6 +107,9 @@ const props = defineProps<{
   modelsLoading: boolean
   models: ModelInfo[]
   operationModel: string
+  createSystemPrompt: string
+  createSystemPromptSaving: boolean
+  createSystemPromptError: string | null
   continuationApplyMode: 'append' | 'replace' | 'new_chapter'
   createUserPrompt: string
   createOutline: string
@@ -138,6 +141,9 @@ const emit = defineEmits<{
   'update:projectSearchQuery': [value: string]
   'update:operationType': [value: string]
   'update:operationModel': [value: string]
+  'update:createSystemPrompt': [value: string]
+  'save-create-system-prompt': []
+  'reset-create-system-prompt': []
   'update:continuationApplyMode': [value: 'append' | 'replace' | 'new_chapter']
   'update:createUserPrompt': [value: string]
   'update:createOutline': [value: string]
@@ -229,6 +235,9 @@ const emit = defineEmits<{
       :models-loading="modelsLoading"
       :models="models"
       :operation-model="operationModel"
+      :create-system-prompt="createSystemPrompt"
+      :create-system-prompt-saving="createSystemPromptSaving"
+      :create-system-prompt-error="createSystemPromptError"
       :continuation-apply-mode="continuationApplyMode"
       :create-user-prompt="createUserPrompt"
       :create-outline="createOutline"
@@ -250,6 +259,9 @@ const emit = defineEmits<{
       :format-date="formatDate"
       @update:operation-type="emit('update:operationType', $event)"
       @update:operation-model="emit('update:operationModel', $event)"
+      @update:create-system-prompt="emit('update:createSystemPrompt', $event)"
+      @save-create-system-prompt="emit('save-create-system-prompt')"
+      @reset-create-system-prompt="emit('reset-create-system-prompt')"
       @update:continuation-apply-mode="emit('update:continuationApplyMode', $event)"
       @update:create-user-prompt="emit('update:createUserPrompt', $event)"
       @update:create-outline="emit('update:createOutline', $event)"
