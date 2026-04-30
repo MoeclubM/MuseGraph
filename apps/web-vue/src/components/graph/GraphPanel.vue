@@ -117,6 +117,25 @@ function formatValue(value: any): string {
   return JSON.stringify(value)
 }
 
+function graphContentSignature(data: GraphData): string {
+  const nodes = data?.nodes || []
+  const edges = data?.edges || []
+  const nodeText = nodes
+    .map((node) => [node.id, node.label, normalizeNodeType(node.type), node.summary || '', formatValue(node.attributes || {})].join('\u001f'))
+    .join('\u001e')
+  const edgeText = edges
+    .map((edge) => [
+      edge.id || '',
+      normalizeEndpoint(edge.source),
+      normalizeEndpoint(edge.target),
+      edge.label || '',
+      edge.type || '',
+      edge.fact || '',
+    ].join('\u001f'))
+    .join('\u001e')
+  return `${nodes.length}\u001d${edges.length}\u001d${nodeText}\u001d${edgeText}`
+}
+
 function extraProps(node: GraphNode): [string, any][] {
   return Object.entries(node).filter(([key]) => !KNOWN_NODE_KEYS.has(key))
 }
@@ -188,6 +207,7 @@ function buildFilteredGraph(): GraphData {
 }
 
 const filteredGraph = computed(buildFilteredGraph)
+const graphContentKey = computed(() => graphContentSignature(props.data))
 
 const selectedRelations = computed(() => {
   const node = selectedNode.value
@@ -427,14 +447,13 @@ function renderGraph() {
 }
 
 watch(
-  () => [props.data?.nodes, props.data?.edges, searchQuery.value, activeTypeKey.value, selectedNode.value?.id],
+  () => [graphContentKey.value, searchQuery.value, activeTypeKey.value, selectedNode.value?.id],
   () => {
     if (selectedNode.value && !filteredGraph.value.nodes.some((node) => node.id === selectedNode.value?.id)) {
       selectedNode.value = null
     }
     nextTick(renderGraph)
-  },
-  { deep: true }
+  }
 )
 
 onMounted(() => {
