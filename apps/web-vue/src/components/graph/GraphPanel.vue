@@ -449,13 +449,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="relative w-full h-full min-h-[240px]">
-    <div ref="container" class="w-full h-full bg-stone-100 rounded-lg border border-stone-300/80 overflow-hidden dark:bg-zinc-900 dark:border-zinc-700/50" />
-
-    <div class="absolute top-3 left-3 right-3 flex flex-wrap items-center gap-2 rounded-xl border border-stone-300/80 bg-stone-50/95 p-2 shadow-sm backdrop-blur dark:border-zinc-700/60 dark:bg-zinc-900/90">
+  <div class="flex h-full min-h-[240px] w-full flex-col overflow-hidden rounded-lg border border-stone-300/80 bg-stone-100 dark:border-zinc-700/50 dark:bg-zinc-900">
+    <div class="shrink-0 border-b border-stone-300/80 bg-stone-50/95 p-2 shadow-sm dark:border-zinc-700/60 dark:bg-zinc-900/95">
+      <div class="flex flex-wrap items-center gap-2">
       <input
         v-model="searchQuery"
-        class="min-w-[180px] flex-1 rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-amber-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+        class="min-w-[220px] flex-1 rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-amber-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
         placeholder="Search nodes, types, summaries..."
       />
       <span class="whitespace-nowrap text-xs text-stone-500 dark:text-zinc-400">
@@ -467,9 +466,13 @@ onUnmounted(() => {
       >
         Reset
       </button>
+      </div>
     </div>
 
-    <div class="absolute left-3 top-20 max-h-[44%] max-w-[260px] overflow-auto rounded-xl border border-stone-300/80 bg-stone-50/95 p-3 shadow-sm backdrop-blur dark:border-zinc-700/60 dark:bg-zinc-900/90">
+    <div class="relative min-h-0 flex-1">
+      <div ref="container" class="h-full w-full overflow-hidden bg-stone-100 dark:bg-zinc-900" />
+
+    <div class="absolute left-3 top-3 z-10 max-h-[46%] max-w-[260px] overflow-auto rounded-xl border border-stone-300/80 bg-stone-50/95 p-3 shadow-sm backdrop-blur dark:border-zinc-700/60 dark:bg-zinc-900/90">
       <p class="mb-2 text-xs font-medium text-stone-500 dark:text-zinc-400">Node Types</p>
       <div class="space-y-1">
         <button
@@ -503,7 +506,7 @@ onUnmounted(() => {
     >
       <div
         v-if="selectedNode"
-        class="absolute bottom-3 left-3 right-3 max-h-[42%] overflow-auto rounded-xl border border-stone-300/80 bg-stone-50/95 p-4 shadow-sm backdrop-blur dark:border-zinc-700/60 dark:bg-zinc-900/90"
+        class="absolute bottom-3 left-3 right-3 z-20 max-h-[42%] overflow-auto rounded-xl border border-stone-300/80 bg-stone-50/95 p-4 shadow-sm backdrop-blur dark:border-zinc-700/60 dark:bg-zinc-900/90"
       >
         <div class="mb-3 flex items-center justify-between gap-3">
           <div class="flex min-w-0 items-center gap-2">
@@ -548,5 +551,6 @@ onUnmounted(() => {
         </div>
       </div>
     </Transition>
+    </div>
   </div>
 </template>
