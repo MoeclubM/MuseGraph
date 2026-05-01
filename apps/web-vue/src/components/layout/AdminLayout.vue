@@ -19,7 +19,7 @@ async function handleLogout() {
 <template>
   <div class="muse-shell flex min-h-screen flex-col text-stone-900 dark:text-stone-100">
     <header class="sticky top-0 z-40 border-b border-stone-300/70 bg-[color:var(--muse-panel-strong)] dark:border-zinc-700/60 dark:bg-zinc-900/90">
-      <div class="mx-auto flex h-14 w-full max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+      <div class="flex h-14 w-full items-center justify-between px-4 sm:px-6 lg:px-8 2xl:px-10">
         <div class="flex items-center gap-3">
           <div class="flex h-8 w-8 items-center justify-center rounded-md bg-amber-600">
             <Shield class="h-4 w-4" />
@@ -52,7 +52,7 @@ async function handleLogout() {
         </div>
       </div>
     </header>
-    <main class="mx-auto w-full max-w-7xl flex-1 space-y-6 px-4 py-5 sm:px-6 sm:py-6 lg:px-8">
+    <main class="w-full flex-1 space-y-6 px-4 py-5 sm:px-6 sm:py-6 lg:px-8 2xl:px-10">
       <slot />
     </main>
   </div>

@@ -525,6 +525,13 @@ class TaskManager:
         with self._runner_lock:
             self._runners.pop(task_id, None)
 
+    def has_active_runner(self, task_id: str) -> bool:
+        if not task_id:
+            return False
+        with self._runner_lock:
+            runner = self._runners.get(task_id)
+        return bool(runner and not runner.done())
+
     def cancel_task(self, task_id: str, message: str = "Task cancelled by user") -> TaskRecord | None:
         task = self.get_task(task_id)
         if not task:

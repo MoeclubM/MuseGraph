@@ -1026,42 +1026,43 @@ onMounted(loadAll)
 
 <template>
   <AdminLayout>
-    <div class="muse-page-shell muse-page-shell-wide">
+    <div class="w-full space-y-5">
       <section class="muse-page-header">
-        <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-end">
           <div class="space-y-1">
-            <h1 class="text-xl font-semibold text-stone-800 dark:text-zinc-100">Admin Panel</h1>
-            <p class="text-sm text-stone-500 dark:text-zinc-400">Manage users, providers, pricing, payment settings, and runtime controls.</p>
+            <p class="text-xs font-medium uppercase tracking-[0.18em] text-amber-700 dark:text-amber-300">System Administration</p>
+            <h1 class="text-2xl font-semibold text-stone-800 dark:text-zinc-100">Admin Panel</h1>
+            <p class="max-w-3xl text-sm text-stone-500 dark:text-zinc-400">Manage users, providers, model pricing, payment settings, runtime controls, and background tasks.</p>
           </div>
-          <div class="grid grid-cols-2 gap-2 text-xs md:grid-cols-3">
-            <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-3 py-2 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
+          <div class="grid min-w-0 grid-cols-1 gap-2 text-xs sm:grid-cols-3 xl:min-w-[420px]">
+            <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-4 py-3 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
               <p class="text-[11px] uppercase tracking-wide text-stone-500 dark:text-zinc-500">Providers</p>
-              <p class="mt-0.5 text-sm font-semibold text-stone-700 dark:text-zinc-100">{{ providers.length }}</p>
+              <p class="mt-1 text-lg font-semibold text-stone-700 dark:text-zinc-100">{{ providers.length }}</p>
             </div>
-            <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-3 py-2 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
+            <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-4 py-3 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
               <p class="text-[11px] uppercase tracking-wide text-stone-500 dark:text-zinc-500">Models</p>
-              <p class="mt-0.5 text-sm font-semibold text-stone-700 dark:text-zinc-100">{{ totalKnownModels }}</p>
+              <p class="mt-1 text-lg font-semibold text-stone-700 dark:text-zinc-100">{{ totalKnownModels }}</p>
             </div>
-            <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-3 py-2 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
+            <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-4 py-3 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
               <p class="text-[11px] uppercase tracking-wide text-stone-500 dark:text-zinc-500">Pricing Rules</p>
-              <p class="mt-0.5 text-sm font-semibold text-stone-700 dark:text-zinc-100">{{ pricingRules.length }}</p>
+              <p class="mt-1 text-lg font-semibold text-stone-700 dark:text-zinc-100">{{ pricingRules.length }}</p>
             </div>
           </div>
         </div>
       </section>
 
       <Tabs v-model="tab" class="space-y-4">
-        <div class="muse-surface rounded-md p-1">
-          <TabsList class="grid h-auto w-full grid-cols-2 gap-1 bg-transparent p-0 md:grid-cols-6">
+        <div class="muse-surface rounded-md p-1.5">
+          <TabsList class="grid h-auto w-full grid-cols-2 gap-1 bg-transparent p-0 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7">
             <TabsTrigger
               v-for="item in tabItems"
               :key="item.value"
               :value="item.value"
-              class="h-auto rounded-md py-2"
+              class="h-auto min-h-14 justify-start rounded-md px-3 py-2 text-left 2xl:justify-center"
             >
               <component :is="item.icon" class="h-3.5 w-3.5" />
-              <span>{{ item.label }}</span>
-              <span class="hidden text-[10px] text-stone-500 dark:text-zinc-400 md:inline">{{ item.hint }}</span>
+              <span class="min-w-0 truncate">{{ item.label }}</span>
+              <span class="hidden min-w-0 truncate text-[10px] text-stone-500 dark:text-zinc-400 xl:inline">{{ item.hint }}</span>
             </TabsTrigger>
           </TabsList>
         </div>

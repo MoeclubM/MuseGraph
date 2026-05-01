@@ -484,6 +484,8 @@ def _latest_running_graph_task(project_id: str) -> TaskRecord | None:
     for task in tasks:
         if _is_running_task_status(task.status):
             if _is_stale_graph_task(task):
+                if task_manager.has_active_runner(task.task_id):
+                    return task
                 task_manager.fail_task(
                     task.task_id,
                     "Graph build task became stale with no progress heartbeat.",
@@ -1229,6 +1231,13 @@ async def _execute_graph_build(
             raise ValueError("No failed graph chunks are available to continue.")
         effective_mode = _normalize_graph_build_mode(resume_state.get("mode") or effective_mode)
         mode_reason = "Continuing previously failed graph build chunks."
+    else:
+        existing_state = _extract_graph_build_state(project)
+        if isinstance(existing_state.get("resume"), dict):
+            next_state = dict(existing_state)
+            next_state.pop("resume", None)
+            _store_analysis_payload(project, _graph_build_state=next_state)
+            await db.flush()
 
     preview_graph_id = resume_graph_id or project.graph_id or f"graphiti_{uuid4().hex[:16]}"
     if preview_graph_id_callback:

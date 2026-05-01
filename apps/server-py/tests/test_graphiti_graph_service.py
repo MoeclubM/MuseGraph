@@ -1475,6 +1475,62 @@ async def test_setup_graphiti_initializes_kuzu_store(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_setup_graphiti_does_not_clear_unreadable_store_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    class FakeKuzuDriver:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("IO exception: Cannot read from file: graphiti.kuzu")
+
+    clear_mock = MagicMock()
+    monkeypatch.setattr(graphiti_graph.settings, "GRAPHITI_DB_PATH", str(tmp_path / "graphiti" / "graphiti.kuzu"))
+    monkeypatch.setattr(
+        graphiti_graph,
+        "_import_graphiti_runtime",
+        lambda: (object, FakeKuzuDriver, object, object, object, object, object, object, {}),
+    )
+    monkeypatch.setattr(graphiti_graph, "_clear_graphiti_store", clear_mock)
+
+    with pytest.raises(RuntimeError, match="Graphiti local graph store is unreadable"):
+        await graphiti_graph.setup_graphiti("proj-1")
+
+    clear_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_setup_graphiti_repairs_unreadable_store_when_requested(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    created = {"count": 0}
+    build_indices = AsyncMock()
+    close = AsyncMock()
+
+    class FakeKuzuDriver:
+        def __init__(self, *args, **kwargs):
+            created["count"] += 1
+            if created["count"] == 1:
+                raise RuntimeError("IO exception: Cannot read from file: graphiti.kuzu")
+
+        async def build_indices_and_constraints(self):
+            await build_indices()
+
+        async def close(self):
+            await close()
+
+    clear_mock = MagicMock()
+    monkeypatch.setattr(graphiti_graph.settings, "GRAPHITI_DB_PATH", str(tmp_path / "graphiti" / "graphiti.kuzu"))
+    monkeypatch.setattr(
+        graphiti_graph,
+        "_import_graphiti_runtime",
+        lambda: (object, FakeKuzuDriver, object, object, object, object, object, object, {}),
+    )
+    monkeypatch.setattr(graphiti_graph, "_clear_graphiti_store", clear_mock)
+
+    await graphiti_graph.setup_graphiti("proj-1", repair_unreadable=True)
+
+    assert created["count"] == 2
+    clear_mock.assert_called_once_with("proj-1")
+    build_indices.assert_awaited_once()
+    close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_has_graph_data_returns_false_when_store_missing(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setattr(graphiti_graph.settings, "GRAPHITI_DB_PATH", str(tmp_path / "graphiti" / "graphiti.kuzu"))
     monkeypatch.setattr(

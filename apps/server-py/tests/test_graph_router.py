@@ -86,6 +86,10 @@ def _reset_task_manager():
     except Exception:
         pass
     try:
+        task_manager._runners.clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
         sqlite_store = getattr(task_manager, "_sqlite", None)
         if sqlite_store is not None:
             with sqlite_store._lock:  # type: ignore[attr-defined]
@@ -96,6 +100,10 @@ def _reset_task_manager():
     yield
     try:
         task_manager._memory._tasks.clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        task_manager._runners.clear()  # type: ignore[attr-defined]
     except Exception:
         pass
 
@@ -119,6 +127,29 @@ class TestGraphGraphFlow:
         assert refreshed is not None
         assert refreshed.status == graph.TaskStatus.FAILED
         assert refreshed.message == "Graph build task timed out"
+
+    def test_latest_running_graph_task_keeps_stale_task_with_active_runner(self):
+        task = task_manager.create_task(
+            "graph_build",
+            metadata={"project_id": "project-1", "user_id": TEST_USER_ID},
+        )
+        task.status = graph.TaskStatus.PROCESSING
+        task.progress = 32
+        task.message = "Graphiti ingesting episodes 4/112..."
+        task.updated_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=300)
+        task_manager._memory.update_task(task)  # type: ignore[attr-defined]
+        runner = MagicMock()
+        runner.done.return_value = False
+        task_manager.register_runner(task.task_id, runner)
+
+        running = graph._latest_running_graph_task("project-1")
+
+        assert running is not None
+        assert running.task_id == task.task_id
+        refreshed = task_manager.get_task(task.task_id)
+        assert refreshed is not None
+        assert refreshed.status == graph.TaskStatus.PROCESSING
+        assert refreshed.message == "Graphiti ingesting episodes 4/112..."
 
     def test_start_project_task_cancels_older_auto_graph_sync_task(self, monkeypatch: pytest.MonkeyPatch):
         old_task = task_manager.create_task(
@@ -561,6 +592,55 @@ class TestGraphGraphFlow:
         assert result["status"] == "ok"
         assert preview_graph_ids == ["graph-preview-1"] or preview_graph_ids[0].startswith("graphiti_")
         assert build_mock.await_args.kwargs["graph_id_override"] == preview_graph_ids[0]
+
+    @pytest.mark.asyncio
+    async def test_execute_graph_build_clears_previous_resume_for_new_build(
+        self,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from app.routers import graph as graph_router
+
+        project = _make_project(
+            project_id="11111111-1111-4111-8111-111111111111",
+            ontology_schema={"entity_types": [{"name": "Actor"}], "edge_types": []},
+            chapter_content="Base text",
+        )
+        project.oasis_analysis = {
+            "_graph_build_state": {
+                "mode": "rebuild",
+                "chapter_hashes": {},
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "resume": {
+                    "graph_id": "graph-old",
+                    "failed_chunk_indices": [2, 3],
+                    "completed_chunk_indices": [1],
+                    "total_chunks": 3,
+                },
+            }
+        }
+        mock_db.execute.return_value = _scalars_all(project.chapters)
+
+        async def _fail_build(*_args, **_kwargs):
+            assert "resume" not in project.oasis_analysis["_graph_build_state"]
+            raise RuntimeError("build failed")
+
+        monkeypatch.setattr(graph_router, "build_graph_input_with_ontology", lambda _text, _ontology: "graph input")
+        monkeypatch.setattr(graph_router, "build_graph", _fail_build)
+
+        with pytest.raises(RuntimeError, match="build failed"):
+            await graph_router._execute_graph_build(
+                project_id=project.id,
+                project=project,
+                body_text=None,
+                chapter_ids=None,
+                ontology=None,
+                mode="rebuild",
+                resume_failed=False,
+                db=mock_db,
+            )
+
+        assert "resume" not in project.oasis_analysis["_graph_build_state"]
 
     @pytest.mark.asyncio
     async def test_oasis_analyze_requires_graph(self, client: AsyncClient, mock_db: AsyncMock):

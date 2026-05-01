@@ -132,6 +132,7 @@ def _open_kuzu_driver(
     db_path: str,
     project_id: str | None = None,
     max_concurrent_queries: int | None = None,
+    repair_unreadable: bool = False,
 ) -> Any:
     kwargs: dict[str, Any] = {"db": db_path}
     if max_concurrent_queries is not None:
@@ -140,6 +141,8 @@ def _open_kuzu_driver(
         driver = KuzuDriver(**kwargs)
     except Exception as exc:
         if project_id and _is_graphiti_store_io_error(exc):
+            if not repair_unreadable:
+                raise RuntimeError(_graphiti_store_unreadable_message(project_id)) from exc
             logger.warning(
                 "Graphiti store is unreadable; clearing local store and retrying once. "
                 "project_id=%s db_path=%s",
@@ -1098,7 +1101,12 @@ def _patch_graphiti_reranker_client(openai_reranker_client_cls: type[Any]) -> ty
     return MuseGraphOpenAIRerankerClient
 
 
-async def _create_graphiti(*, runtime: _GraphitiRuntimeSelection, project_id: str | None = None) -> Any:
+async def _create_graphiti(
+    *,
+    runtime: _GraphitiRuntimeSelection,
+    project_id: str | None = None,
+    repair_unreadable_store: bool = False,
+) -> Any:
     (
         Graphiti,
         KuzuDriver,
@@ -1150,6 +1158,7 @@ async def _create_graphiti(*, runtime: _GraphitiRuntimeSelection, project_id: st
         db_path=db_path,
         project_id=project_id,
         max_concurrent_queries=1,
+        repair_unreadable=repair_unreadable_store,
     )
     if runtime.llm_provider_type == "anthropic_compatible":
         import anthropic
@@ -1243,7 +1252,7 @@ async def _run_graphiti_episode(
     raise RuntimeError(f"Graphiti episode {index}/{total_chunks} failed without a terminal exception.")
 
 
-async def setup_graphiti(project_id: str | None = None) -> None:
+async def setup_graphiti(project_id: str | None = None, *, repair_unreadable: bool = False) -> None:
     global _GRAPHITI_SETUP_COMPLETE
     db_path = _graphiti_store_path(project_id)
     if db_path in _GRAPHITI_SETUP_COMPLETE:
@@ -1278,6 +1287,8 @@ async def setup_graphiti(project_id: str | None = None) -> None:
             await _initialize_store()
         except Exception as exc:
             if project_id and _is_graphiti_store_io_error(exc):
+                if not repair_unreadable:
+                    raise RuntimeError(_graphiti_store_unreadable_message(project_id)) from exc
                 logger.warning(
                     "Graphiti store is unreadable during setup; clearing local store and retrying once. "
                     "project_id=%s db_path=%s",
@@ -1305,7 +1316,7 @@ async def build_graph(
     chunk_indices: list[int] | None = None,
     continue_on_error: bool = False,
 ) -> str:
-    await setup_graphiti(project_id)
+    await setup_graphiti(project_id, repair_unreadable=True)
     project = await _load_project(project_id, db)
     graph_id = str(graph_id_override or "").strip() or _project_graph_id(project) or _build_graph_id()
     runtime = await _resolve_graphiti_runtime(
@@ -1318,7 +1329,7 @@ async def build_graph(
     if not chunks:
         raise ValueError("No graph input text provided")
     entity_types, edge_types, edge_type_map = _prepare_graphiti_ontology(ontology)
-    graphiti = await _create_graphiti(runtime=runtime, project_id=project_id)
+    graphiti = await _create_graphiti(runtime=runtime, project_id=project_id, repair_unreadable_store=True)
     (
         _Graphiti,
         _GraphDriver,
