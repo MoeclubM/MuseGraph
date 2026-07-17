@@ -1,40 +1,14 @@
-export interface OntologyEntityType {
-  name: string
-  description?: string
-  examples?: string[]
-}
-
-export interface OntologyEdgeType {
-  name: string
-  source_type: string
-  target_type: string
-  description?: string
-}
-
-export interface ProjectOntology {
-  entity_types: OntologyEntityType[]
-  edge_types: OntologyEdgeType[]
-  analysis_summary?: string
-  _meta?: {
-    model?: string | null
-    provider?: string | null
-    api_called?: boolean
-    input_tokens?: number
-    output_tokens?: number
-  }
-}
-
 export interface AsyncTaskInfo {
   task_id: string
   task_type: string
-  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
+  status: AgentRunStatus
   created_at: string
   updated_at: string
-  progress: number
   message: string
-  result?: Record<string, any> | null
   error?: string | null
-  progress_detail?: Record<string, any> | null
+  heartbeat_at?: string | null
+  lease_owner?: string | null
+  cancel_requested: boolean
   metadata?: Record<string, any> | null
 }
 
@@ -46,8 +20,38 @@ export interface AdminTaskListResponse {
   limit: number
 }
 
+export interface AuditLogEntry {
+  id: string
+  actor_user_id: string | null
+  project_id: string | null
+  action: string
+  target_type: string
+  target_id: string | null
+  request_id: string | null
+  ip_address: string | null
+  detail: Record<string, unknown>
+  created_at: string
+}
+
+export interface AuditLogListResponse {
+  items: AuditLogEntry[]
+  total: number
+  limit: number
+}
+
+export interface RuntimeHealth {
+  status: 'ok' | 'degraded'
+  database: 'ok'
+  redis: 'ok'
+  memory: {
+    status: string
+    instances: number
+  }
+  run_counts: Record<string, number>
+  stale_worker_leases: number
+}
+
 export type ComponentModelConfig = Record<string, string>
-export type OperationPromptConfig = Record<string, string>
 
 export interface User {
   id: string
@@ -142,16 +146,6 @@ export interface AdminUser {
   paid_amount?: number
 }
 
-export interface ProjectChapter {
-  id: string
-  project_id: string
-  title: string
-  content: string
-  order_index: number
-  created_at: string
-  updated_at: string
-}
-
 export type ProjectVisibility = 'private' | 'public'
 
 export interface Project {
@@ -163,10 +157,9 @@ export interface Project {
   current_user_role?: string | null
   current_user_permissions?: string[]
   component_models?: ComponentModelConfig | null
-  operation_prompts?: OperationPromptConfig | null
-  ontology_schema?: ProjectOntology | null
-  creative_state?: ProjectCreativeState | null
-  chapters?: ProjectChapter[]
+  active_revision_id?: string | null
+  memory_instance_id?: string | null
+  pack_slug: string
   created_at: string
   updated_at: string
 }
@@ -183,108 +176,6 @@ export interface PublicProject {
   updated_at: string
 }
 
-// ---- Pi Agent workspace types ----
-
-export type AgentSessionStatus =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'partial'
-  | string
-
-export interface AgentMessage {
-  id?: string
-  role: string
-  content: string
-  created_at?: string
-  [key: string]: any
-}
-
-export interface AgentStep {
-  id?: string
-  step_id?: string
-  step?: number
-  total_steps?: number
-  step_type?: string
-  title?: string
-  message?: string
-  tool?: string
-  status?: string
-  output?: string
-  tool_result_preview?: string
-  child_session_id?: string
-  agent_role?: string
-  model?: string
-  created_at?: string
-  [key: string]: any
-}
-
-export interface AgentWorkspaceGraph {
-  nodes?: Record<string, any>[]
-  edges?: Record<string, any>[]
-  [key: string]: any
-}
-
-export interface AgentWorkspace {
-  structured_memory?: Record<string, any>
-  graph?: AgentWorkspaceGraph
-  writing_plan?: Record<string, any> | string | null
-  last_task?: Record<string, any> | string | null
-  [key: string]: any
-}
-
-export interface ProjectCreativeState {
-  agent_workspace?: AgentWorkspace | null
-  [key: string]: any
-}
-
-export interface AgentSessionSummary {
-  session_id: string
-  project_id: string
-  role: string
-  parent_session_id?: string | null
-  root_session_id?: string | null
-  parent_step_id?: string | null
-  title: string | null
-  status: AgentSessionStatus
-  message_count: number
-  archived_at: string | null
-  created_at: string
-  updated_at: string
-}
-
-export interface AgentSessionSnapshot {
-  session_id: string
-  project_id: string
-  role: string
-  parent_session_id?: string | null
-  root_session_id?: string | null
-  parent_step_id?: string | null
-  title: string | null
-  status: AgentSessionStatus
-  model: string
-  messages: AgentMessage[]
-  steps: AgentStep[]
-  children: Record<string, any>[]
-  agent_workspace: AgentWorkspace | null
-  plan?: Record<string, any> | null
-  created_at: string
-  updated_at: string
-}
-
-export interface AgentChatAccepted {
-  session_id: string
-  message_id: string
-  status: string
-  created_at: string
-}
-
-export interface AgentSuggestResult {
-  suggestions: Record<string, any>[]
-  memory_queries: string[]
-  raw: string
-}
 export interface GraphNode {
   id: string
   label: string
@@ -306,7 +197,131 @@ export interface GraphData {
 
 export interface AuthResponse {
   user: User
-  token: string
+}
+
+export type AgentRunMode = 'write' | 'analyze' | 'suggest'
+export type AgentRunStatus =
+  | 'queued'
+  | 'running'
+  | 'awaiting_review'
+  | 'accepting'
+  | 'completed'
+  | 'rejected'
+  | 'conflicted'
+  | 'failed'
+  | 'cancelled'
+
+export interface SourceRef {
+  kind: 'file' | 'knowledge' | 'user' | 'external'
+  ref: string
+  revision?: string | null
+  excerpt?: string | null
+}
+
+export interface KnowledgeRecord {
+  id: string
+  kind: 'fact' | 'entity' | 'relation' | 'event' | 'constraint' | 'source'
+  title: string
+  content: string
+  attributes: Record<string, unknown>
+  source_refs: SourceRef[]
+  revision?: string | null
+  entity_type?: string
+  source_id?: string
+  target_id?: string
+  predicate?: string
+  occurred_at?: string | null
+  severity?: 'required' | 'preferred'
+  locator?: string
+}
+
+export interface FileChange {
+  path: string
+  change_type: 'added' | 'modified' | 'deleted'
+  before_hash?: string | null
+  after_hash?: string | null
+  diff: string
+}
+
+export interface KnowledgeOperation {
+  operation: 'upsert' | 'delete'
+  record?: KnowledgeRecord
+  record_id?: string
+}
+
+export interface ChangeSet {
+  files: FileChange[]
+  knowledge: KnowledgeOperation[]
+  validation?: {
+    passed: boolean
+    checks: Record<string, unknown>[]
+  } | null
+  self_review?: {
+    passed: boolean
+    summary: string
+    issues: Record<string, unknown>[]
+  } | null
+}
+
+export interface AgentRun {
+  id: string
+  project_id: string
+  user_id: string
+  base_revision_id: string | null
+  result_revision_id: string | null
+  mode: AgentRunMode
+  status: AgentRunStatus
+  instruction: string
+  model: string | null
+  effort: string | null
+  target_refs: string[]
+  plan: Record<string, unknown> | null
+  skill_snapshot: Record<string, unknown>
+  final_output: {
+    summary: string
+    changed_files: string[]
+    knowledge_operations: number
+    used_knowledge_ids: string[]
+    unresolved_issues: string[]
+  } | null
+  error: string | null
+  cancel_requested: boolean
+  created_at: string
+  updated_at: string
+  started_at: string | null
+  completed_at: string | null
+}
+
+export interface AgentRunEvent {
+  id: number
+  event: string
+  data: Record<string, unknown>
+}
+
+export interface ResolvedSkill {
+  slug: string
+  name: string
+  description: string
+  instructions: string
+  scopes: AgentRunMode[]
+  roles: string[]
+  allowed_tools: string[]
+  params_schema: Record<string, unknown>
+  default_model_component: string | null
+  version: number
+  source: 'builtin' | 'project'
+}
+
+export interface ProjectRevision {
+  id: string
+  project_id: string
+  parent_revision_id: string | null
+  git_commit: string
+  knowledge_dataset: string
+  created_by_run_id: string | null
+  status: 'active' | 'superseded'
+  message: string
+  created_at: string
 }
 
 export interface PaginatedResponse<T> {
@@ -409,16 +424,6 @@ export interface Provider {
 
 export interface LlmRuntimeConfig {
   llm_request_timeout_seconds: number
-  llm_retry_count: number
-  llm_retry_interval_seconds: number
-  llm_prefer_stream: boolean
-  llm_stream_fallback_nonstream: boolean
-  llm_fallback_model: string
-  llm_openai_api_style: string
-  llm_reasoning_effort: string
-  llm_task_concurrency: number
-  llm_model_default_concurrency: number
-  llm_model_concurrency_overrides: Record<string, number>
 }
 
 export interface PaymentOrder {

@@ -1,17 +1,21 @@
+x-app-environment: &app-environment
+  DATABASE_URL: postgresql+asyncpg://musegraph:musegraph123@postgres:5432/musegraph
+  REDIS_URL: redis://redis:6379
+  FILE_STORAGE_ROOT: /app/.musegraph/storage
+  MEMORY_SERVICE_URL: http://memory:4010
+  INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN in docker/.env}
+  SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:?Set SECRET_ENCRYPTION_KEY in docker/.env}
+  APP_ENV: development
+  APP_URL: http://localhost:3010
+  REGISTRATION_MODE: ${REGISTRATION_MODE:-open}
+  COOKIE_SECURE: "false"
+  AUTO_SEED_DATA: "false"
+  TELEMETRY_DISABLED: "true"
+  ALLOW_PRIVATE_PROVIDER_URLS: ${ALLOW_PRIVATE_PROVIDER_URLS:-false}
+
 services:
   postgres:
     image: pgvector/pgvector:0.8.2-pg16-bookworm
-    container_name: musegraph-postgres
-    command:
-      - postgres
-      - -c
-      - shared_buffers=128MB
-      - -c
-      - work_mem=4MB
-      - -c
-      - maintenance_work_mem=64MB
-      - -c
-      - max_connections=40
     environment:
       POSTGRES_USER: musegraph
       POSTGRES_PASSWORD: musegraph123
@@ -19,75 +23,216 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U musegraph"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U musegraph -d musegraph"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 12
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
-    container_name: musegraph-redis
+    image: redis:8-alpine
     command: ["redis-server", "--appendonly", "no", "--save", "", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
-    volumes:
-      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 12
     restart: unless-stopped
 
-  server:
+  migrate:
+    image: musegraph-server:dev
     build:
       context: ..
       dockerfile: docker/server-py.Dockerfile
-    container_name: musegraph-server
+    command: ["alembic", "upgrade", "head"]
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - storage_data:/app/.musegraph/storage
+    restart: "no"
+
+  memory:
+    image: musegraph-server:dev
+    build:
+      context: ..
+      dockerfile: docker/server-py.Dockerfile
+    command: ["uvicorn", "app.memory_service_main:app", "--host", "0.0.0.0", "--port", "4010"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://musegraph:musegraph123@postgres:5432/musegraph
-      REDIS_URL: redis://redis:6379
+      <<: *app-environment
       COGNEE_DATA_DIR: /app/.musegraph/cognee
-      COGNEE_INGEST_TIMEOUT_SECONDS: ${COGNEE_INGEST_TIMEOUT_SECONDS:-300}
-      COGNEE_LLM_MAX_TOKENS: ${COGNEE_LLM_MAX_TOKENS:-8192}
-      TASK_STATE_SQLITE_PATH: /app/.musegraph/task_state.sqlite3
-      SESSION_EXPIRES_HOURS: 168
-      FILE_STORAGE_ROOT: /app/.musegraph/storage
-      ENABLE_BACKEND_ACCESS_CONTROL: "false"
-      APP_URL: http://localhost:3010
-      TELEMETRY_DISABLED: "true"
-      DISABLE_AIOHTTP_TRANSPORT: "true"
-      AGENT_FLOW_TIMEOUT_SECONDS: ${AGENT_FLOW_TIMEOUT_SECONDS:-1800}
-      AGENT_PI_TOOL_LOOP_MAX_ITERATIONS: ${AGENT_PI_TOOL_LOOP_MAX_ITERATIONS:-40}
-      AGENT_PI_TOOL_LOOP_MAX_TOKENS: ${AGENT_PI_TOOL_LOOP_MAX_TOKENS:-16384}
-      WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-true}
-      WEB_SEARCH_MAX_RESULTS: ${WEB_SEARCH_MAX_RESULTS:-8}
-      AUTO_SEED_DATA: ${AUTO_SEED_DATA:-true}
-      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@example.com}
-      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-Admin123!Pass}
-      SEED_ADMIN_NICKNAME: ${SEED_ADMIN_NICKNAME:-Administrator}
+      ENABLE_BACKEND_ACCESS_CONTROL: "true"
+      CACHING: "false"
+      CACHE_BACKEND: "sqlite"
+    volumes:
+      - memory_data:/app/.musegraph/cognee
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4010/health', timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  server:
+    image: musegraph-server:dev
+    build:
+      context: ..
+      dockerfile: docker/server-py.Dockerfile
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "4000", "--timeout-keep-alive", "600"]
+    environment: *app-environment
     ports:
       - "4080:4000"
     depends_on:
-      postgres:
+      migrate:
+        condition: service_completed_successfully
+      memory:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
-      - task_state_data:/app/.musegraph
+      - storage_data:/app/.musegraph/storage
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/api/health', timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 30
     restart: unless-stopped
 
+  worker:
+    image: musegraph-server:dev
+    build:
+      context: ..
+      dockerfile: docker/server-py.Dockerfile
+    command: ["python", "-m", "app.agent_worker_main"]
+    environment: *app-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      memory:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - storage_data:/app/.musegraph/storage
+    restart: unless-stopped
+
+  seed:
+    image: musegraph-server:dev
+    build:
+      context: ..
+      dockerfile: docker/server-py.Dockerfile
+    command: ["python", "seed.py"]
+    profiles: ["tools"]
+    environment:
+      <<: *app-environment
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+      SEED_ADMIN_NICKNAME: ${SEED_ADMIN_NICKNAME:-Administrator}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  backend-tests:
+    image: musegraph-server-test:dev
+    build:
+      context: ..
+      dockerfile: docker/server-py.Dockerfile
+      target: test
+    command:
+      - sh
+      - -c
+      - python seed.py && pytest -o addopts= -q -m 'not protected'
+    profiles: ["test"]
+    environment:
+      <<: *app-environment
+      MUSEGRAPH_TEST_BASE_URL: http://server:4000
+      SEED_ADMIN_EMAIL: test-admin@musegraph.example.com
+      SEED_ADMIN_PASSWORD: Development-Test-Admin-Password-2026!
+      SEED_ADMIN_NICKNAME: Test Administrator
+    depends_on:
+      server:
+        condition: service_healthy
+    volumes:
+      - storage_data:/app/.musegraph/storage
+    restart: "no"
+
+  protected-tests:
+    image: musegraph-server-test:dev
+    build:
+      context: ..
+      dockerfile: docker/server-py.Dockerfile
+      target: test
+    command:
+      - sh
+      - -c
+      - python seed.py && pytest -o addopts= -q -m protected
+    profiles: ["protected-test"]
+    environment:
+      <<: *app-environment
+      MUSEGRAPH_TEST_BASE_URL: http://server:4000
+      SEED_ADMIN_EMAIL: protected-admin@musegraph.example.com
+      SEED_ADMIN_PASSWORD: Protected-Test-Admin-Password-2026!
+      SEED_ADMIN_NICKNAME: Protected Test Administrator
+      MUSEGRAPH_PROVIDER_API_KEY: ${MUSEGRAPH_PROVIDER_API_KEY:-}
+      MUSEGRAPH_PROVIDER_BASE_URL: ${MUSEGRAPH_PROVIDER_BASE_URL:-}
+      MUSEGRAPH_PROVIDER_MODEL: ${MUSEGRAPH_PROVIDER_MODEL:-}
+      MUSEGRAPH_EMBEDDING_MODEL: ${MUSEGRAPH_EMBEDDING_MODEL:-}
+      MUSEGRAPH_EMBEDDING_DIMENSIONS: ${MUSEGRAPH_EMBEDDING_DIMENSIONS:-}
+    depends_on:
+      server:
+        condition: service_healthy
+    volumes:
+      - storage_data:/app/.musegraph/storage
+    restart: "no"
+
   web:
+    image: musegraph-web:dev
     build:
       context: ..
       dockerfile: docker/web-vue.Dockerfile
-    container_name: musegraph-web
     ports:
       - "3010:3000"
     depends_on:
-      - server
+      server:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1:3000/
+      interval: 5s
+      timeout: 5s
+      retries: 20
     restart: unless-stopped
+
+  e2e:
+    image: musegraph-e2e:dev
+    build:
+      context: ..
+      dockerfile: docker/e2e.Dockerfile
+    profiles: ["test"]
+    network_mode: host
+    environment:
+      PW_BASE_URL: http://127.0.0.1:3010
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: "no"
 
 volumes:
   postgres_data:
-  redis_data:
-  task_state_data:
+  storage_data:
+  memory_data:

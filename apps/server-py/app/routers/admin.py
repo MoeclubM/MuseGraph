@@ -15,10 +15,12 @@ from app.dependencies import require_admin
 from app.models.billing import Order, Usage
 from app.models.config import AIProviderConfig, PaymentConfig, PricingRule
 from app.models.payment_adapter import PaymentAdapter
-from app.models.project import TextOperation, TextProject
+from app.models.project import TextProject
+from app.models.runtime import AgentRun, AuditLog
 from app.models.user import User
+from app.redis import redis_client
 from app.schemas.admin import StatsResponse, UserListResponse
-from app.services.auth import hash_password, register_user
+from app.services.auth import create_user, hash_password, revoke_user_sessions
 from app.services.llm_runtime import merge_llm_runtime_config, normalize_llm_runtime_config
 from app.services.payment_adapters.registry import (
     ADAPTER_TYPES,
@@ -26,7 +28,6 @@ from app.services.payment_adapters.registry import (
     validate_adapter_config,
 )
 from app.services.pricing_catalog import collect_pricing_catalog
-from app.services.task_state import TaskRecord, TaskStatus, task_manager
 from app.services.provider_models import (
     dump_provider_models,
     get_chat_models,
@@ -40,12 +41,19 @@ from app.services.provider_type import (
     normalize_provider_type,
     parse_supported_provider_types,
 )
+from app.services.provider_security import validate_provider_base_url
+from app.services.secret_crypto import (
+    decrypt_secret,
+    decrypt_secret_fields,
+    encrypt_secret,
+    encrypt_secret_fields,
+)
 
 router = APIRouter()
 SUPPORTED_PROVIDER_TYPES = parse_supported_provider_types(settings.SUPPORTED_PROVIDER_TYPES)
 SUPPORTED_BILLING_MODES = {"TOKEN", "REQUEST"}
 MONEY_SCALE = Decimal("0.000001")
-_RUNNING_TASK_STATUSES = {TaskStatus.PENDING.value, TaskStatus.PROCESSING.value}
+_RUNNING_TASK_STATUSES = {"queued", "running"}
 
 
 def _money(value: Any) -> Decimal:
@@ -101,19 +109,39 @@ def _serialize_pricing_rule(rule: PricingRule) -> dict[str, Any]:
     }
 
 
-def _serialize_task(task: TaskRecord) -> dict[str, Any]:
+def _serialize_task(task: AgentRun) -> dict[str, Any]:
     return {
-        "task_id": task.task_id,
-        "task_type": task.task_type,
-        "status": task.status.value if isinstance(task.status, TaskStatus) else str(task.status or ""),
+        "task_id": task.id,
+        "task_type": f"agent:{task.mode}",
+        "status": task.status,
         "created_at": task.created_at.isoformat(),
         "updated_at": task.updated_at.isoformat(),
-        "progress": int(task.progress or 0),
-        "message": str(task.message or ""),
-        "result": task.result if isinstance(task.result, dict) else None,
-        "error": str(task.error) if task.error is not None else None,
-        "progress_detail": task.progress_detail if isinstance(task.progress_detail, dict) else None,
-        "metadata": task.metadata if isinstance(task.metadata, dict) else {},
+        "message": str((task.final_output or {}).get("summary") or task.instruction),
+        "error": task.error,
+        "heartbeat_at": task.heartbeat_at.isoformat() if task.heartbeat_at else None,
+        "lease_owner": task.lease_owner,
+        "cancel_requested": task.cancel_requested,
+        "metadata": {
+            "project_id": task.project_id,
+            "user_id": task.user_id,
+            "base_revision_id": task.base_revision_id,
+            "result_revision_id": task.result_revision_id,
+        },
+    }
+
+
+def _serialize_audit_log(entry: AuditLog) -> dict[str, Any]:
+    return {
+        "id": entry.id,
+        "actor_user_id": entry.actor_user_id,
+        "project_id": entry.project_id,
+        "action": entry.action,
+        "target_type": entry.target_type,
+        "target_id": entry.target_id,
+        "request_id": entry.request_id,
+        "ip_address": entry.ip_address,
+        "detail": entry.detail,
+        "created_at": entry.created_at.isoformat(),
     }
 
 
@@ -123,7 +151,10 @@ def _normalize_task_status_filter(value: str | None) -> str | None:
     normalized = str(value or "").strip().lower()
     if not normalized:
         return None
-    if normalized not in {status.value for status in TaskStatus}:
+    if normalized not in {
+        "queued", "running", "awaiting_review", "accepting", "completed",
+        "rejected", "conflicted", "failed", "cancelled",
+    }:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid task status filter",
@@ -310,12 +341,12 @@ async def get_stats(admin: User = Depends(require_admin), db: AsyncSession = Dep
 
     total_users = int((await db.execute(select(func.count(User.id)))).scalar() or 0)
     total_projects = int((await db.execute(select(func.count(TextProject.id)))).scalar() or 0)
-    total_operations = int((await db.execute(select(func.count(TextOperation.id)))).scalar() or 0)
+    total_operations = int((await db.execute(select(func.count(AgentRun.id)))).scalar() or 0)
     completed_operations = int(
-        (await db.execute(select(func.count(TextOperation.id)).where(TextOperation.status == "COMPLETED"))).scalar() or 0
+        (await db.execute(select(func.count(AgentRun.id)).where(AgentRun.status == "completed"))).scalar() or 0
     )
     failed_operations = int(
-        (await db.execute(select(func.count(TextOperation.id)).where(TextOperation.status == "FAILED"))).scalar() or 0
+        (await db.execute(select(func.count(AgentRun.id)).where(AgentRun.status == "failed"))).scalar() or 0
     )
 
     total_revenue = float(
@@ -492,8 +523,8 @@ async def get_stats(admin: User = Depends(require_admin), db: AsyncSession = Dep
             await db.execute(
                 select(func.count(Usage.id))
                 .select_from(Usage)
-                .outerjoin(TextOperation, TextOperation.id == Usage.operation_id)
-                .where(and_(Usage.operation_id.is_not(None), TextOperation.id.is_(None)))
+                .outerjoin(AgentRun, AgentRun.id == Usage.operation_id)
+                .where(and_(Usage.operation_id.is_not(None), AgentRun.id.is_(None)))
             )
         ).scalar()
         or 0
@@ -525,41 +556,13 @@ async def get_stats(admin: User = Depends(require_admin), db: AsyncSession = Dep
             await db.execute(
                 select(func.count(Usage.id))
                 .select_from(Usage)
-                .join(TextOperation, TextOperation.id == Usage.operation_id)
-                .join(TextProject, TextProject.id == TextOperation.project_id)
-                .where(TextProject.user_id != Usage.user_id)
+                .join(AgentRun, AgentRun.id == Usage.operation_id)
+                .where(AgentRun.user_id != Usage.user_id)
             )
         ).scalar()
         or 0
     )
-    usage_by_operation = (
-        select(
-            Usage.operation_id.label("operation_id"),
-            func.coalesce(func.sum(Usage.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(Usage.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(Usage.cost), 0).label("cost"),
-        )
-        .where(Usage.operation_id.is_not(None))
-        .group_by(Usage.operation_id)
-        .subquery()
-    )
-    usage_operation_value_mismatch = int(
-        (
-            await db.execute(
-                select(func.count(usage_by_operation.c.operation_id))
-                .select_from(usage_by_operation)
-                .join(TextOperation, TextOperation.id == usage_by_operation.c.operation_id)
-                .where(
-                    or_(
-                        usage_by_operation.c.input_tokens != TextOperation.input_tokens,
-                        usage_by_operation.c.output_tokens != TextOperation.output_tokens,
-                        usage_by_operation.c.cost != TextOperation.cost,
-                    )
-                )
-            )
-        ).scalar()
-        or 0
-    )
+    usage_operation_value_mismatch = 0
     negative_balance_users = int(
         (await db.execute(select(func.count(User.id)).where(User.balance < Decimal("0")))).scalar() or 0
     )
@@ -712,7 +715,7 @@ async def create_user(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="email/password/nickname are required")
 
     try:
-        user = await register_user(email, password, nickname, db)
+        user = await create_user(email, password, nickname, db)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
@@ -722,6 +725,8 @@ async def create_user(
         if status_value not in ("ACTIVE", "SUSPENDED", "DELETED"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
         user.status = status_value
+        if status_value != "ACTIVE":
+            await revoke_user_sessions(user.id, db)
     if "balance" in body:
         user.balance = _money(body.get("balance"))
     await db.flush()
@@ -761,6 +766,8 @@ async def update_user(
         if status_value not in ("ACTIVE", "SUSPENDED", "DELETED"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
         user.status = status_value
+        if status_value != "ACTIVE":
+            await revoke_user_sessions(user.id, db)
     if "balance" in body:
         user.balance = _money(body.get("balance"))
     await db.flush()
@@ -795,13 +802,14 @@ async def reset_user_password(
     db: AsyncSession = Depends(get_db),
 ):
     password = str(body.get("password", "")).strip()
-    if len(password) < 6:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="password must be at least 6 characters")
+    if len(password) < 12:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="password must be at least 12 characters")
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     user.password_hash = hash_password(password)
+    await revoke_user_sessions(user.id, db)
     await db.flush()
     return {"ok": True}
 
@@ -880,24 +888,34 @@ async def list_tasks(
     db: AsyncSession = Depends(get_db),
 ):
     normalized_status = _normalize_task_status_filter(status_filter)
-    tasks = task_manager.list_tasks(
-        task_type=str(task_type or "").strip() or None,
-        project_id=str(project_id or "").strip() or None,
-        limit=limit,
-    )
+    filters = []
+    if task_type:
+        normalized_type = str(task_type).removeprefix("agent:").strip()
+        if normalized_type not in {"write", "analyze", "suggest"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid task type filter",
+            )
+        filters.append(AgentRun.mode == normalized_type)
+    if project_id:
+        filters.append(AgentRun.project_id == str(project_id).strip())
     if user_id:
-        target_user_id = str(user_id).strip()
-        tasks = [t for t in tasks if str((t.metadata or {}).get("user_id") or "") == target_user_id]
+        filters.append(AgentRun.user_id == str(user_id).strip())
     if normalized_status:
-        tasks = [
-            t
-            for t in tasks
-            if (t.status.value if isinstance(t.status, TaskStatus) else str(t.status or "").lower()) == normalized_status
-        ]
+        filters.append(AgentRun.status == normalized_status)
+    query = select(AgentRun).where(*filters).order_by(AgentRun.created_at.desc()).limit(limit)
+    tasks = list((await db.execute(query)).scalars())
+    total = int(
+        (
+            await db.execute(
+                select(func.count()).select_from(AgentRun).where(*filters)
+            )
+        ).scalar_one()
+    )
 
     return {
         "tasks": [_serialize_task(task) for task in tasks],
-        "total": len(tasks),
+        "total": total,
         "limit": limit,
     }
 
@@ -908,11 +926,95 @@ async def get_task_detail(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    task = task_manager.get_task(task_id)
+    task = await db.get(AgentRun, task_id)
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
     return {
         "task": _serialize_task(task),
+    }
+
+
+@router.get("/audit-logs")
+async def list_audit_logs(
+    project_id: str | None = Query(default=None),
+    actor_user_id: str | None = Query(default=None),
+    action: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=200, ge=1, le=1000),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    filters = []
+    if project_id:
+        filters.append(AuditLog.project_id == project_id.strip())
+    if actor_user_id:
+        filters.append(AuditLog.actor_user_id == actor_user_id.strip())
+    if action:
+        filters.append(AuditLog.action == action.strip())
+    entries = list(
+        (
+            await db.execute(
+                select(AuditLog)
+                .where(*filters)
+                .order_by(AuditLog.created_at.desc())
+                .limit(limit)
+            )
+        ).scalars()
+    )
+    total = int(
+        (
+            await db.execute(
+                select(func.count()).select_from(AuditLog).where(*filters)
+            )
+        ).scalar_one()
+    )
+    return {
+        "items": [_serialize_audit_log(entry) for entry in entries],
+        "total": total,
+        "limit": limit,
+    }
+
+
+@router.get("/runtime-health")
+async def runtime_health(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    now = datetime.now(timezone.utc)
+    counts = {
+        row.status: int(row.count)
+        for row in (
+            await db.execute(
+                select(AgentRun.status, func.count().label("count")).group_by(AgentRun.status)
+            )
+        )
+    }
+    stale_workers = int(
+        (
+            await db.execute(
+                select(func.count())
+                .select_from(AgentRun)
+                .where(
+                    AgentRun.status == "running",
+                    AgentRun.lease_expires_at < now,
+                )
+            )
+        ).scalar_one()
+    )
+    await redis_client.ping()
+    async with httpx.AsyncClient(
+        base_url=settings.MEMORY_SERVICE_URL,
+        timeout=10,
+    ) as client:
+        response = await client.get("/health")
+        response.raise_for_status()
+        memory = response.json()
+    return {
+        "status": "ok" if stale_workers == 0 else "degraded",
+        "database": "ok",
+        "redis": "ok",
+        "memory": memory,
+        "run_counts": counts,
+        "stale_worker_leases": stale_workers,
     }
 
 
@@ -922,12 +1024,15 @@ async def cancel_task(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    task = task_manager.get_task(task_id)
+    task = await db.get(AgentRun, task_id)
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
-    current_status = task.status.value if isinstance(task.status, TaskStatus) else str(task.status or "").lower()
-    if current_status in _RUNNING_TASK_STATUSES:
-        task = task_manager.cancel_task(task_id, message="Task cancelled by admin") or task
+    if task.status in _RUNNING_TASK_STATUSES:
+        task.cancel_requested = True
+        if task.status == "queued":
+            task.status = "cancelled"
+            task.completed_at = datetime.now(timezone.utc)
+        await db.flush()
     return {
         "task": _serialize_task(task),
     }
@@ -944,6 +1049,7 @@ def _serialize_provider(provider: AIProviderConfig) -> dict[str, Any]:
         "reranker_models": get_provider_models(provider, "reranker"),
         "is_active": provider.is_active,
         "priority": provider.priority,
+        "has_api_key": bool(provider.api_key),
     }
 
 
@@ -1016,7 +1122,7 @@ async def _get_provider_or_404(provider_id: str, db: AsyncSession) -> AIProvider
 
 async def _discover_models_for_provider(provider: AIProviderConfig) -> list[dict[str, Any]]:
     provider_type = _normalize_provider_type(provider.provider)
-    api_key = (provider.api_key or "").strip()
+    api_key = decrypt_secret(provider.api_key)
     if not api_key:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provider API key is empty")
 
@@ -1308,11 +1414,12 @@ async def create_provider(
             ),
         )
     provider_type = _normalize_provider_type(body.get("provider", ""))
+    base_url = await validate_provider_base_url(body.get("base_url"))
     provider = AIProviderConfig(
         name=body["name"],
         provider=provider_type,
-        api_key=body["api_key"],
-        base_url=body.get("base_url"),
+        api_key=encrypt_secret(str(body["api_key"])),
+        base_url=base_url,
         models=dump_provider_models(models=[], embedding_models=[], reranker_models=[]),
         is_active=body.get("is_active", True),
         priority=body.get("priority", 0),
@@ -1345,6 +1452,10 @@ async def update_provider(
         if key in body:
             if key == "provider":
                 setattr(provider, key, _normalize_provider_type(body[key]))
+            elif key == "api_key":
+                setattr(provider, key, encrypt_secret(str(body[key])))
+            elif key == "base_url":
+                setattr(provider, key, await validate_provider_base_url(body[key]))
             else:
                 setattr(provider, key, body[key])
     await db.flush()
@@ -1455,7 +1566,7 @@ async def create_payment_adapter(
     item = PaymentAdapter(
         adapter_type=adapter_type,
         display_name=display_name,
-        config=stored_config,
+        config=encrypt_secret_fields(stored_config),
         enabled=enabled,
         sort_order=sort_order,
     )
@@ -1488,7 +1599,7 @@ async def update_payment_adapter(
 
     if "config" in body:
         incoming_config = body.get("config") if isinstance(body.get("config"), dict) else {}
-        current_cfg = item.config if isinstance(item.config, dict) else {}
+        current_cfg = decrypt_secret_fields(item.config if isinstance(item.config, dict) else {})
         existing_key = str(current_cfg.get("key") or "")
         stored_config, err = validate_adapter_config(
             item.adapter_type,
@@ -1498,9 +1609,9 @@ async def update_payment_adapter(
         )
         if err:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
-        item.config = stored_config
+        item.config = encrypt_secret_fields(stored_config)
     elif item.enabled:
-        current_cfg = item.config if isinstance(item.config, dict) else {}
+        current_cfg = decrypt_secret_fields(item.config if isinstance(item.config, dict) else {})
         existing_key = str(current_cfg.get("key") or "")
         _, err = validate_adapter_config(
             item.adapter_type,

@@ -4,7 +4,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Settings2 } from '@lucide/vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
-import AgentSessionSidebar from '@/components/agent/AgentSessionSidebar.vue'
+import AgentRunSidebar from '@/components/agent/AgentRunSidebar.vue'
 import AgentCenterPanel from '@/components/agent/AgentCenterPanel.vue'
 import AgentBrowserPanel from '@/components/agent/AgentBrowserPanel.vue'
 import AgentResizeHandle from '@/components/agent/AgentResizeHandle.vue'
@@ -27,21 +27,30 @@ async function initialize(id: string) {
   layoutStore.bindProject(id)
   agentStore.reset()
   await Promise.all([
-    projectStore.fetchProject(id).catch(() => {}),
-    agentStore.loadSessions(id).catch(() => {}),
-    agentStore.loadModels().catch(() => {}),
+    projectStore.fetchProject(id),
+    agentStore.loadRuns(id),
   ])
+  const requestedRunId = String(route.query.run || '')
+  if (requestedRunId && agentStore.runs.some((run) => run.id === requestedRunId)) {
+    await agentStore.selectRun(id, requestedRunId)
+  }
+  await agentStore.loadModels(projectStore.currentProject)
   agentStore.applyDefaultModel(projectStore.currentProject)
 }
 
 watch(projectId, (id) => void initialize(id), { immediate: true })
+watch(
+  () => route.query.run,
+  (runId) => {
+    const id = String(runId || '')
+    if (id && id !== agentStore.currentRunId) void agentStore.selectRun(projectId.value, id)
+  },
+)
 
-const sessionStatus = computed(() => String(agentStore.currentSession?.status || '').toLowerCase())
-watch(sessionStatus, (next, prev) => {
-  const wasRunning = prev === 'running' || prev === 'pending'
-  const isTerminal = ['completed', 'failed', 'partial'].includes(next)
-  if (wasRunning && isTerminal) {
-    void projectStore.fetchProject(projectId.value).catch(() => {})
+const runStatus = computed(() => String(agentStore.currentRun?.status || '').toLowerCase())
+watch(runStatus, (next, prev) => {
+  if (next !== prev && ['completed', 'rejected', 'conflicted'].includes(next)) {
+    void projectStore.fetchProject(projectId.value)
   }
 })
 
@@ -88,7 +97,7 @@ onBeforeUnmount(() => {
 
       <div class="flex min-h-0 flex-1">
         <div class="flex min-h-0 min-w-0 flex-1">
-          <AgentSessionSidebar
+          <AgentRunSidebar
             :style="{ flex: '0 0 auto', width: layoutStore.sidebarWidthStyle() }"
             :collapsed="layoutStore.sidebarCollapsed"
             :project-id="projectId"

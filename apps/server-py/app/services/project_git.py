@@ -350,6 +350,26 @@ def read_project_record_point_snapshot(project_id: str, record_point_id: str) ->
     return {"manifest": manifest, "documents": documents}
 
 
+def materialize_project_commit(project_id: str, commit_id: str, target: Path) -> None:
+    workspace = project_workspace_root(project_id)
+    repo = _open_repo(workspace)
+    try:
+        resolved = _resolve_commit_id(repo, commit_id)
+        commit = repo[resolved]
+        target_root = target.resolve()
+        target_root.mkdir(parents=True, exist_ok=True)
+        for entry in iter_tree_contents(repo.object_store, commit.tree):
+            relative = Path(_decode(entry.path))
+            if relative.is_absolute() or ".." in relative.parts:
+                raise RuntimeError(f"Unsafe path in project commit: {relative}")
+            destination = (target_root / relative).resolve()
+            destination.relative_to(target_root)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(repo[entry.sha].as_raw_string())
+    finally:
+        repo.close()
+
+
 def _branches_payload(workspace: Path, current_branch: str) -> list[str]:
     repo = _open_repo(workspace)
     try:
@@ -596,3 +616,25 @@ def push_project_git_branch(project_id: str, remote: str, branch: str | None = N
     )
     _record_pushed_branch(workspace, remote_name, branch_name)
     return get_project_git_snapshot(project_id)
+
+
+def restore_project_git_commit(project_id: str, commit_id: str) -> None:
+    workspace = project_workspace_root(project_id)
+    repo = _open_repo(workspace)
+    try:
+        resolved = _resolve_commit_id(repo, commit_id)
+    finally:
+        repo.close()
+    _call_git(porcelain.reset, str(workspace), "hard", resolved)
+    repo = _open_repo(workspace)
+    try:
+        branch = _active_branch(workspace)
+        repo.refs[_branch_ref(branch)] = resolved
+        repo.refs[_remote_ref("origin", branch)] = resolved
+    finally:
+        repo.close()
+    bare_repo = _call_git(Repo, str(project_git_server_repo_root(project_id)))
+    try:
+        bare_repo.refs[_branch_ref(branch)] = resolved
+    finally:
+        bare_repo.close()

@@ -3,7 +3,7 @@ name = "musegraph-server"
 version = "0.1.0"
 description = "MuseGraph AI Text Creation & Knowledge Graph Server"
 license = "Apache-2.0"
-requires-python = ">=3.12"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     "fastapi>=0.139.2",
     "uvicorn[standard]>=0.51.0",
@@ -14,16 +14,17 @@ dependencies = [
     "pydantic-settings>=2.14.2",
     "redis[hiredis]>=8.0.1",
     "pwdlib[argon2]>=0.3.0",
+    "cryptography>=49.0.0",
     "python-multipart>=0.0.32",
-    "cognee>=1.3.0",
+    "cognee>=1.4.0",
     "httpx>=0.28.1",
     "sse-starlette>=3.4.5",
     "python-docx>=1.2.0",
     "pypdf>=6.14.2",
     "litellm>=1.92.0",
-    "pi-coding-agent-python-sdk>=0.4.3",
     "dulwich>=1.2.11",
     "PyYAML>=6.0.3",
+    "jsonschema>=4.26.0",
 ]
 
 [project.optional-dependencies]
@@ -35,11 +36,16 @@ test = [
 ]
 
 [tool.pytest.ini_options]
+addopts = "-m 'not integration and not protected'"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "integration: requires the real Compose platform",
+    "protected: requires real external Provider credentials",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

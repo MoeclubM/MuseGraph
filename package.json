@@ -5,18 +5,16 @@
   "private": true,
   "scripts": {
     "dev": "turbo run dev",
-    "build": "turbo run build",
-    "lint": "turbo run lint",
-    "test": "turbo run test",
+    "build": "pnpm --dir apps/web-vue build",
+    "test": "pnpm --dir apps/web-vue test",
     "test:web": "pnpm --filter @musegraph/web test",
-    "test:web:coverage": "pnpm --filter @musegraph/web test:coverage",
-    "typecheck": "turbo run typecheck",
+    "typecheck": "pnpm --dir apps/web-vue exec vue-tsc -b",
     "clean": "turbo run clean && node -e \"require('node:fs').rmSync('node_modules', { recursive: true, force: true })\""
   },
   "devDependencies": {
     "turbo": "^2.10.5"
   },
-  "packageManager": "pnpm@11.13.1",
+  "packageManager": "pnpm@11.14.0",
   "engines": {
     "node": ">=24.0.0"
   }

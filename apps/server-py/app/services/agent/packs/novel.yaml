@@ -1,10 +1,16 @@
 text_type: novel
 display_name: "长篇小说"
 default_skills:
-  analyzer: analyzer
-  outliner: outliner
-  writer: continuation
+  planner: outliner
+  composer: analyzer
+  writer: general
   auditor: critic
+  reviser: general
+  evaluator: critic
+  updater: knowledge-builder
+  memory_builder: knowledge-builder
+  graph_extractor: knowledge-builder
+  suggest: coauthor
 auditor_dimensions:
   - continuity
   - evidence_grounding
@@ -13,6 +19,7 @@ auditor_dimensions:
   - intent_alignment
   - foreshadowing
   - character_voice
+knowledge_types: [entity, relation, event, constraint, fact, source]
 unit:
   name: chapter
   default_word_count: 3500

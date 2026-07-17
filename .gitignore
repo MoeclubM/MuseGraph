@@ -12,9 +12,9 @@ build/
 /apps/web-vue/vite.config.d.ts
 
 # Environment and local application data
-.env
-.env.local
-.env.*.local
+.env*
+!.env.example
+!.env*.example
 .musegraph/
 
 # Python
@@ -34,6 +34,8 @@ htmlcov/
 coverage/
 playwright-report/
 test-results/
+.nyc_output/
+blob-report/
 
 # Logs and temporary files
 *.log
@@ -41,6 +43,9 @@ npm-debug.log*
 pnpm-debug.log*
 *.tmp
 *.bak
+*.orig
+*.rej
+*.pid
 
 # Editors and operating systems
 .idea/
@@ -55,6 +60,7 @@ Thumbs.db
 /.golutra/
 /.playwright-mcp/
 /.docker_tmp/
+docker/.env
 /output/
 /terminals/
 /nul

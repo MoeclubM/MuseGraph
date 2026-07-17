@@ -1,0 +1,160 @@
+name: Platform
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.14.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.14"
+          working-directory: apps/server-py
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv sync --directory apps/server-py --frozen --extra test
+
+      - name: Backend contracts
+        run: uv run --directory apps/server-py pytest -q
+
+      - name: Frontend type check and production build
+        run: pnpm build
+
+      - name: Dependency audits
+        run: |
+          pnpm audit --prod --audit-level high
+          uv export --directory apps/server-py --frozen --no-dev --no-emit-project --output-file /tmp/requirements.txt
+          # Cognee imports DiskCache but MuseGraph explicitly disables Cognee caching and its fs backend.
+          # PYSEC-2026-2447 requires attacker-controlled writes to a DiskCache directory and has no fixed release.
+          uvx pip-audit -r /tmp/requirements.txt --no-deps --disable-pip \
+            --ignore-vuln PYSEC-2026-2447
+
+      - name: Reachable-history secret scan
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 \
+            detect --source=/repo --no-banner --redact
+
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure isolated development secrets
+        working-directory: docker
+        run: |
+          {
+            echo "INTERNAL_SERVICE_TOKEN=$(openssl rand -hex 32)"
+            echo "SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32 | tr '+/' '-_')"
+            echo "REGISTRATION_MODE=open"
+            echo "ALLOW_PRIVATE_PROVIDER_URLS=false"
+          } > .env
+
+      - name: Build and start the real platform
+        working-directory: docker
+        run: |
+          docker compose down -v --remove-orphans
+          docker compose build
+          docker compose up -d --wait
+
+      - name: Baseline migration and real integration tests
+        working-directory: docker
+        run: |
+          docker compose --profile test run --rm backend-tests alembic check
+          docker compose --profile test run --rm backend-tests
+
+      - name: Real Chromium E2E
+        working-directory: docker
+        run: docker compose --profile test run --rm e2e
+
+      - name: Image vulnerability scan
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.72.0 image --exit-code 1 --severity HIGH,CRITICAL \
+            --ignore-unfixed musegraph-server:dev
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.72.0 image --exit-code 1 --severity HIGH,CRITICAL \
+            --ignore-unfixed musegraph-web:dev
+
+      - name: Show service logs after failure
+        if: failure()
+        working-directory: docker
+        run: docker compose logs --no-color
+
+      - name: Tear down test data
+        if: always()
+        working-directory: docker
+        run: docker compose down -v --remove-orphans
+
+  protected-provider:
+    if: ${{ vars.RUN_PROTECTED_PROVIDER_TESTS == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MUSEGRAPH_PROVIDER_API_KEY: ${{ secrets.MUSEGRAPH_PROVIDER_API_KEY }}
+      MUSEGRAPH_PROVIDER_BASE_URL: ${{ vars.MUSEGRAPH_PROVIDER_BASE_URL }}
+      MUSEGRAPH_PROVIDER_MODEL: ${{ vars.MUSEGRAPH_PROVIDER_MODEL }}
+      MUSEGRAPH_EMBEDDING_MODEL: ${{ vars.MUSEGRAPH_EMBEDDING_MODEL }}
+      MUSEGRAPH_EMBEDDING_DIMENSIONS: ${{ vars.MUSEGRAPH_EMBEDDING_DIMENSIONS }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure protected test platform
+        working-directory: docker
+        run: |
+          test -n "$MUSEGRAPH_PROVIDER_API_KEY"
+          test -n "$MUSEGRAPH_PROVIDER_MODEL"
+          test -n "$MUSEGRAPH_EMBEDDING_MODEL"
+          test -n "$MUSEGRAPH_EMBEDDING_DIMENSIONS"
+          {
+            echo "INTERNAL_SERVICE_TOKEN=$(openssl rand -hex 32)"
+            echo "SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32 | tr '+/' '-_')"
+            echo "REGISTRATION_MODE=open"
+            echo "ALLOW_PRIVATE_PROVIDER_URLS=${{ vars.PROTECTED_ALLOW_PRIVATE_PROVIDER_URLS || 'false' }}"
+          } > .env
+
+      - name: Run real Provider creation acceptance
+        working-directory: docker
+        run: |
+          docker compose down -v --remove-orphans
+          docker compose build
+          docker compose up -d --wait
+          docker compose --profile protected-test run --rm protected-tests
+
+      - name: Show service logs after failure
+        if: failure()
+        working-directory: docker
+        run: docker compose logs --no-color
+
+      - name: Tear down protected test data
+        if: always()
+        working-directory: docker
+        run: docker compose down -v --remove-orphans

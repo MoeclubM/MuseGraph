@@ -2,6 +2,8 @@ import api from './index'
 import type {
   AdminTask,
   AdminTaskListResponse,
+  AuditLogListResponse,
+  RuntimeHealth,
   StatsResponse,
   UserListResponse,
   Provider,
@@ -71,7 +73,7 @@ export async function getAdminTasks(params?: {
   task_type?: string
   project_id?: string
   user_id?: string
-  status?: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
+  status?: AdminTask['status']
   limit?: number
 }): Promise<AdminTaskListResponse> {
   const { data } = await api.get<AdminTaskListResponse>('/api/admin/tasks', { params: params || {} })
@@ -85,6 +87,23 @@ export async function getAdminTasks(params?: {
 export async function cancelAdminTask(taskId: string): Promise<AdminTask> {
   const { data } = await api.post<{ task: AdminTask }>(`/api/admin/tasks/${taskId}/cancel`)
   return data.task
+}
+
+export async function getAuditLogs(params?: {
+  project_id?: string
+  actor_user_id?: string
+  action?: string
+  limit?: number
+}): Promise<AuditLogListResponse> {
+  const { data } = await api.get<AuditLogListResponse>('/api/admin/audit-logs', {
+    params: params || {},
+  })
+  return data
+}
+
+export async function getRuntimeHealth(): Promise<RuntimeHealth> {
+  const { data } = await api.get<RuntimeHealth>('/api/admin/runtime-health')
+  return data
 }
 
 export async function getUsers(
@@ -292,64 +311,12 @@ export async function deletePaymentAdapter(adapterId: string): Promise<void> {
 
 const DEFAULT_LLM_RUNTIME_CONFIG: LlmRuntimeConfig = {
   llm_request_timeout_seconds: 180,
-  llm_retry_count: 4,
-  llm_retry_interval_seconds: 2,
-  llm_prefer_stream: true,
-  llm_stream_fallback_nonstream: true,
-  llm_fallback_model: '',
-  llm_openai_api_style: 'responses',
-  llm_reasoning_effort: 'model_default',
-  llm_task_concurrency: 4,
-  llm_model_default_concurrency: 8,
-  llm_model_concurrency_overrides: {},
-}
-
-function normalizeModelConcurrencyOverrides(raw: unknown): Record<string, number> {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
-  const normalized: Record<string, number> = {}
-  for (const [rawKey, rawValue] of Object.entries(raw as Record<string, unknown>)) {
-    const key = String(rawKey || '').trim().toLowerCase()
-    const value = Number(rawValue)
-    if (!key || !Number.isFinite(value) || value < 1) continue
-    normalized[key] = value
-  }
-  return normalized
 }
 
 function normalizeLlmRuntimeConfig(payload: RawLlmRuntimeConfig | null | undefined): LlmRuntimeConfig {
   return {
     llm_request_timeout_seconds: Number(
       payload?.llm_request_timeout_seconds ?? DEFAULT_LLM_RUNTIME_CONFIG.llm_request_timeout_seconds
-    ),
-    llm_retry_count: Number(payload?.llm_retry_count ?? DEFAULT_LLM_RUNTIME_CONFIG.llm_retry_count),
-    llm_retry_interval_seconds: Number(
-      payload?.llm_retry_interval_seconds ?? DEFAULT_LLM_RUNTIME_CONFIG.llm_retry_interval_seconds
-    ),
-    llm_prefer_stream:
-      typeof payload?.llm_prefer_stream === 'boolean'
-        ? payload.llm_prefer_stream
-        : DEFAULT_LLM_RUNTIME_CONFIG.llm_prefer_stream,
-    llm_stream_fallback_nonstream:
-      typeof payload?.llm_stream_fallback_nonstream === 'boolean'
-        ? payload.llm_stream_fallback_nonstream
-        : DEFAULT_LLM_RUNTIME_CONFIG.llm_stream_fallback_nonstream,
-    llm_fallback_model: String(payload?.llm_fallback_model ?? DEFAULT_LLM_RUNTIME_CONFIG.llm_fallback_model),
-    llm_openai_api_style:
-      typeof payload?.llm_openai_api_style === 'string' && payload.llm_openai_api_style.trim()
-        ? payload.llm_openai_api_style.trim()
-        : DEFAULT_LLM_RUNTIME_CONFIG.llm_openai_api_style,
-    llm_reasoning_effort:
-      typeof payload?.llm_reasoning_effort === 'string' && payload.llm_reasoning_effort.trim()
-        ? payload.llm_reasoning_effort.trim()
-        : DEFAULT_LLM_RUNTIME_CONFIG.llm_reasoning_effort,
-    llm_task_concurrency: Number(
-      payload?.llm_task_concurrency ?? DEFAULT_LLM_RUNTIME_CONFIG.llm_task_concurrency
-    ),
-    llm_model_default_concurrency: Number(
-      payload?.llm_model_default_concurrency ?? DEFAULT_LLM_RUNTIME_CONFIG.llm_model_default_concurrency
-    ),
-    llm_model_concurrency_overrides: normalizeModelConcurrencyOverrides(
-      payload?.llm_model_concurrency_overrides
     ),
   }
 }
@@ -437,4 +404,3 @@ export async function getAdminOrders(
   })
   return data
 }
-

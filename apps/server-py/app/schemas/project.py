@@ -1,151 +1,77 @@
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
-
-
-class ProjectChapterCreate(BaseModel):
-    title: Optional[str] = Field(default="Main Draft", min_length=1, max_length=255)
-    content: str = ""
-    status: Literal["planned", "draft", "revised", "final", "archived"] = "draft"
-    blueprint: Optional[dict[str, Any]] = None
-    plan: Optional[str] = None
-    summary: Optional[str] = None
-    continuity_notes: Optional[dict[str, Any]] = None
-    order_index: Optional[int] = Field(default=None, ge=0)
-
-    model_config = {"extra": "forbid"}
-
-
-class ProjectChapterUpdate(BaseModel):
-    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    content: Optional[str] = None
-    status: Optional[Literal["planned", "draft", "revised", "final", "archived"]] = None
-    blueprint: Optional[dict[str, Any]] = None
-    plan: Optional[str] = None
-    summary: Optional[str] = None
-    continuity_notes: Optional[dict[str, Any]] = None
-    order_index: Optional[int] = Field(default=None, ge=0)
-
-    model_config = {"extra": "forbid"}
-
-
-class ProjectChapterReorderItem(BaseModel):
-    id: str
-    order_index: int = Field(ge=0)
-
-
-class ProjectChapterReorderRequest(BaseModel):
-    chapters: list[ProjectChapterReorderItem]
-
-
-class ProjectChapterResponse(BaseModel):
-    id: str
-    project_id: str
-    title: str
-    content: str
-    status: str = "draft"
-    blueprint: Optional[dict[str, Any]] = None
-    plan: Optional[str] = None
-    summary: Optional[str] = None
-    continuity_notes: Optional[dict[str, Any]] = None
-    order_index: int
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = {"from_attributes": True}
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProjectCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
-    description: Optional[str] = None
+    description: str | None = Field(default=None, max_length=5000)
     visibility: Literal["private", "public"] = "private"
-    component_models: Optional[dict[str, str]] = None
-    operation_prompts: Optional[dict[str, str]] = None
-    creative_state: Optional[dict[str, Any]] = None
-
-    model_config = {"extra": "forbid"}
+    pack_slug: Literal["generic", "novel", "article", "paper", "screenplay", "product_doc"] = "generic"
+    component_models: dict[str, str] = Field(default_factory=dict)
 
 
 class ProjectUpdate(BaseModel):
-    title: Optional[str] = Field(None, min_length=1, max_length=255)
-    description: Optional[str] = None
-    component_models: Optional[dict[str, str]] = None
-    operation_prompts: Optional[dict[str, str]] = None
-    creative_state: Optional[dict[str, Any]] = None
-
-    model_config = {"extra": "forbid"}
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=5000)
+    pack_slug: Literal["generic", "novel", "article", "paper", "screenplay", "product_doc"] | None = None
+    component_models: dict[str, str] | None = None
 
 
 class ProjectVisibilityUpdate(BaseModel):
     visibility: Literal["private", "public"]
 
-    model_config = {"extra": "forbid"}
-
 
 class ProjectMemberCreate(BaseModel):
-    email: str = Field(min_length=1, max_length=255)
-    role: Literal["viewer", "editor"]
-
-    model_config = {"extra": "forbid"}
+    user_id: str
+    role: Literal["editor", "viewer"]
 
 
 class ProjectMemberUpdate(BaseModel):
-    role: Literal["viewer", "editor"]
-
-    model_config = {"extra": "forbid"}
+    role: Literal["editor", "viewer"]
 
 
 class ProjectMemberResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     project_id: str
     user_id: str
-    email: Optional[str] = None
-    role: str
+    role: Literal["owner", "editor", "viewer"]
     created_at: datetime
     updated_at: datetime
-
-    model_config = {"from_attributes": True}
 
 
 class ProjectResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     user_id: str
     title: str
-    description: Optional[str] = None
-    visibility: str = "private"
-    current_user_role: Optional[str] = None
-    current_user_permissions: list[str] = Field(default_factory=list)
-    component_models: Optional[dict[str, str]] = None
-    operation_prompts: Optional[dict[str, str]] = None
-    ontology_schema: Optional[dict[str, Any]] = None
-    creative_state: Optional[dict[str, Any]] = None
-    memory_id: Optional[str] = None
-    chapters: list[ProjectChapterResponse] = Field(default_factory=list)
+    description: str | None
+    visibility: Literal["private", "public"]
+    component_models: dict[str, str] | None
+    active_revision_id: str | None
+    memory_instance_id: str | None
+    pack_slug: str
     created_at: datetime
     updated_at: datetime
-
-    model_config = {"from_attributes": True}
+    current_user_role: str | None = None
+    current_user_permissions: list[str] = Field(default_factory=list)
 
 
 class ProjectPublicResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     title: str
-    description: Optional[str] = None
-    visibility: Literal["public"]
-    author_nickname: Optional[str] = None
-    current_user_role: Optional[str] = None
-    current_user_permissions: list[str] = Field(default_factory=list)
+    description: str | None
+    pack_slug: str
     created_at: datetime
     updated_at: datetime
 
-    model_config = {"from_attributes": True}
-
 
 class ProjectSearchResult(BaseModel):
-    item_type: str
-    item_id: str
-    title: str
-    matched_field: str
-    snippet: str
-    order_index: int = 0
+    items: list[ProjectPublicResponse]
+    total: int

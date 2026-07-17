@@ -1,16 +1,23 @@
 text_type: article
 display_name: "文章 / 博客"
 default_skills:
-  analyzer: analyzer
-  outliner: outliner
-  writer: continuation
+  planner: outliner
+  composer: analyzer
+  writer: general
   auditor: critic
+  reviser: general
+  evaluator: critic
+  updater: knowledge-builder
+  memory_builder: knowledge-builder
+  graph_extractor: knowledge-builder
+  suggest: coauthor
 auditor_dimensions:
   - continuity
   - evidence_grounding
   - structure
   - language_quality
   - intent_alignment
+knowledge_types: [fact, source, entity, relation, constraint, event]
 unit:
   name: section
   default_word_count: 1500

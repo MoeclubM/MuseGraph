@@ -1,52 +1,42 @@
 import api from './index'
+import type { AgentRunMode, ResolvedSkill } from '@/types'
 
-export interface SkillItem {
-  id: string
+export type SkillItem = ResolvedSkill
+
+export interface SkillWritePayload {
   slug: string
   name: string
-  icon?: string | null
   description: string
-  scope: string[]
-  tags: string[]
-  is_builtin: boolean
-  is_active?: boolean
-  owner_project_id: string | null
-  default_model_component?: string | null
-  system_prompt?: string
-  allowed_tools?: string[] | null
+  instructions: string
+  scopes: AgentRunMode[]
+  roles: string[]
+  allowed_tools: string[]
+  params_schema: Record<string, unknown>
+  default_model_component: string | null
+  enabled: boolean
 }
 
-export interface SkillCreatePayload {
-  slug: string
-  name: string
-  description?: string
-  system_prompt: string
-  icon?: string | null
-  scope?: string[]
-  tags?: string[]
-  allowed_tools?: string[] | null
-  default_model_component?: string | null
-}
+const skillsBase = (projectId: string) => `/api/projects/${projectId}/skills`
 
-function skillsBase(projectId: string): string {
-  return `/api/projects/${projectId}/skills`
-}
-
-export async function listSkills(
-  projectId: string,
-  scope: string = 'chat',
-): Promise<SkillItem[]> {
-  const { data } = await api.get<SkillItem[]>(skillsBase(projectId), {
-    params: { scope },
-  })
+export async function listSkills(projectId: string): Promise<SkillItem[]> {
+  const { data } = await api.get<SkillItem[]>(skillsBase(projectId))
   return data
 }
 
 export async function createSkill(
   projectId: string,
-  payload: SkillCreatePayload,
+  payload: SkillWritePayload,
 ): Promise<SkillItem> {
   const { data } = await api.post<SkillItem>(skillsBase(projectId), payload)
+  return data
+}
+
+export async function updateSkill(
+  projectId: string,
+  slug: string,
+  payload: Omit<SkillWritePayload, 'slug'>,
+): Promise<SkillItem> {
+  const { data } = await api.put<SkillItem>(`${skillsBase(projectId)}/${slug}`, payload)
   return data
 }
 
@@ -54,16 +44,14 @@ export async function deleteSkill(projectId: string, slug: string): Promise<void
   await api.delete(`${skillsBase(projectId)}/${slug}`)
 }
 
-export async function toggleSkill(
+export async function previewSkill(
   projectId: string,
-  slug: string,
-  enabled: boolean,
-): Promise<{ ok: boolean; slug: string; enabled: boolean; is_builtin: boolean }> {
-  const { data } = await api.post<{
-    ok: boolean
-    slug: string
-    enabled: boolean
-    is_builtin: boolean
-  }>(`${skillsBase(projectId)}/${slug}/toggle`, { enabled })
+  operation: AgentRunMode,
+  role: string,
+  slug?: string | null,
+): Promise<ResolvedSkill> {
+  const { data } = await api.get<ResolvedSkill>(`${skillsBase(projectId)}/resolve/preview`, {
+    params: { operation, role, slug: slug || undefined },
+  })
   return data
 }

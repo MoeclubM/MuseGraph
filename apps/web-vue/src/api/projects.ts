@@ -1,10 +1,5 @@
 import api from './index'
-import type {
-  Project,
-  ProjectVisibility,
-  PublicProject,
-  ProjectChapter,
-} from '@/types'
+import type { Project, ProjectVisibility, PublicProject } from '@/types'
 
 export interface ModelInfo {
   id: string
@@ -12,24 +7,29 @@ export interface ModelInfo {
   name: string
 }
 
+export interface ProjectMember {
+  id: string
+  project_id: string
+  user_id: string
+  role: 'owner' | 'editor' | 'viewer'
+  created_at: string
+  updated_at: string
+}
+
 export async function getModels(): Promise<ModelInfo[]> {
-  const { data } = await api.get<{ models: ModelInfo[] }>('/api/ai/models')
-  return data.models
+  return (await api.get<{ models: ModelInfo[] }>('/api/ai/models')).data.models
 }
 
 export async function getEmbeddingModels(): Promise<ModelInfo[]> {
-  const { data } = await api.get<{ models: ModelInfo[] }>('/api/ai/embedding-models')
-  return data.models
+  return (await api.get<{ models: ModelInfo[] }>('/api/ai/embedding-models')).data.models
 }
 
 export async function getRerankerModels(): Promise<ModelInfo[]> {
-  const { data } = await api.get<{ models: ModelInfo[] }>('/api/ai/reranker-models')
-  return data.models
+  return (await api.get<{ models: ModelInfo[] }>('/api/ai/reranker-models')).data.models
 }
 
 export async function getProjects(): Promise<Project[]> {
-  const { data } = await api.get<Project[]>('/api/projects')
-  return data
+  return (await api.get<Project[]>('/api/projects')).data
 }
 
 export async function getPublicProjects(params?: {
@@ -37,84 +37,69 @@ export async function getPublicProjects(params?: {
   page_size?: number
   q?: string
 }): Promise<PublicProject[]> {
-  const { data } = await api.get<PublicProject[]>('/api/projects/public', { params })
-  return data
+  const limit = params?.page_size || 20
+  const offset = ((params?.page || 1) - 1) * limit
+  const { data } = await api.get<{ items: PublicProject[]; total: number }>('/api/projects/public', {
+    params: { query: params?.q, limit, offset },
+  })
+  return data.items
 }
 
 export async function updateProjectVisibility(
   id: string,
-  visibility: ProjectVisibility
+  visibility: ProjectVisibility,
 ): Promise<Project> {
-  const { data } = await api.put<Project>(`/api/projects/${id}/visibility`, { visibility })
-  return data
+  return (await api.patch<Project>(`/api/projects/${id}/visibility`, { visibility })).data
 }
 
 export async function getProject(id: string): Promise<Project> {
-  const { data } = await api.get<Project>(`/api/projects/${id}`)
-  return data
+  return (await api.get<Project>(`/api/projects/${id}`)).data
 }
 
 export async function createProject(payload: {
   title: string
   description?: string
+  visibility?: ProjectVisibility
+  pack_slug?: Project['pack_slug']
   component_models?: Record<string, string>
-  operation_prompts?: Record<string, string>
 }): Promise<Project> {
-  const { data } = await api.post<Project>('/api/projects', payload)
-  return data
+  return (await api.post<Project>('/api/projects', payload)).data
 }
 
 export async function updateProject(
   id: string,
-  payload: Partial<Pick<Project, 'title' | 'description' | 'component_models' | 'operation_prompts'>>
+  payload: Partial<Pick<Project, 'title' | 'description' | 'component_models' | 'pack_slug'>>,
 ): Promise<Project> {
-  const { data } = await api.put<Project>(`/api/projects/${id}`, payload)
-  return data
+  return (await api.patch<Project>(`/api/projects/${id}`, payload)).data
 }
 
 export async function deleteProject(id: string): Promise<void> {
   await api.delete(`/api/projects/${id}`)
 }
 
-export async function listProjectChapters(projectId: string): Promise<ProjectChapter[]> {
-  const { data } = await api.get<ProjectChapter[]>(`/api/projects/${projectId}/chapters`)
-  return data
+export async function listProjectMembers(id: string): Promise<ProjectMember[]> {
+  return (await api.get<ProjectMember[]>(`/api/projects/${id}/members`)).data
 }
 
-export async function createProjectChapter(
-  projectId: string,
-  payload: {
-    title?: string
-    content?: string
-    order_index?: number
-  }
-): Promise<ProjectChapter> {
-  const { data } = await api.post<ProjectChapter>(`/api/projects/${projectId}/chapters`, payload)
-  return data
+export async function addProjectMember(
+  id: string,
+  userId: string,
+  role: 'editor' | 'viewer',
+): Promise<ProjectMember> {
+  return (await api.post<ProjectMember>(`/api/projects/${id}/members`, {
+    user_id: userId,
+    role,
+  })).data
 }
 
-export async function updateProjectChapter(
-  projectId: string,
-  chapterId: string,
-  payload: {
-    title?: string
-    content?: string
-    order_index?: number
-  }
-): Promise<ProjectChapter> {
-  const { data } = await api.put<ProjectChapter>(`/api/projects/${projectId}/chapters/${chapterId}`, payload)
-  return data
+export async function updateProjectMember(
+  id: string,
+  memberId: string,
+  role: 'editor' | 'viewer',
+): Promise<ProjectMember> {
+  return (await api.patch<ProjectMember>(`/api/projects/${id}/members/${memberId}`, { role })).data
 }
 
-export async function deleteProjectChapter(projectId: string, chapterId: string): Promise<void> {
-  await api.delete(`/api/projects/${projectId}/chapters/${chapterId}`)
-}
-
-export async function reorderProjectChapters(
-  projectId: string,
-  chapterIdsInOrder: string[]
-): Promise<ProjectChapter[]> {
-  const chapters = chapterIdsInOrder.map((id, index) => ({ id, order_index: index }))
-  const { data } = await api.post<ProjectChapter[]>(`/api/projects/${projectId}/chapters/reorder`, { chapters })
-  return data
+export async function deleteProjectMember(id: string, memberId: string): Promise<void> {
+  await api.delete(`/api/projects/${id}/members/${memberId}`)
 }

@@ -1,162 +1,181 @@
 # MuseGraph 当前架构
 
-本文只描述当前生产路径，不记录已删除的历史实现或兼容路径。
+本文只描述当前生产路径。项目仍处于开发期，不保留旧接口、旧表、旧运行时或兼容逻辑。
 
-## 1. 总体结构
+## 1. 权威数据边界
+
+```text
+Git project repository
+  └─ text, control documents, paths, immutable commits
+
+Per-project Cognee process
+  └─ fact, entity, relation, event, constraint, source
+     └─ one immutable Dataset per published Agent revision
+
+PostgreSQL
+  └─ users, sessions, permissions, Agent runs/events, reviews,
+     revision pointers, providers, billing, audit logs, derived indexes
+
+Redis
+  └─ SSE notifications and explicit rate-limit counters only
+```
+
+Redis、浏览器状态和工作区缓存都不是权威任务存储。Git 文本的语义索引属于可重建派生数据，不与结构化知识 Dataset 混用。
+
+## 2. 部署拓扑
 
 ```text
 Vue Web
-  │ REST + SSE
+  │ Cookie session + CSRF, REST, SSE Last-Event-ID
   ▼
-FastAPI routers
+FastAPI API ─────────────── PostgreSQL
+  │                             ▲
+  │ internal Bearer             │ database queue + lease
+  ▼                             │
+Memory Supervisor          Agent Worker
   │
-  ├─ project / files / versions / facts
-  ├─ agent / skills
-  ├─ memory
-  ├─ billing / payment / admin
-  │
-  ▼
-Application services
-  ├─ Pi Agent tool loop
-  ├─ project workspace + embedded Git
-  ├─ Cognee memory adapter
-  ├─ LiteLLM model gateway
-  └─ task state
-  │
-  ├─ PostgreSQL: users, projects, operations, facts, sessions
-  ├─ Redis: sessions, coordination and task cache
-  └─ .musegraph: project files, Cognee data and task-state SQLite
+  ├─ project A Cognee process + root + config
+  └─ project B Cognee process + root + config
+
+Redis: event wakeups and rate limits
 ```
 
-生产 Agent 只有一条入口：`MuseGraphPiAgent.run_flow()` → `run_tool_loop_flow()`。旧 `AgentOrchestrator` 和服务端长文管线已经移除。
+API 不访问 Docker Socket，也不在进程内启动 Agent 后台任务。Worker 以数据库租约领取 `queued` Run，持续写心跳；租约过期的 `running` Run 可由新 Worker 重新领取。
 
-## 2. 后端分层
+## 3. Agent 创作闭环
 
-### API 层
-
-`app/main.py` 组装所有 FastAPI Router。Router 负责认证、权限、请求模型、事务边界和 HTTP/SSE 返回，不承载模型调用或记忆实现。
-
-主要 Router：
-
-- `routers/agent.py`：会话、消息、SSE、Agent 后台任务
-- `routers/projects.py`：项目与文档单元
-- `routers/project_files.py`：项目工作区文件
-- `routers/project_versions.py`：项目记录点与恢复
-- `routers/facts.py`：事实和实体
-- `routers/memory.py`：Cognee 构建、搜索、图谱和清理
-- `routers/skills.py`：项目级 Skills
-- `routers/admin.py`：管理后台
-
-### Agent 层
-
-- `services/pi_agent_service.py`：Agent 上下文、工具执行、子代理会话、循环驱动
-- `services/pi_tool_loop.py`：工具 JSON Schema、系统提示词、动作解析
-- `services/agent/subagent_profiles.py`：角色工具白名单、写入权限、输出 Schema
-- `services/agent/skills.py`：项目可见 Skill 的查询和选择
-- `services/agent/skill_catalog.py`：内置 Skill 定义
-- `services/creative_task_planner.py`：意图与 `pipeline_kind` 推断，只影响提示规则
-
-子代理角色：
-
-| 角色 | 作用 | 可写项目状态 |
-|---|---|---|
-| planner | 规划执行与结构 | 否 |
-| composer | 选择上下文和规则 | 否 |
-| writer | 写文档单元 | 是 |
-| auditor | 审计并报告问题 | 否 |
-| reviser | 按问题修订文档 | 是 |
-| evaluator | 评价候选方案 | 否 |
-| updater | 提交事实与状态变更 | 是 |
-| memory_builder | 构建结构化记忆 | 是 |
-| graph_extractor | 提取实体关系 | 是 |
-
-工具调用同时受角色白名单和 `can_write_back` 校验。不存在旧角色别名。
-
-### 记忆层
-
-`services/memory_backend.py` 是应用层稳定接口，当前唯一实现是 `services/cognee_backend.py`。
+Run 模式为 `write | analyze | suggest`，状态为：
 
 ```text
-项目文档 / 事实 / Agent 结构化记忆
-  └─ memory_backend
-       └─ Cognee add + cognify
-            ├─ 语义检索
-            └─ 实体关系图谱
+queued → running → awaiting_review → accepting → completed
+                 ├─ failed
+                 ├─ cancelled
+                 └─ awaiting_review → rejected | conflicted
 ```
 
-Cognee 配置由 `COGNEE_DATA_DIR`、`COGNEE_INGEST_TIMEOUT_SECONDS` 和 `COGNEE_LLM_MAX_TOKENS` 控制。聊天与嵌入模型从项目和 Provider 配置解析，不存在内置模型回退。
+1. API 固定 `base_revision_id`，保存解析后的 Skill 快照与工具集合。
+2. Worker 从固定 Git Commit 建立隔离 Run 工作区。
+3. Planner 生成严格 `CreationPlan`。
+4. Composer 构造带 Git、知识 ID 和来源的 `CreativeContextBundle`。
+5. 每个角色只能调用统一 Tool Registry 中对该角色和 Skill 同时开放的工具。
+6. Writer/Reviser 只修改 Run 工作区；知识角色只写候选 `KnowledgeOperation`。
+7. Auditor 只读检查，确定性校验验证文件声明、知识引用、计划知识和 required 约束。
+8. 成功结果保存为 `ChangeSet` 与 `AgentFinish`，进入 `awaiting_review`。
+9. Accept 在项目写锁内构建新 Cognee Dataset、发布 Git Commit 并更新活动版本指针；任一步失败会撤销候选外部写入。
+10. Reject 删除隔离工作区；基础版本变化则标记 `conflicted`，不自动合并。
 
-### 项目工作区
+SSE 事件持久化在 `agent_events`，客户端通过 `Last-Event-ID` 从数据库续传。不存在 `partial` 成功、进程内 `BackgroundTasks`、SQLite TaskManager 或启发式自动写文件。
 
-`services/project_files.py` 管理真实文件目录，`services/project_git.py` 为每个项目维护嵌入式 Git 仓库，`services/project_workspace.py` 将数据库状态投影到工作区。所有文件路径必须留在项目 workspace 根目录内。
+## 4. Tool Registry
 
-控制文档 `intent.md`、`focus.md`、`rules.md`、`bible.md` 在项目创建时由当前 text-type pack 初始化。
+`app/services/agent/tool_registry.py` 是唯一工具注册表。每个工具同时定义：
 
-### 模型与计费
+- 名称和说明
+- 严格 Pydantic 输入模型
+- 处理器
+- 可用角色
+- `read | file | knowledge` 变更类型
 
-`services/ai.py` 统一处理：
+当前工具：
 
-- Provider/模型解析
-- LiteLLM 调用与流式输出
-- token 与成本记录
-- 项目级组件模型路由
+- `list_files`
+- `read_file`
+- `write_file`
+- `delete_file`
+- `knowledge_search`
+- `knowledge_get`
+- `knowledge_upsert`
+- `knowledge_delete`
 
-TypeScript `packages/ai-adapters` 是共享 SDK adapter，不参与 Python 服务端生产调用。
+工具 Schema、处理器、角色写门和 Skill 工具集合由合约测试验证。不存在 `web_search`、`fetch_url` 或重复文档写入工具。
 
-## 3. Agent 执行
+## 5. Skill 与 Text Pack
+
+内置 Skill 只在 `skill_catalog.py` 中定义；项目 Skill 只存 `project_skills`，联合唯一键为 `(project_id, slug)`。自定义 Skill 不能覆盖内置 slug，运行时仍受角色工具白名单限制。
+
+唯一解析入口：
 
 ```text
-POST /agent/chat
-  ├─ 创建 AgentSession / AgentMessage / TextOperation
-  ├─ 后台启动 run_pi_agent_flow_background
-  ├─ 预取文档、Cognee RAG 与关系图
-  └─ 循环
-       ├─ 调用 LLM 取得 tool_call 或 finish
-       ├─ 校验工具、角色与写权限
-       ├─ 执行真实工具并写 AgentStep
-       ├─ 必要时启动独立子代理会话
-       └─ finish 后持久化 workspace 和 operation
+resolve_project_skill(project_id, pack_slug, operation, role, requested_slug)
 ```
 
-`pipeline_kind` 不启动隐藏的服务端管线，只给主 Agent 增加明确规则：
+选择顺序：
 
-- `long_form_write`：按章写入、构建记忆、按需 auditor/reviser
-- `fact_extraction`：updater 提交 delta，由主 Agent 批量应用
-- `review_only`：auditor 只读审计
-- `simple`：按任务自主选工具
+1. 用户显式选择
+2. 当前 Text Pack 对 operation/role 的默认 Skill
+3. Pack 明确配置的 `general`
 
-## 4. 前端
+每次 Run 保存完整 `ResolvedSkillSnapshot`，后续 Skill 编辑不会改变运行中的任务。六个 Pack 在启动和 CI 中严格校验：
 
-Vue 应用使用 Pinia 管理认证、项目、Agent 会话和布局状态。Agent 工作区为三栏结构：
+- generic
+- novel
+- article
+- paper
+- screenplay
+- product_doc
 
-- `AgentSessionSidebar`：会话
-- `AgentCenterPanel`：对话、步骤、任务
-- `AgentBrowserPanel`：编辑器、知识、实体、Cognee 图谱、版本
+Pack 同时定义默认 Skill、审计维度、允许知识类型、文档单元命名和控制文档模板；错误直接导致启动失败。
 
-Agent SSE 事件写入 store，UI 从持久化的 Session/Step 数据恢复，不依赖仅存在于页面内存的执行状态。
+## 6. 结构化知识
 
-## 5. 数据与部署
+公开联合类型 `KnowledgeRecord`：
 
-Compose 服务：
+- `fact`
+- `entity`
+- `relation`
+- `event`
+- `constraint`
+- `source`
 
-| 服务 | 作用 | 持久化 |
-|---|---|---|
-| postgres | 业务数据库 | `postgres_data` |
-| redis | 会话与任务协调 | `redis_data` |
-| server | FastAPI + Cognee | `task_state_data` |
-| web | Nginx 静态站点 | 无 |
+所有记录都有稳定 ID、标题、内容、属性、至少一个 `SourceRef` 和修订信息。关系在应用候选变更时验证两端实体存在。
 
-Python 镜像用 `uv.lock` 和 `uv sync --frozen` 构建；Node 镜像用根目录 `pnpm-lock.yaml` 和 `pnpm install --frozen-lockfile` 构建。仓库不维护子目录锁文件。
+Memory Supervisor 使用 Cognee 1.4 正式接口：
 
-## 6. 设计约束
+- `remember` 创建不可变版本 Dataset
+- `recall` 生成语义上下文
+- `forget` 撤销未发布候选 Dataset
+- Dataset API 读取原始 KnowledgeRecord
 
-- 不保留旧后端、旧角色或旧配置别名
-- 不吞掉内部错误，不返回 mock success
-- 只在 HTTP、文件路径、外部 Provider 等真实边界做校验
-- 简单逻辑内联；按 Agent、记忆、工作区、计费等功能拆分
-- 数据迁移使用 Alembic 或独立脚本，不在主路径自动迁移
-- 测试失败必须暴露真实原因
+`CreativeContextBundle` 携带知识 ID 和来源，`AgentFinish.used_knowledge_ids` 必须能被确定性校验证明来自当前上下文。PostgreSQL 不保存重复 facts JSON、Graph 镜像或 `structured_memory` 权威副本。
 
-## 7. 当前热点
+## 7. Git 与版本
 
-`pi_agent_service.py`、`routers/admin.py` 和 `services/ai.py` 仍然较大。后续拆分应沿功能边界进行，并保持现有 Router/Service 接口；不要为了缩短文件创建无业务含义的包装层。
+每项目维护一个工作仓库和内部 bare remote。直接编辑器写入会立即产生 Git Commit 和新的 `ProjectRevision`；知识 Dataset 未变化时可复用同一不可变 Dataset。
+
+Agent Accept 同时产生：
+
+- 新 Git Commit
+- 新 Cognee Dataset
+- 新 `ProjectRevision`
+- 新活动版本指针
+
+版本恢复不改写历史：它先创建可审核 Run，用户 Accept 后创建一个新的发布版本。
+
+## 8. 安全
+
+- Cookie-only 会话；数据库只存令牌和 CSRF Token 哈希
+- Argon2id 密码哈希
+- 密码变更、封禁和删除撤销会话
+- owner/editor/viewer 项目权限覆盖文件、知识、Skill、版本和 Agent API
+- Provider、支付和邮件密钥使用 AES-256-GCM 环境主密钥加密
+- Provider 地址做 DNS/IP 校验，默认拒绝回环、云元数据和内网 SSRF
+- 50 MiB 流式上传，校验扩展名、MIME、魔数、压缩路径、压缩比和展开大小
+- DOMPurify 清洗 Markdown
+- CSP、HSTS（生产）、`nosniff`、Referrer Policy、禁止嵌入
+- 注册、登录、密码变更、上传和 Agent 启动使用 Redis 限流
+- 管理后台提供运行健康、Worker 租约和安全审计日志
+- Cognee 的会话缓存和文件缓存后端被显式禁用；`diskcache` 仅因 Cognee 1.4 的顶层导入保留，不创建或读取可被替换的 Pickle 缓存目录。依赖审计只豁免无修复版本的 `PYSEC-2026-2447`，其余漏洞仍阻塞 CI。
+
+测试环境通过显式 `REGISTRATION_MODE=open` 开放注册；生产启动时拒绝开放注册和不安全 Cookie。
+
+## 9. 数据库与验证
+
+数据库只有一个开发期基线迁移：`001_platform_baseline`。需要迁移旧数据时使用仓库外脚本或手动操作，不在生产路径加入兼容。
+
+验证层级：
+
+1. 合约测试：Schema、Tool Registry、角色、Skill、Pack、知识引用和安全边界。
+2. Compose 集成：真实 Web、API、Worker、PostgreSQL、Redis、Git 和多个 Cognee 项目进程。
+3. Playwright：只访问真实 `http://127.0.0.1:3010`。
+4. Protected Provider：真实模型完成知识检索、多文件创作、审核和双版本发布。
+5. CI：锁文件安装、构建、依赖审计、历史密钥扫描和镜像扫描。

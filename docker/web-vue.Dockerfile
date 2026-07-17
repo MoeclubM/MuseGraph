@@ -1,21 +1,21 @@
 FROM mirror.gcr.io/library/node:24-alpine AS builder
 
-ENV PNPM_HOME=/pnpm
+ENV PNPM_HOME=/pnpm \
+    NODE_USE_ENV_PROXY=1
 ENV PATH=$PNPM_HOME:$PATH
 
 WORKDIR /app
 
-RUN corepack enable && corepack prepare pnpm@11.13.1 --activate
+RUN corepack enable && corepack prepare pnpm@11.14.0 --activate
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web-vue/package.json apps/web-vue/package.json
-COPY packages/ai-adapters/package.json packages/ai-adapters/package.json
-COPY packages/shared/package.json packages/shared/package.json
 
-RUN pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    pnpm config set store-dir /pnpm/store \
+    && pnpm install --frozen-lockfile
 
 COPY apps/web-vue apps/web-vue
-COPY packages packages
 
 RUN pnpm --dir apps/web-vue build
 

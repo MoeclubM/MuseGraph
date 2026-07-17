@@ -8,7 +8,7 @@ import Alert from '@/components/ui/Alert.vue'
 import Input from '@/components/ui/Input.vue'
 import Select from '@/components/ui/Select.vue'
 
-type TaskStatusFilter = '' | 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
+type TaskStatusFilter = '' | AdminTask['status']
 
 interface TaskFilters {
   status: TaskStatusFilter
@@ -74,7 +74,7 @@ function taskStatusChipClass(value: string) {
   if (status === 'completed') {
     return 'border-emerald-300/70 bg-emerald-100 text-emerald-800 dark:border-emerald-700/50 dark:bg-emerald-900/20 dark:text-emerald-300'
   }
-  if (status === 'processing' || status === 'pending') {
+  if (status === 'queued' || status === 'running' || status === 'accepting') {
     return 'border-amber-300/80 bg-amber-100 text-amber-800 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-300'
   }
   if (status === 'failed' || status === 'cancelled') {
@@ -85,7 +85,7 @@ function taskStatusChipClass(value: string) {
 
 function isTaskCancellable(task: AdminTask): boolean {
   const status = String(task.status || '').toLowerCase()
-  return status === 'pending' || status === 'processing'
+  return status === 'queued' || status === 'running'
 }
 
 function isTaskCancelling(taskId: string): boolean {
@@ -104,9 +104,13 @@ function isTaskCancelling(taskId: string): boolean {
       <div class="grid gap-2 md:grid-cols-5">
         <Select v-model="statusFilter" size="sm">
           <option value="">{{ t('admin.tasks.allStatus') }}</option>
-          <option value="pending">{{ t('admin.tasks.statusPending') }}</option>
-          <option value="processing">{{ t('admin.tasks.statusProcessing') }}</option>
+          <option value="queued">queued</option>
+          <option value="running">running</option>
+          <option value="awaiting_review">awaiting_review</option>
+          <option value="accepting">accepting</option>
           <option value="completed">{{ t('admin.tasks.statusCompleted') }}</option>
+          <option value="rejected">rejected</option>
+          <option value="conflicted">conflicted</option>
           <option value="failed">{{ t('admin.tasks.statusFailed') }}</option>
           <option value="cancelled">{{ t('admin.tasks.statusCancelled') }}</option>
         </Select>
@@ -132,7 +136,7 @@ function isTaskCancelling(taskId: string): boolean {
               <tr class="border-b border-stone-300 dark:border-zinc-700">
                 <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">{{ t('admin.tasks.columns.task') }}</th>
                 <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">{{ t('admin.tasks.columns.status') }}</th>
-                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">{{ t('admin.tasks.columns.progress') }}</th>
+                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Worker</th>
                 <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">{{ t('admin.tasks.columns.owner') }}</th>
                 <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">{{ t('admin.tasks.columns.message') }}</th>
                 <th class="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">{{ t('admin.common.action') }}</th>
@@ -158,13 +162,9 @@ function isTaskCancelling(taskId: string): boolean {
                   </span>
                 </td>
                 <td class="px-3 py-2 align-top">
-                  <div class="w-28 rounded-full bg-stone-200 dark:bg-zinc-700">
-                    <div
-                      class="h-1.5 rounded-full bg-amber-500 transition-all duration-300"
-                      :style="{ width: `${Math.max(0, Math.min(100, Number(task.progress || 0)))}%` }"
-                    />
-                  </div>
-                  <p class="mt-1 text-xs text-stone-500 dark:text-zinc-400">{{ Number(task.progress || 0) }}%</p>
+                  <p class="text-xs text-stone-600 dark:text-zinc-300">{{ task.lease_owner || '—' }}</p>
+                  <p class="mt-1 text-xs text-stone-500 dark:text-zinc-400">{{ formatDateTime(task.heartbeat_at) }}</p>
+                  <p v-if="task.cancel_requested" class="mt-1 text-xs text-amber-700 dark:text-amber-300">cancel requested</p>
                 </td>
                 <td class="px-3 py-2 align-top">
                   <p class="text-xs text-stone-600 dark:text-zinc-300">{{ t('admin.tasks.projectLabel', { id: task.metadata?.project_id || '—' }) }}</p>

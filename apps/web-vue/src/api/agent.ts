@@ -1,186 +1,126 @@
 import api from './index'
 import type {
-  AgentChatAccepted,
-  AgentSessionSnapshot,
-  AgentSessionSummary,
+  AgentRun,
+  AgentRunEvent,
+  AgentRunMode,
+  ChangeSet,
 } from '@/types'
 
-function agentBase(projectId: string): string {
-  return `/api/projects/${projectId}/agent`
-}
+const agentBase = (projectId: string) => `/api/projects/${projectId}/agent/runs`
 
-export interface StartAgentChatPayload {
-  message: string
-  model?: string
-  session_id?: string
-  /** Phase A: explicit @-mention or programmatic preset; null/undefined → auto routing. */
-  skill_slug?: string | null
+export interface StartAgentRunPayload {
+  instruction: string
+  mode: AgentRunMode
+  target_refs?: string[]
+  model?: string | null
   effort?: string | null
+  skill_slug?: string | null
 }
 
-export async function startAgentChat(
+export async function startAgentRun(
   projectId: string,
-  payload: StartAgentChatPayload
-): Promise<AgentChatAccepted> {
-  const { data } = await api.post<AgentChatAccepted>(`${agentBase(projectId)}/chat`, payload)
+  payload: StartAgentRunPayload,
+): Promise<AgentRun> {
+  const { data } = await api.post<AgentRun>(agentBase(projectId), payload)
   return data
 }
 
-export async function getAgentSession(
-  projectId: string,
-  sessionId: string
-): Promise<AgentSessionSnapshot> {
-  const { data } = await api.get<AgentSessionSnapshot>(`${agentBase(projectId)}/chat/${sessionId}`)
+export async function listAgentRuns(projectId: string): Promise<AgentRun[]> {
+  const { data } = await api.get<AgentRun[]>(agentBase(projectId))
   return data
 }
 
-export async function listAgentSessions(
-  projectId: string,
-  includeArchived = false
-): Promise<AgentSessionSummary[]> {
-  const { data } = await api.get<AgentSessionSummary[]>(`${agentBase(projectId)}/sessions`, {
-    params: { include_archived: includeArchived },
-  })
+export async function getAgentRun(projectId: string, runId: string): Promise<AgentRun> {
+  const { data } = await api.get<AgentRun>(`${agentBase(projectId)}/${runId}`)
   return data
 }
 
-export async function archiveAgentSession(
+export async function getAgentRunChanges(projectId: string, runId: string): Promise<ChangeSet> {
+  const { data } = await api.get<ChangeSet>(`${agentBase(projectId)}/${runId}/changes`)
+  return data
+}
+
+export async function cancelAgentRun(projectId: string, runId: string): Promise<AgentRun> {
+  const { data } = await api.post<AgentRun>(`${agentBase(projectId)}/${runId}/cancel`)
+  return data
+}
+
+export async function reviewAgentRun(
   projectId: string,
-  sessionId: string
-): Promise<AgentSessionSummary> {
-  const { data } = await api.post<AgentSessionSummary>(
-    `${agentBase(projectId)}/sessions/${sessionId}/archive`
+  runId: string,
+  decision: 'accept' | 'reject',
+): Promise<AgentRun> {
+  const { data } = await api.post<AgentRun>(
+    `${agentBase(projectId)}/${runId}/review`,
+    { decision },
   )
   return data
 }
 
-export async function unarchiveAgentSession(
+export interface AgentEventHandlers {
+  onEvent: (event: AgentRunEvent) => void
+  onClose: (error?: unknown) => void
+}
+
+export function streamAgentRun(
   projectId: string,
-  sessionId: string
-): Promise<AgentSessionSummary> {
-  const { data } = await api.post<AgentSessionSummary>(
-    `${agentBase(projectId)}/sessions/${sessionId}/unarchive`
-  )
-  return data
-}
-
-export async function deleteAgentSession(projectId: string, sessionId: string): Promise<void> {
-  await api.delete(`${agentBase(projectId)}/sessions/${sessionId}`)
-}
-
-export async function cancelAgentSession(projectId: string, sessionId: string): Promise<void> {
-  await api.post(`${agentBase(projectId)}/chat/${sessionId}/cancel`)
-}
-
-export async function renameAgentSession(
-  projectId: string,
-  sessionId: string,
-  title: string
-): Promise<AgentSessionSummary> {
-  const { data } = await api.patch<AgentSessionSummary>(
-    `${agentBase(projectId)}/sessions/${sessionId}/rename`,
-    { title }
-  )
-  return data
-}
-
-export interface AgentStreamHandlers {
-  /** 每收到一个完整 SSE 事件回调一次(heartbeat 也会透传) */
-  onEvent?: (event: string, data: Record<string, any>) => void
-  /** 流结束(服务端关闭/网络错误/主动 abort)时回调;error 为空表示正常关闭 */
-  onClose?: (error?: unknown) => void
-}
-
-/**
- * 用 fetch + ReadableStream 手动解析 text/event-stream。
- * EventSource 不支持自定义 Authorization header,因此不能使用。
- * 返回 abort 函数,调用后中断连接。
- */
-export function streamAgentSession(
-  projectId: string,
-  sessionId: string,
-  handlers: AgentStreamHandlers
+  runId: string,
+  lastEventId: number,
+  handlers: AgentEventHandlers,
 ): () => void {
   const controller = new AbortController()
   const base = import.meta.env.VITE_API_URL || ''
-  const url = `${base}${agentBase(projectId)}/chat/${sessionId}/stream`
   const headers: Record<string, string> = { Accept: 'text/event-stream' }
-  const token = localStorage.getItem('token')
-  if (token) headers.Authorization = `Bearer ${token}`
+  if (lastEventId > 0) headers['Last-Event-ID'] = String(lastEventId)
 
   void (async () => {
     try {
-      const response = await fetch(url, { headers, signal: controller.signal })
+      const response = await fetch(`${base}${agentBase(projectId)}/${runId}/events`, {
+        headers,
+        credentials: 'include',
+        signal: controller.signal,
+      })
       if (!response.ok || !response.body) {
-        throw new Error(`SSE request failed with status ${response.status}`)
+        throw new Error(`Agent event stream failed with status ${response.status}`)
       }
 
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
-      let eventName = ''
-      let dataLines: string[] = []
-
+      let id = 0
+      let event = 'message'
+      let data: string[] = []
       const dispatch = () => {
-        if (dataLines.length === 0) {
-          eventName = ''
-          return
-        }
-        const rawData = dataLines.join('\n')
-        const name = eventName || 'message'
-        eventName = ''
-        dataLines = []
-        let payload: Record<string, any>
-        try {
-          const parsed = rawData ? JSON.parse(rawData) : {}
-          payload = parsed && typeof parsed === 'object' ? parsed : { value: parsed }
-        } catch {
-          payload = { raw: rawData }
-        }
-        handlers.onEvent?.(name, payload)
+        if (!data.length) return
+        const parsed = JSON.parse(data.join('\n')) as Record<string, unknown>
+        handlers.onEvent({ id, event, data: parsed })
+        id = 0
+        event = 'message'
+        data = []
       }
-
-      const handleLine = (line: string) => {
-        if (!line) {
-          // 空行 = 一个事件的结束
-          dispatch()
-          return
-        }
+      const consume = (line: string) => {
+        if (!line) return dispatch()
         if (line.startsWith(':')) return
-        if (line.startsWith('event:')) {
-          eventName = line.slice('event:'.length).trim()
-          return
-        }
-        if (line.startsWith('data:')) {
-          let value = line.slice('data:'.length)
-          if (value.startsWith(' ')) value = value.slice(1)
-          dataLines.push(value)
-        }
-        // 其余字段(id/retry)忽略
+        if (line.startsWith('id:')) id = Number(line.slice(3).trim())
+        else if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) data.push(line.slice(5).trimStart())
       }
 
-      // eslint-disable-next-line no-constant-condition
       while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        let newlineIndex = buffer.indexOf('\n')
-        while (newlineIndex !== -1) {
-          let line = buffer.slice(0, newlineIndex)
-          buffer = buffer.slice(newlineIndex + 1)
-          if (line.endsWith('\r')) line = line.slice(0, -1)
-          handleLine(line)
-          newlineIndex = buffer.indexOf('\n')
+        const chunk = await reader.read()
+        if (chunk.done) break
+        buffer += decoder.decode(chunk.value, { stream: true })
+        let newline = buffer.indexOf('\n')
+        while (newline >= 0) {
+          consume(buffer.slice(0, newline).replace(/\r$/, ''))
+          buffer = buffer.slice(newline + 1)
+          newline = buffer.indexOf('\n')
         }
       }
       dispatch()
-      handlers.onClose?.()
+      handlers.onClose()
     } catch (error) {
-      if ((error as Error | null)?.name === 'AbortError') {
-        handlers.onClose?.()
-      } else {
-        handlers.onClose?.(error)
-      }
+      handlers.onClose((error as Error).name === 'AbortError' ? undefined : error)
     }
   })()
 

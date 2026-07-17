@@ -1,85 +1,65 @@
-import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { AgentSessionSnapshot, AgentSessionSummary, Project } from '@/types'
+import { defineStore } from 'pinia'
+import type {
+  AgentRun,
+  AgentRunEvent,
+  AgentRunMode,
+  ChangeSet,
+  Project,
+} from '@/types'
 import * as agentApi from '@/api/agent'
 import { getModels, type ModelInfo } from '@/api/projects'
 
-const POLL_INTERVAL_MS = 3000
-const AGENT_MODEL_COMPONENT_KEY = 'operation_agent_task'
-
-const RUNNING_STATUSES = new Set(['pending', 'running'])
-
-function isRunningStatus(status: string | undefined | null): boolean {
-  return RUNNING_STATUSES.has(String(status || '').toLowerCase())
-}
+const ACTIVE_STATUSES = new Set(['queued', 'running', 'accepting'])
 
 export const useAgentStore = defineStore('agent', () => {
-  const sessions = ref<AgentSessionSummary[]>([])
-  const sessionsLoading = ref(false)
-  const currentSessionId = ref('')
-  const currentSession = ref<AgentSessionSnapshot | null>(null)
-  const sessionLoading = ref(false)
-  const sending = ref(false)
-  /** generation_delta 增量 token 缓冲,用于流式气泡 */
-  const streamingText = ref('')
-  const streamingThinkingText = ref('')
+  const runs = ref<AgentRun[]>([])
+  const currentRun = ref<AgentRun | null>(null)
+  const events = ref<AgentRunEvent[]>([])
+  const changeSet = ref<ChangeSet | null>(null)
+  const loading = ref(false)
+  const submitting = ref(false)
   const models = ref<ModelInfo[]>([])
   const modelsLoading = ref(false)
   const selectedModel = ref('')
   const modelTouched = ref(false)
+  let stopStream: (() => void) | null = null
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-  // 流和轮询句柄保持非响应式
-  let stopStreamFn: (() => void) | null = null
-  let pollTimer: ReturnType<typeof setInterval> | null = null
-  let refreshing = false
-
-  const isSessionRunning = computed(() => isRunningStatus(currentSession.value?.status))
+  const currentRunId = computed(() => currentRun.value?.id || '')
+  const isRunActive = computed(() => ACTIVE_STATUSES.has(currentRun.value?.status || ''))
+  const isAwaitingReview = computed(() => currentRun.value?.status === 'awaiting_review')
 
   function stopLiveUpdates() {
-    if (stopStreamFn) {
-      const stop = stopStreamFn
-      stopStreamFn = null
-      stop()
-    }
-    if (pollTimer) {
-      clearInterval(pollTimer)
-      pollTimer = null
-    }
+    stopStream?.()
+    stopStream = null
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = null
   }
 
-  async function loadSessions(projectId: string, includeArchived = false) {
-    sessionsLoading.value = true
+  async function loadRuns(projectId: string) {
+    loading.value = true
     try {
-      sessions.value = await agentApi.listAgentSessions(projectId, includeArchived)
+      runs.value = await agentApi.listAgentRuns(projectId)
     } finally {
-      sessionsLoading.value = false
+      loading.value = false
     }
   }
 
   function applyDefaultModel(project?: Project | null) {
     if (modelTouched.value && selectedModel.value) return
-    const configured = String(
-      project?.component_models?.[AGENT_MODEL_COMPONENT_KEY] || ''
-    ).trim()
-    if (configured) {
-      selectedModel.value = configured
-      return
-    }
-    if (selectedModel.value) return
-    const ids = models.value.map((m) => m.id)
-    selectedModel.value = ids.find((id) => /mimo/i.test(id)) || ids[0] || ''
+    const configured = String(project?.component_models?.operation_agent_task || '').trim()
+    selectedModel.value = configured || models.value[0]?.id || ''
   }
 
   async function loadModels(project?: Project | null) {
     modelsLoading.value = true
     try {
       models.value = await getModels()
-    } catch {
-      models.value = []
+      applyDefaultModel(project)
     } finally {
       modelsLoading.value = false
     }
-    applyDefaultModel(project)
   }
 
   function setSelectedModel(modelId: string) {
@@ -87,213 +67,140 @@ export const useAgentStore = defineStore('agent', () => {
     modelTouched.value = true
   }
 
-  async function refreshSnapshot(projectId: string) {
-    const sessionId = currentSessionId.value
-    if (!sessionId || refreshing) return
-    refreshing = true
-    try {
-      const snapshot = await agentApi.getAgentSession(projectId, sessionId)
-      if (currentSessionId.value !== sessionId) return
-      currentSession.value = snapshot
-      if (!isRunningStatus(snapshot.status)) {
-        streamingText.value = ''
-        streamingThinkingText.value = ''
-        stopLiveUpdates()
-      }
-    } catch {
-      // 快照刷新失败不打断 UI;下一次事件/轮询会重试
-    } finally {
-      refreshing = false
+  async function refreshCurrent(projectId: string) {
+    const runId = currentRunId.value
+    if (!runId) return
+    const run = await agentApi.getAgentRun(projectId, runId)
+    if (currentRunId.value !== runId) return
+    currentRun.value = run
+    const index = runs.value.findIndex((item) => item.id === run.id)
+    if (index >= 0) runs.value[index] = run
+    if (run.status === 'awaiting_review' || run.status === 'completed') {
+      changeSet.value = await agentApi.getAgentRunChanges(projectId, runId)
     }
   }
 
-  function startPolling(projectId: string) {
-    if (pollTimer) return
-    pollTimer = setInterval(() => {
-      void refreshSnapshot(projectId)
-    }, POLL_INTERVAL_MS)
-  }
-
-  function openStream(projectId: string, sessionId: string) {
+  function openStream(projectId: string, runId: string) {
     stopLiveUpdates()
-    stopStreamFn = agentApi.streamAgentSession(projectId, sessionId, {
-      onEvent: (event, data) => {
-        if (currentSessionId.value !== sessionId) return
-        if (event === 'heartbeat') return
-        if (event === 'session_snapshot') {
-          if (data && data.session_id === sessionId) {
-            currentSession.value = data as AgentSessionSnapshot
-          }
-          return
-        }
-
-        if (event === 'thinking_delta') {
-          const delta = data?.delta ?? data?.text ?? ''
-          if (typeof delta === 'string' && delta) {
-            streamingThinkingText.value += delta
-          }
-          return
-        }        if (event === 'generation_delta') {
-          const delta = data?.delta ?? data?.text ?? ''
-          if (typeof delta === 'string' && delta) {
-            streamingText.value += delta
-          }
-          return
-        }
-        // 非 delta 事件(progress/step/complete/error 等):重新拉快照最稳妥
-        void refreshSnapshot(projectId)
-        if (event === 'complete' || event === 'error') {
-          streamingText.value = ''
-          streamingThinkingText.value = ''
-          void loadSessions(projectId).catch(() => {})
-        }
+    const lastEventId = events.value[events.value.length - 1]?.id || 0
+    stopStream = agentApi.streamAgentRun(projectId, runId, lastEventId, {
+      onEvent: (event) => {
+        if (currentRunId.value !== runId) return
+        if (!events.value.some((item) => item.id === event.id)) events.value.push(event)
+        void refreshCurrent(projectId)
       },
       onClose: (error) => {
-        stopStreamFn = null
-        if (currentSessionId.value !== sessionId) return
-        // SSE 断开后若会话仍在运行,降级为 3s 轮询
-        if (error || isRunningStatus(currentSession.value?.status)) {
-          startPolling(projectId)
+        stopStream = null
+        if (currentRunId.value !== runId) return
+        if (error && isRunActive.value) {
+          reconnectTimer = setTimeout(() => openStream(projectId, runId), 1000)
         }
       },
     })
   }
 
-  async function selectSession(projectId: string, sessionId: string) {
+  async function selectRun(projectId: string, runId: string) {
     stopLiveUpdates()
-    currentSessionId.value = sessionId
-    streamingText.value = ''
-    streamingThinkingText.value = ''
-    sessionLoading.value = true
-    try {
-      const snapshot = await agentApi.getAgentSession(projectId, sessionId)
-      if (currentSessionId.value !== sessionId) return
-      currentSession.value = snapshot
-      if (isRunningStatus(snapshot.status)) {
-        openStream(projectId, sessionId)
-      }
-    } finally {
-      sessionLoading.value = false
+    events.value = []
+    changeSet.value = null
+    currentRun.value = await agentApi.getAgentRun(projectId, runId)
+    if (currentRun.value.status === 'awaiting_review' || currentRun.value.status === 'completed') {
+      changeSet.value = await agentApi.getAgentRunChanges(projectId, runId)
     }
+    if (ACTIVE_STATUSES.has(currentRun.value.status)) openStream(projectId, runId)
   }
 
-  function startNewSession() {
+  function startNewRun() {
     stopLiveUpdates()
-    currentSessionId.value = ''
-    currentSession.value = null
-    streamingText.value = ''
-    streamingThinkingText.value = ''
+    currentRun.value = null
+    events.value = []
+    changeSet.value = null
   }
 
-  async function sendMessage(
+  async function startRun(
     projectId: string,
-    message: string,
-    options: { skill_slug?: string | null; effort?: string | null } = {},
+    instruction: string,
+    options: {
+      mode: AgentRunMode
+      target_refs: string[]
+      skill_slug?: string | null
+      effort?: string | null
+    },
   ) {
-    sending.value = true
+    submitting.value = true
     try {
-      const accepted = await agentApi.startAgentChat(projectId, {
-        message,
-        model: selectedModel.value || undefined,
-        session_id: currentSessionId.value || undefined,
-        skill_slug: options.skill_slug ?? null,
-        effort: options.effort ?? null,
+      const run = await agentApi.startAgentRun(projectId, {
+        instruction,
+        mode: options.mode,
+        target_refs: options.target_refs,
+        skill_slug: options.skill_slug,
+        effort: options.effort,
+        model: selectedModel.value || null,
       })
-      stopLiveUpdates()
-      currentSessionId.value = accepted.session_id
-      streamingText.value = ''
-      streamingThinkingText.value = ''
-      streamingThinkingText.value = ''
-      void loadSessions(projectId).catch(() => {})
-      try {
-        currentSession.value = await agentApi.getAgentSession(projectId, accepted.session_id)
-      } catch {
-        // 后台任务刚启动时快照可能尚不可读,交给流/轮询补齐
-      }
-      openStream(projectId, accepted.session_id)
-      return accepted
+      runs.value.unshift(run)
+      currentRun.value = run
+      events.value = []
+      changeSet.value = null
+      openStream(projectId, run.id)
+      return run
     } finally {
-      sending.value = false
+      submitting.value = false
     }
   }
 
-  async function archiveSession(projectId: string, sessionId: string) {
-    await agentApi.archiveAgentSession(projectId, sessionId)
-    await loadSessions(projectId)
-    if (currentSessionId.value === sessionId) {
-      startNewSession()
+  async function cancelCurrent(projectId: string) {
+    if (!currentRun.value) return
+    currentRun.value = await agentApi.cancelAgentRun(projectId, currentRun.value.id)
+    stopLiveUpdates()
+  }
+
+  async function reviewCurrent(projectId: string, decision: 'accept' | 'reject') {
+    if (!currentRun.value) return
+    submitting.value = true
+    try {
+      currentRun.value = await agentApi.reviewAgentRun(projectId, currentRun.value.id, decision)
+      const index = runs.value.findIndex((item) => item.id === currentRun.value?.id)
+      if (index >= 0) runs.value[index] = currentRun.value
+      return currentRun.value
+    } finally {
+      submitting.value = false
     }
   }
 
-  async function unarchiveSession(projectId: string, sessionId: string) {
-    await agentApi.unarchiveAgentSession(projectId, sessionId)
-    await loadSessions(projectId)
-  }
-
-  async function deleteSession(projectId: string, sessionId: string) {
-    await agentApi.deleteAgentSession(projectId, sessionId)
-    sessions.value = sessions.value.filter((s) => s.session_id !== sessionId)
-    if (currentSessionId.value === sessionId) {
-      startNewSession()
-    }
-  }
-
-  async function cancelCurrentSession(projectId: string) {
-    const sessionId = currentSessionId.value
-    if (!sessionId) return
-    await agentApi.cancelAgentSession(projectId, sessionId)
-  }
-
-  async function renameSession(projectId: string, sessionId: string, title: string) {
-    const updated = await agentApi.renameAgentSession(projectId, sessionId, title)
-    const idx = sessions.value.findIndex((s) => s.session_id === sessionId)
-    if (idx >= 0) {
-      sessions.value[idx] = { ...sessions.value[idx], title: updated.title }
-    }
-    if (currentSessionId.value === sessionId && currentSession.value) {
-      currentSession.value = { ...currentSession.value, title: updated.title }
-    }
-  }
-
-  /** 离开工作区或切换项目时调用,清掉流/轮询与会话状态 */
   function reset() {
     stopLiveUpdates()
-    sessions.value = []
-    currentSessionId.value = ''
-    currentSession.value = null
-    streamingText.value = ''
-    sending.value = false
+    runs.value = []
+    currentRun.value = null
+    events.value = []
+    changeSet.value = null
     modelTouched.value = false
     selectedModel.value = ''
   }
 
   return {
-    sessions,
-    sessionsLoading,
-    currentSessionId,
-    currentSession,
-    sessionLoading,
-    sending,
-    streamingText,
-    streamingThinkingText,
+    runs,
+    currentRun,
+    currentRunId,
+    events,
+    changeSet,
+    loading,
+    submitting,
     models,
     modelsLoading,
     selectedModel,
-    isSessionRunning,
-    loadSessions,
+    isRunActive,
+    isAwaitingReview,
+    loadRuns,
     loadModels,
     applyDefaultModel,
     setSelectedModel,
-    selectSession,
-    startNewSession,
-    sendMessage,
-    archiveSession,
-    unarchiveSession,
-    deleteSession,
-    renameSession,
-    refreshSnapshot,
+    selectRun,
+    startNewRun,
+    startRun,
+    cancelCurrent,
+    reviewCurrent,
+    refreshCurrent,
     stopLiveUpdates,
     reset,
-    cancelCurrentSession,
   }
 })

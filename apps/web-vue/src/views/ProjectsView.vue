@@ -111,12 +111,7 @@ function formatDate(dateStr: string) {
               <p v-if="project.description" class="text-sm muse-text-muted mt-1 line-clamp-2">
                 {{ project.description }}
               </p>
-              <p
-                v-if="project.chapters?.length && (project.chapters[0]?.content || '').trim()"
-                class="text-xs muse-text-faint mt-2 line-clamp-2"
-              >
-                {{ (project.chapters[0]?.content || '').substring(0, 120) }}{{ (project.chapters[0]?.content || '').length > 120 ? '...' : '' }}
-              </p>
+              <p class="mt-2 text-xs muse-text-faint">{{ project.pack_slug }} · {{ project.visibility }}</p>
               <div class="flex items-center gap-1.5 mt-auto pt-3 text-xs muse-text-muted">
                 <Clock class="w-3.5 h-3.5" />
                 {{ formatDate(project.updated_at) }}

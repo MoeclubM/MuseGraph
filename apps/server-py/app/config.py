@@ -9,10 +9,12 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
-    TASK_STATE_SQLITE_PATH: str = ".musegraph/task_state.sqlite3"
-
     # Session
     SESSION_EXPIRES_HOURS: int = 168  # 7 days
+    SESSION_COOKIE_NAME: str = "musegraph_session"
+    COOKIE_SECURE: bool = False
+    REGISTRATION_MODE: str = "disabled"
+    SECRET_ENCRYPTION_KEY: str = ""
 
     # File storage (local persistent path)
     FILE_STORAGE_ROOT: str = ".musegraph/storage"
@@ -21,19 +23,22 @@ class Settings(BaseSettings):
     COGNEE_DATA_DIR: str = ".musegraph/cognee"
     COGNEE_INGEST_TIMEOUT_SECONDS: int = 300
     COGNEE_LLM_MAX_TOKENS: int = 8192
+    MEMORY_SERVICE_URL: str = "http://memory:4010"
+    INTERNAL_SERVICE_TOKEN: str = ""
 
     # Agent
-    AGENT_FLOW_TIMEOUT_SECONDS: int = 30 * 60
-    AGENT_PI_TOOL_LOOP_MAX_ITERATIONS: int = 30
-    # Reasoning models spend completion tokens on hidden reasoning before the JSON
-    # action, so the controller budget must stay generous to avoid truncated JSON.
     AGENT_PI_TOOL_LOOP_MAX_TOKENS: int = 16384
+    AGENT_WORKER_ID: str = ""
+    AGENT_WORKER_LEASE_SECONDS: int = 60
 
-    # Web search (for research tasks; DuckDuckGo, free, no API key)
-    WEB_SEARCH_ENABLED: bool = True
-    WEB_SEARCH_MAX_RESULTS: int = 8
+    MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024
+    ALLOW_PRIVATE_PROVIDER_URLS: bool = False
+    AUTH_RATE_LIMIT_PER_MINUTE: int = 10
+    UPLOAD_RATE_LIMIT_PER_MINUTE: int = 20
+    AGENT_RATE_LIMIT_PER_MINUTE: int = 30
 
     # App
+    APP_ENV: str = "development"
     APP_URL: str = "http://localhost:3010"
     AUTO_SEED_DATA: bool = False
 

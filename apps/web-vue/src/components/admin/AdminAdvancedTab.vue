@@ -1,20 +1,15 @@
 ﻿<script setup lang="ts">
-import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { LlmRuntimeConfig, UsageRetentionConfig } from '@/types'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Alert from '@/components/ui/Alert.vue'
 import Input from '@/components/ui/Input.vue'
-import Textarea from '@/components/ui/Textarea.vue'
-import Checkbox from '@/components/ui/Checkbox.vue'
-import Select from '@/components/ui/Select.vue'
 
 const { t } = useI18n()
 
 const props = defineProps<{
   llmRuntimeConfig: LlmRuntimeConfig
-  llmModelConcurrencyOverridesInput: string
   llmRequestConfigError: string
   llmRequestConfigMessage: string
   usageRetention: UsageRetentionConfig
@@ -26,17 +21,12 @@ const props = defineProps<{
 const emit = defineEmits<{
   'reload-llm-request-config': []
   'save-llm-request-config': []
-  'update:llmModelConcurrencyOverridesInput': [value: string]
   'reload-usage-retention': []
   'save-usage-retention': []
   'run-usage-cleanup': []
   'update:usageRetention': [value: UsageRetentionConfig]
 }>()
 
-const llmModelConcurrencyOverridesInputValue = computed({
-  get: () => props.llmModelConcurrencyOverridesInput,
-  set: (value: string | number) => emit('update:llmModelConcurrencyOverridesInput', String(value || '')),
-})
 </script>
 
 <template>
@@ -59,65 +49,6 @@ const llmModelConcurrencyOverridesInputValue = computed({
         <div class="space-y-1">
           <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_request_timeout_seconds') }}</label>
           <Input v-model.number="llmRuntimeConfig.llm_request_timeout_seconds" type="number" min="5" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_retry_count') }}</label>
-          <Input v-model.number="llmRuntimeConfig.llm_retry_count" type="number" min="0" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_retry_interval_seconds') }}</label>
-          <Input v-model.number="llmRuntimeConfig.llm_retry_interval_seconds" type="number" min="0" step="0.1" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_task_concurrency') }}</label>
-          <Input v-model.number="llmRuntimeConfig.llm_task_concurrency" type="number" min="1" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_model_default_concurrency') }}</label>
-          <Input v-model.number="llmRuntimeConfig.llm_model_default_concurrency" type="number" min="1" />
-        </div>
-        <div class="space-y-1 md:col-span-3">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_fallback_model') }}</label>
-          <Input v-model="llmRuntimeConfig.llm_fallback_model" type="text" />
-        </div>
-        <div class="space-y-1 md:col-span-3">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_model_concurrency_overrides') }}</label>
-          <Textarea
-            v-model="llmModelConcurrencyOverridesInputValue"
-            :rows="4"
-            :placeholder="t('admin.advanced.llmRequest.overridesPlaceholder')"
-          />
-        </div>
-        <label class="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
-          <Checkbox v-model="llmRuntimeConfig.llm_prefer_stream" />
-          {{ t('admin.advanced.fields.llm_prefer_stream') }}
-        </label>
-        <label class="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
-          <Checkbox v-model="llmRuntimeConfig.llm_stream_fallback_nonstream" />
-          {{ t('admin.advanced.fields.llm_stream_fallback_nonstream') }}
-        </label>
-        <div class="space-y-1 md:col-span-3">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_openai_api_style') }}</label>
-          <Select v-model="llmRuntimeConfig.llm_openai_api_style">
-            <option value="responses">responses</option>
-            <option value="chat_completions">chat_completions</option>
-          </Select>
-        </div>
-        <div class="space-y-1 md:col-span-3">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_reasoning_effort') }}</label>
-          <Select v-model="llmRuntimeConfig.llm_reasoning_effort">
-            <option value="model_default">model_default</option>
-            <option value="none">none</option>
-            <option value="minimal">minimal</option>
-            <option value="low">low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-            <option value="max">max</option>
-            <option value="xhigh">xhigh</option>
-          </Select>
-          <p class="text-xs text-stone-500 dark:text-zinc-400">
-            {{ t('admin.advanced.llmRequest.reasoningHint') }}
-          </p>
         </div>
       </div>
 

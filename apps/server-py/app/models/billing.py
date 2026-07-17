@@ -15,8 +15,16 @@ class Usage(Base):
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    project_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), nullable=True)
-    operation_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), nullable=True)
+    project_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("text_projects.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    operation_id: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        ForeignKey("agent_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)

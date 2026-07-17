@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, useId } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -26,6 +26,8 @@ const emit = defineEmits<{
   close: []
 }>()
 
+const titleId = useId()
+
 function onBackdrop(e: MouseEvent) {
   if (e.target === e.currentTarget) {
     emit('close')
@@ -49,9 +51,12 @@ function onBackdrop(e: MouseEvent) {
         <div
           class="muse-surface w-full max-h-[90vh] overflow-y-auto rounded-md"
           :class="panelMaxWidthClass"
+          role="dialog"
+          aria-modal="true"
+          :aria-labelledby="title ? titleId : undefined"
         >
           <div v-if="title" class="flex items-center justify-between border-b border-stone-300 px-6 py-4 dark:border-zinc-700">
-            <h2 class="text-lg font-semibold text-stone-900 dark:text-stone-100">{{ title }}</h2>
+            <h2 :id="titleId" class="text-lg font-semibold text-stone-900 dark:text-stone-100">{{ title }}</h2>
             <button
               class="rounded-md p-1 text-stone-500 transition-colors hover:bg-stone-200 hover:text-stone-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
               @click="emit('close')"

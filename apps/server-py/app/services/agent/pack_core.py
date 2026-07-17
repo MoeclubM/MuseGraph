@@ -28,6 +28,7 @@ class TextTypePack:
     display_name: str
     default_skills: dict[str, str] = field(default_factory=dict)
     auditor_dimensions: list[str] = field(default_factory=list)
+    knowledge_types: list[str] = field(default_factory=list)
     unit: dict[str, Any] = field(default_factory=dict)
     control_docs: dict[str, str] = field(default_factory=dict)
 
@@ -53,6 +54,7 @@ def list_packs() -> list[dict[str, Any]]:
             "text_type": pack.text_type,
             "display_name": pack.display_name,
             "auditor_dimensions": pack.auditor_dimensions,
+            "knowledge_types": pack.knowledge_types,
             "unit": pack.unit,
         })
     out.sort(key=lambda item: item["text_type"])
@@ -83,18 +85,39 @@ def load_pack(text_type: str | None) -> TextTypePack:
     missing = [k for k in required if k not in data]
     if missing:
         raise ValueError(f"Pack {slug}.yaml missing required keys: {missing}")
+    if str(data["text_type"]) != slug:
+        raise ValueError(f"Pack filename {slug}.yaml does not match text_type")
+    default_skills = {
+        str(k): str(v) for k, v in (data.get("default_skills") or {}).items()
+    }
+    auditor_dimensions = [str(d) for d in data.get("auditor_dimensions") or []]
+    knowledge_types = [str(item) for item in data.get("knowledge_types") or []]
+    unit = dict(data.get("unit") or {})
+    control_docs = {
+        str(k): str(v) for k, v in (data.get("control_docs") or {}).items()
+    }
+    if not default_skills:
+        raise ValueError(f"Pack {slug}.yaml must define default_skills")
+    if not auditor_dimensions:
+        raise ValueError(f"Pack {slug}.yaml must define auditor_dimensions")
+    if not knowledge_types:
+        raise ValueError(f"Pack {slug}.yaml must define knowledge_types")
+    if not str(unit.get("name") or "").strip():
+        raise ValueError(f"Pack {slug}.yaml must define unit.name")
+    if set(control_docs) != {"intent", "focus", "rules", "bible"}:
+        raise ValueError(f"Pack {slug}.yaml must define all four control documents")
+    for relative in control_docs.values():
+        if not _packs_dir().joinpath(relative).is_file():
+            raise FileNotFoundError(f"Pack {slug}.yaml references missing template: {relative}")
 
     pack = TextTypePack(
         text_type=str(data["text_type"]),
         display_name=str(data["display_name"]),
-        default_skills={
-            str(k): str(v) for k, v in (data.get("default_skills") or {}).items()
-        },
-        auditor_dimensions=[str(d) for d in data.get("auditor_dimensions") or []],
-        unit=dict(data.get("unit") or {}),
-        control_docs={
-            str(k): str(v) for k, v in (data.get("control_docs") or {}).items()
-        },
+        default_skills=default_skills,
+        auditor_dimensions=auditor_dimensions,
+        knowledge_types=knowledge_types,
+        unit=unit,
+        control_docs=control_docs,
     )
     _PACK_CACHE[slug] = pack
     return pack
@@ -109,8 +132,7 @@ def clear_cache() -> None:
 def get_project_pack(project: Any) -> "TextTypePack":
     """Return the project's active ``TextTypePack``."""
 
-    state = project.creative_state or {}
-    slug = str(state.get("text_type_pack") or "").strip().lower() or "generic"
+    slug = str(project.pack_slug or "").strip().lower() or "generic"
     return load_pack(slug)
 
 
@@ -119,6 +141,4 @@ def set_project_pack(project: Any, slug: str) -> None:
 
     normalized = slug.strip().lower()
     load_pack(normalized)
-    state = dict(project.creative_state or {})
-    state["text_type_pack"] = normalized
-    project.creative_state = state
+    project.pack_slug = normalized

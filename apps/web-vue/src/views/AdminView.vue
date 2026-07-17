@@ -7,11 +7,13 @@ import {
   CreditCard,
   ListChecks,
   PlugZap,
+  ShieldCheck,
   SlidersHorizontal,
   Users,
 } from '@lucide/vue'
 import AdminLayout from '@/components/layout/AdminLayout.vue'
 import AdminTasksTab from '@/components/admin/AdminTasksTab.vue'
+import AdminAuditTab from '@/components/admin/AdminAuditTab.vue'
 import AdminOverviewTab from '@/components/admin/AdminOverviewTab.vue'
 import AdminUsersTab from '@/components/admin/AdminUsersTab.vue'
 import AdminUserSettingsModal from '@/components/admin/AdminUserSettingsModal.vue'
@@ -36,9 +38,12 @@ import {
   getUsageRetentionConfig, updateUsageRetentionConfig, runUsageRetentionCleanup,
   getAdminTasks,
   cancelAdminTask,
+  getAuditLogs,
+  getRuntimeHealth,
 } from '@/api/admin'
 import type {
   AdminTask,
+  AuditLogEntry,
   AdminUser,
   LlmRuntimeConfig,
   PaymentAdapterAdmin,
@@ -46,14 +51,15 @@ import type {
   PricingRule,
   Provider,
   StatsResponse,
+  RuntimeHealth,
   UserListResponse,
   UsageRetentionConfig,
 } from '@/types'
 
-type Tab = 'overview' | 'users' | 'providers' | 'models' | 'advanced' | 'payments' | 'tasks'
+type Tab = 'overview' | 'users' | 'providers' | 'models' | 'advanced' | 'payments' | 'tasks' | 'audit'
 type UserStatus = '' | 'ACTIVE' | 'SUSPENDED' | 'DELETED'
 type UserAdminFilter = '' | 'true' | 'false'
-type AdminTaskStatusFilter = '' | 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
+type AdminTaskStatusFilter = '' | AdminTask['status']
 type ProviderModelKind = 'chat' | 'embedding' | 'reranker'
 type ModelRow = {
   providerId: string
@@ -126,18 +132,7 @@ const showModelForm = ref(false)
 
 const llmRuntimeConfig = ref<LlmRuntimeConfig>({
   llm_request_timeout_seconds: 180,
-  llm_retry_count: 4,
-  llm_retry_interval_seconds: 2,
-  llm_prefer_stream: true,
-  llm_stream_fallback_nonstream: true,
-  llm_fallback_model: '',
-  llm_openai_api_style: 'responses',
-  llm_reasoning_effort: 'model_default',
-  llm_task_concurrency: 4,
-  llm_model_default_concurrency: 8,
-  llm_model_concurrency_overrides: {},
 })
-const llmModelConcurrencyOverridesInput = ref('{}')
 const llmRequestConfigMessage = ref('')
 const llmRequestConfigError = ref('')
 const usageRetention = ref<UsageRetentionConfig>({ retention_days: null, max_records: null })
@@ -158,6 +153,17 @@ const adminTaskFilters = ref<AdminTaskFilters>({
   limit: 200,
 })
 const adminCancellingTaskIds = ref<string[]>([])
+const auditEntries = ref<AuditLogEntry[]>([])
+const auditTotal = ref(0)
+const runtimeHealth = ref<RuntimeHealth | null>(null)
+const auditLoading = ref(false)
+const auditError = ref('')
+const auditFilters = ref({
+  project_id: '',
+  actor_user_id: '',
+  action: '',
+  limit: 200,
+})
 
 const FIXED_TOKEN_UNIT = 1_000_000
 const showPricingForm = ref(false)
@@ -189,6 +195,7 @@ const tabItems = computed<Array<{ value: Tab; label: string; icon: Component; hi
   { value: 'advanced', label: t('admin.tabs.advanced'), icon: SlidersHorizontal, hint: t('admin.tabs.advancedHint') },
   { value: 'payments', label: t('admin.tabs.payments'), icon: CreditCard, hint: t('admin.tabs.paymentsHint') },
   { value: 'tasks', label: t('admin.tabs.tasks'), icon: ListChecks, hint: t('admin.tabs.tasksHint') },
+  { value: 'audit', label: t('admin.tabs.audit'), icon: ShieldCheck, hint: t('admin.tabs.auditHint') },
 ])
 
 const activeTabHint = computed(() => tabItems.value.find((item) => item.value === tab.value)?.hint ?? '')
@@ -254,44 +261,6 @@ const modelRows = computed<ModelRow[]>(() => {
     a.model.localeCompare(b.model) || a.providerName.localeCompare(b.providerName) || a.kind.localeCompare(b.kind)
   )
 })
-
-function formatModelConcurrencyOverrides(overrides: Record<string, number>): string {
-  const normalized: Record<string, number> = {}
-  const rows: Array<[string, number]> = []
-  for (const [rawKey, rawValue] of Object.entries(overrides || {})) {
-    const key = String(rawKey || '').trim().toLowerCase()
-    const value = Number(rawValue)
-    if (!key || !Number.isFinite(value) || value < 1) continue
-    rows.push([key, value])
-  }
-  rows.sort((a, b) => a[0].localeCompare(b[0]))
-  for (const [key, value] of rows) {
-    normalized[key] = value
-  }
-  return JSON.stringify(normalized, null, 2)
-}
-
-function parseModelConcurrencyOverrides(raw: string): Record<string, number> {
-  const text = String(raw || '').trim()
-  if (!text) return {}
-  let payload: unknown
-  try {
-    payload = JSON.parse(text)
-  } catch (error: unknown) {
-    throw new Error(t('admin.advanced.messages.jsonInvalid'))
-  }
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error(t('admin.advanced.messages.jsonObject'))
-  }
-  const normalized: Record<string, number> = {}
-  for (const [rawKey, rawValue] of Object.entries(payload as Record<string, unknown>)) {
-    const key = String(rawKey || '').trim().toLowerCase()
-    const value = Number(rawValue)
-    if (!key || !Number.isFinite(value) || value < 1) continue
-    normalized[key] = value
-  }
-  return normalized
-}
 
 function pricingByModel(model: string): PricingRule | undefined {
   return pricingRules.value.find((r) => r.model === model)
@@ -434,9 +403,6 @@ async function loadAll() {
     getLlmRuntimeConfig()
       .then((d) => {
         llmRuntimeConfig.value = d
-        llmModelConcurrencyOverridesInput.value = formatModelConcurrencyOverrides(
-          d.llm_model_concurrency_overrides || {}
-        )
       })
       .catch(() => {}),
     getUsageRetentionConfig()
@@ -450,6 +416,13 @@ async function loadAll() {
         adminTasksTotal.value = Number(d.total || 0)
       })
       .catch(() => {}),
+    getAuditLogs({ limit: auditFilters.value.limit })
+      .then((d) => {
+        auditEntries.value = d.items
+        auditTotal.value = d.total
+      })
+      .catch(() => {}),
+    getRuntimeHealth().then((d) => (runtimeHealth.value = d)).catch(() => {}),
   ])
   if (!providerModelProviderId.value && providers.value.length) {
     providerModelProviderId.value = providers.value[0].id
@@ -740,38 +713,14 @@ watch(providerModelFormKind, () => {
 
 function applyLlmRequestFields(next: LlmRuntimeConfig) {
   llmRuntimeConfig.value.llm_request_timeout_seconds = next.llm_request_timeout_seconds
-  llmRuntimeConfig.value.llm_retry_count = next.llm_retry_count
-  llmRuntimeConfig.value.llm_retry_interval_seconds = next.llm_retry_interval_seconds
-  llmRuntimeConfig.value.llm_prefer_stream = next.llm_prefer_stream
-  llmRuntimeConfig.value.llm_stream_fallback_nonstream = next.llm_stream_fallback_nonstream
-  llmRuntimeConfig.value.llm_fallback_model = next.llm_fallback_model
-  llmRuntimeConfig.value.llm_openai_api_style = next.llm_openai_api_style
-  llmRuntimeConfig.value.llm_reasoning_effort = next.llm_reasoning_effort
-  llmRuntimeConfig.value.llm_task_concurrency = next.llm_task_concurrency
-  llmRuntimeConfig.value.llm_model_default_concurrency = next.llm_model_default_concurrency
-  llmRuntimeConfig.value.llm_model_concurrency_overrides = { ...next.llm_model_concurrency_overrides }
-  llmModelConcurrencyOverridesInput.value = formatModelConcurrencyOverrides(
-    next.llm_model_concurrency_overrides || {}
-  )
 }
 
 async function saveLlmRequestConfig() {
   llmRequestConfigError.value = ''
   llmRequestConfigMessage.value = ''
   try {
-    const modelOverrides = parseModelConcurrencyOverrides(llmModelConcurrencyOverridesInput.value)
     const updated = await updateLlmRuntimeConfig({
       llm_request_timeout_seconds: Number(llmRuntimeConfig.value.llm_request_timeout_seconds || 0),
-      llm_retry_count: Number(llmRuntimeConfig.value.llm_retry_count || 0),
-      llm_retry_interval_seconds: Number(llmRuntimeConfig.value.llm_retry_interval_seconds || 0),
-      llm_prefer_stream: Boolean(llmRuntimeConfig.value.llm_prefer_stream),
-      llm_stream_fallback_nonstream: Boolean(llmRuntimeConfig.value.llm_stream_fallback_nonstream),
-      llm_fallback_model: String(llmRuntimeConfig.value.llm_fallback_model || ''),
-      llm_openai_api_style: String(llmRuntimeConfig.value.llm_openai_api_style || 'responses'),
-      llm_reasoning_effort: String(llmRuntimeConfig.value.llm_reasoning_effort || 'model_default'),
-      llm_task_concurrency: Number(llmRuntimeConfig.value.llm_task_concurrency || 0),
-      llm_model_default_concurrency: Number(llmRuntimeConfig.value.llm_model_default_concurrency || 0),
-      llm_model_concurrency_overrides: modelOverrides,
     })
     applyLlmRequestFields(updated)
     llmRequestConfigMessage.value = t('admin.advanced.messages.llmUpdated')
@@ -852,7 +801,7 @@ async function loadAdminTasks() {
 
 async function cancelTaskByAdmin(task: AdminTask) {
   const status = String(task?.status || '').toLowerCase()
-  if (!task?.task_id || (status !== 'pending' && status !== 'processing')) return
+  if (!task?.task_id || (status !== 'queued' && status !== 'running')) return
   if (adminCancellingTaskIds.value.includes(task.task_id)) return
   adminTasksError.value = ''
   adminTasksMessage.value = ''
@@ -865,6 +814,29 @@ async function cancelTaskByAdmin(task: AdminTask) {
     adminTasksError.value = getErrorMessage(error, t('admin.tasks.messages.cancelFailed'))
   } finally {
     adminCancellingTaskIds.value = adminCancellingTaskIds.value.filter((id) => id !== task.task_id)
+  }
+}
+
+async function loadAudit() {
+  auditLoading.value = true
+  auditError.value = ''
+  try {
+    const [logs, health] = await Promise.all([
+      getAuditLogs({
+        project_id: auditFilters.value.project_id.trim() || undefined,
+        actor_user_id: auditFilters.value.actor_user_id.trim() || undefined,
+        action: auditFilters.value.action.trim() || undefined,
+        limit: Number(auditFilters.value.limit || 200),
+      }),
+      getRuntimeHealth(),
+    ])
+    auditEntries.value = logs.items
+    auditTotal.value = logs.total
+    runtimeHealth.value = health
+  } catch (error: unknown) {
+    auditError.value = getErrorMessage(error, '无法读取运行健康和审计日志')
+  } finally {
+    auditLoading.value = false
   }
 }
 
@@ -1118,7 +1090,6 @@ onMounted(loadAll)
           <TabsContent value="advanced" class="space-y-4">
             <AdminAdvancedTab
               :llm-runtime-config="llmRuntimeConfig"
-              :llm-model-concurrency-overrides-input="llmModelConcurrencyOverridesInput"
               :llm-request-config-error="llmRequestConfigError"
               :llm-request-config-message="llmRequestConfigMessage"
               :usage-retention="usageRetention"
@@ -1131,7 +1102,6 @@ onMounted(loadAll)
               @save-usage-retention="saveUsageRetentionConfig"
               @run-usage-cleanup="runUsageCleanupNow"
               @update:usage-retention="usageRetention = $event"
-              @update:llm-model-concurrency-overrides-input="llmModelConcurrencyOverridesInput = $event"
             />
           </TabsContent>
 
@@ -1162,10 +1132,22 @@ onMounted(loadAll)
               @update:filters="updateAdminTaskFilters"
             />
           </TabsContent>
+
+          <TabsContent value="audit">
+            <AdminAuditTab
+              :entries="auditEntries"
+              :total="auditTotal"
+              :health="runtimeHealth"
+              :loading="auditLoading"
+              :error="auditError"
+              :filters="auditFilters"
+              :format-date-time="formatDateTime"
+              @refresh="loadAudit"
+              @update:filters="auditFilters = $event"
+            />
+          </TabsContent>
         </template>
       </Tabs>
     </div>
   </AdminLayout>
 </template>
-
-

@@ -1,10 +1,16 @@
 text_type: paper
 display_name: "学术论文"
 default_skills:
-  analyzer: analyzer
-  outliner: outliner
-  writer: continuation
+  planner: outliner
+  composer: analyzer
+  writer: general
   auditor: critic
+  reviser: general
+  evaluator: critic
+  updater: knowledge-builder
+  memory_builder: knowledge-builder
+  graph_extractor: knowledge-builder
+  suggest: coauthor
 auditor_dimensions:
   - continuity
   - evidence_grounding
@@ -13,6 +19,7 @@ auditor_dimensions:
   - intent_alignment
   - citation_validity
   - claim_precision
+knowledge_types: [fact, source, relation, constraint, entity, event]
 unit:
   name: section
   default_word_count: 2500

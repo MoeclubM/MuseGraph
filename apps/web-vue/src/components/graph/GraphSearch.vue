@@ -3,7 +3,6 @@ import { ref } from 'vue'
 import { Search } from '@lucide/vue'
 import { searchProjectMemory } from '@/api/memory'
 import Input from '@/components/ui/Input.vue'
-import Select from '@/components/ui/Select.vue'
 import Button from '@/components/ui/Button.vue'
 import Alert from '@/components/ui/Alert.vue'
 
@@ -12,18 +11,11 @@ const props = defineProps<{
 }>()
 
 const query = ref('')
-const searchType = ref('INSIGHTS')
 const topK = ref(10)
 const results = ref<unknown[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const hasSearched = ref(false)
-
-const searchTypes = [
-  { value: 'INSIGHTS', label: 'Insights' },
-  { value: 'CHUNKS', label: 'Chunks' },
-  { value: 'SUMMARIES', label: 'Summaries' },
-]
 
 function extractText(result: unknown): string {
   if (typeof result === 'object' && result !== null) {
@@ -39,12 +31,12 @@ async function handleSearch() {
   error.value = null
   hasSearched.value = true
   try {
-    const payload = await searchProjectMemory(props.projectId, query.value, {
-      search_type: searchType.value,
-      top_k: Math.max(1, Math.min(50, Number(topK.value) || 10)),
-    })
-    const hits = payload.results ?? payload.hits ?? payload.items
-    results.value = Array.isArray(hits) ? hits : []
+    const payload = await searchProjectMemory(
+      props.projectId,
+      query.value,
+      Math.max(1, Math.min(50, Number(topK.value) || 10)),
+    )
+    results.value = payload.results
   } catch (e: unknown) {
     const err = e as { response?: { data?: { detail?: string; message?: string } }; message?: string }
     error.value = err.response?.data?.detail || err.response?.data?.message || err.message || 'Search failed'
@@ -69,9 +61,6 @@ async function handleSearch() {
         />
       </div>
       <div class="flex flex-wrap gap-2">
-        <Select v-model="searchType" class="min-w-[140px] flex-1">
-          <option v-for="type in searchTypes" :key="type.value" :value="type.value">{{ type.label }}</option>
-        </Select>
         <Input v-model.number="topK" type="number" min="1" max="50" class="w-20" />
         <Button :loading="loading" @click="handleSearch">Search</Button>
       </div>

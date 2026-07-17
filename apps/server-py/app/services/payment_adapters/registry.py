@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.payment_adapter import PaymentAdapter
 from app.services.payment_adapters import epay as epay_adapter
+from app.services.secret_crypto import decrypt_secret_fields
 
 ADAPTER_TYPES: dict[str, dict[str, str]] = {
     epay_adapter.EPAY_TYPE: {
@@ -45,7 +46,7 @@ async def list_enabled_adapters(db: AsyncSession) -> list[dict[str, Any]]:
 
 
 def get_adapter_runtime(item: PaymentAdapter) -> dict[str, Any] | None:
-    cfg = item.config if isinstance(item.config, dict) else {}
+    cfg = decrypt_secret_fields(item.config if isinstance(item.config, dict) else {})
     if item.adapter_type == epay_adapter.EPAY_TYPE:
         return epay_adapter.parse_epay_config(cfg)
     return None
@@ -75,7 +76,7 @@ def validate_adapter_config(
 
 
 def serialize_adapter_admin(item: PaymentAdapter) -> dict[str, Any]:
-    cfg = item.config if isinstance(item.config, dict) else {}
+    cfg = decrypt_secret_fields(item.config if isinstance(item.config, dict) else {})
     type_meta = ADAPTER_TYPES.get(item.adapter_type, {"label": item.adapter_type, "description": ""})
     payload: dict[str, Any] = {
         "id": item.id,

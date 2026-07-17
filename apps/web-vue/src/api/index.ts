@@ -42,17 +42,22 @@ function getRequestPath(url: unknown): string {
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '',
-  // Long-running AI tasks (agent, memory build) may exceed 2 minutes.
-  timeout: 600000,
+  timeout: 60000,
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
 })
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
+  const method = String(config.method || 'get').toUpperCase()
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    const csrfCookie = document.cookie
+      .split('; ')
+      .find((cookie) => cookie.startsWith('musegraph_csrf='))
+    if (csrfCookie) {
+      config.headers['X-CSRF-Token'] = decodeURIComponent(csrfCookie.slice('musegraph_csrf='.length))
+    }
   }
   return config
 })
@@ -73,9 +78,6 @@ api.interceptors.response.use(
     const isSessionExpired = String(message).trim().toLowerCase() === 'session expired'
 
     if (error.response?.status === 401) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('user')
-
       if (suppressAuthToast) {
         return Promise.reject(error)
       }

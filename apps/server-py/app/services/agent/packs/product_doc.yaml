@@ -1,10 +1,16 @@
 text_type: product_doc
 display_name: "产品文档"
 default_skills:
-  analyzer: analyzer
-  outliner: outliner
-  writer: continuation
+  planner: outliner
+  composer: analyzer
+  writer: general
   auditor: critic
+  reviser: general
+  evaluator: critic
+  updater: knowledge-builder
+  memory_builder: knowledge-builder
+  graph_extractor: knowledge-builder
+  suggest: coauthor
 auditor_dimensions:
   - continuity
   - evidence_grounding
@@ -13,6 +19,7 @@ auditor_dimensions:
   - intent_alignment
   - actionability
   - completeness
+knowledge_types: [fact, entity, relation, constraint, source, event]
 unit:
   name: section
   default_word_count: 600
