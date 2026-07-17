@@ -1,5 +1,5 @@
 """
-Shared pytest fixtures for MuseGraph server-py test suite.
+Shared pytest fixtures for MuseMemory server-py test suite.
 
 All database and Redis interactions are mocked so tests run
 without any real infrastructure.
@@ -13,21 +13,15 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 # ---------------------------------------------------------------------------
 # Patch heavy / side-effect-laden modules BEFORE importing the application.
-# This prevents real connections to PostgreSQL, Redis, storage backend, Graph, etc.
+# This prevents real connections to PostgreSQL, Redis, storage backend, Memory, etc.
 # ---------------------------------------------------------------------------
-
-# 0. Patch bcrypt to avoid PyO3 initialization issues
-_bcrypt_mock = MagicMock()
-_bcrypt_mock.gensalt = MagicMock(return_value=b'$2b$12$mockedsalt')
-_bcrypt_mock.hashpw = MagicMock(return_value=b'$2b$12$mockedhash')
-_bcrypt_mock.checkpw = MagicMock(return_value=True)
 
 # 1. Patch storage so ensure_bucket() is a no-op
 _storage_mock = MagicMock()
@@ -47,20 +41,22 @@ _redis_asyncio_module.from_url = MagicMock(return_value=_redis_mock)
 _redis_module = ModuleType("redis")
 _redis_module.asyncio = _redis_asyncio_module
 
-with (
-    patch.dict(
-        "sys.modules",
-        {
-            "bcrypt": _bcrypt_mock,
-            "redis": _redis_module,
-            "redis.asyncio": _redis_asyncio_module,
-        },
-    ),
-    patch.dict("sys.modules", {"app.storage": _storage_module}),
-):
-    from app.database import get_db
-    from app.dependencies import get_current_user
-    from app.main import app  # noqa: E402
+# NOTE: install the mocks permanently instead of using ``patch.dict`` as a
+# context manager. ``patch.dict`` restores ``sys.modules`` to its pre-import
+# state on exit, which evicts every module imported transitively by
+# ``app.main`` (all ``app.*`` modules, ``dulwich``, ...). Test files would then
+# re-import fresh copies, so monkeypatches against the new instances never
+# reached the route handlers (stale ``settings``) and cross-instance
+# ``isinstance`` checks failed inside dulwich.
+import sys  # noqa: E402
+
+sys.modules["redis"] = _redis_module
+sys.modules["redis.asyncio"] = _redis_asyncio_module
+sys.modules["app.storage"] = _storage_module  # type: ignore[assignment]
+
+from app.database import get_db  # noqa: E402
+from app.dependencies import get_current_user  # noqa: E402
+from app.main import app  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fake user object that mimics the SQLAlchemy User model
@@ -191,6 +187,52 @@ async def client(override_deps) -> AsyncGenerator[AsyncClient, None]:
         yield ac
 
 
+def patch_app_route_globals(monkeypatch: pytest.MonkeyPatch, module_name: str, values: dict[str, object]) -> None:
+    for route in iter_app_routes():
+        endpoint = getattr(route, "endpoint", None)
+        globals_ = getattr(endpoint, "__globals__", {})
+        if not isinstance(globals_, dict) or globals_.get("__name__") != module_name:
+            continue
+        for name, value in values.items():
+            if name in globals_:
+                monkeypatch.setitem(globals_, name, value)
+
+
+def iter_app_routes_with_paths():
+    pending = [(route, "") for route in app.routes]
+    while pending:
+        route, parent_prefix = pending.pop(0)
+        route_path = str(getattr(route, "path", "") or "")
+        yield route, f"{parent_prefix.rstrip('/')}/{route_path.lstrip('/')}" if route_path else parent_prefix
+        included_router = getattr(route, "original_router", None)
+        include_context = getattr(route, "include_context", None)
+        include_prefix = str(getattr(include_context, "prefix", "") or "")
+        nested_prefix = f"{parent_prefix.rstrip('/')}/{include_prefix.lstrip('/')}" if include_prefix else parent_prefix
+        pending.extend((nested, nested_prefix) for nested in getattr(included_router, "routes", ()))
+        pending.extend((nested, parent_prefix) for nested in getattr(route, "routes", ()))
+
+
+def iter_app_routes():
+    for route, _path in iter_app_routes_with_paths():
+        yield route
+
+
+def get_app_endpoint(path: str, method: str):
+    method_upper = method.upper()
+    for route, route_path in iter_app_routes_with_paths():
+        if route_path == path and method_upper in set(getattr(route, "methods", ())):
+            return route.endpoint
+    raise RuntimeError(f"Route not found: {method_upper} {path}")
+
+
+def get_endpoint_globals(endpoint_name: str) -> dict:
+    for route in iter_app_routes():
+        endpoint = getattr(route, "endpoint", None)
+        if getattr(route, "name", "") == endpoint_name and endpoint is not None:
+            return endpoint.__globals__
+    raise RuntimeError(f"Endpoint {endpoint_name!r} not found")
+
+
 @pytest.fixture()
 async def admin_client(override_deps_admin) -> AsyncGenerator[AsyncClient, None]:
     """Authenticated async HTTP client (admin user)."""
@@ -210,4 +252,3 @@ async def unauthed_client() -> AsyncGenerator[AsyncClient, None]:
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.clear()
-

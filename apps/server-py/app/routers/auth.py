@@ -5,8 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
-from app.schemas.auth import AuthResponse, LoginRequest, RegisterRequest, UserResponse
-from app.services.auth import create_session, delete_session, register_user, verify_password
+from app.schemas.auth import AuthResponse, ChangePasswordRequest, LoginRequest, RegisterRequest, UpdateMeRequest, UserResponse
+from app.services.auth import create_session, delete_session, hash_password, register_user, verify_password
 
 router = APIRouter()
 
@@ -50,3 +50,48 @@ async def logout(request: Request, response: Response, user: User = Depends(get_
 @router.get("/me", response_model=UserResponse)
 async def me(user: User = Depends(get_current_user)):
     return UserResponse.model_validate(user)
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_me(
+    body: UpdateMeRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if body.nickname is not None:
+        user.nickname = body.nickname
+    if body.email is not None:
+        # Check if email is already taken by another user
+        result = await db.execute(
+            select(User).where(User.email == body.email, User.id != user.id)
+        )
+        if result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already in use",
+            )
+        user.email = body.email
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return UserResponse.model_validate(user)
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    body: ChangePasswordRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Verify current password
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    
+    # Update password hash
+    user.password_hash = hash_password(body.new_password)
+    db.add(user)
+    await db.commit()
+    return None

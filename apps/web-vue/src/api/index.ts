@@ -42,7 +42,7 @@ function getRequestPath(url: unknown): string {
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '',
-  // Long-running AI tasks (generation/graph/oasis) may exceed 2 minutes.
+  // Long-running AI tasks (agent, memory build) may exceed 2 minutes.
   timeout: 600000,
   headers: {
     'Content-Type': 'application/json',

@@ -36,3 +36,12 @@ export async function getMe(options: GetMeOptions = {}): Promise<User> {
     : await api.get<User>('/api/auth/me')
   return data
 }
+
+export async function updateMe(payload: { nickname?: string; email?: string }): Promise<User> {
+  const { data } = await api.patch<User>('/api/auth/me', payload)
+  return data
+}
+
+export async function changePassword(payload: { current_password: string; new_password: string }): Promise<void> {
+  await api.post('/api/auth/change-password', payload)
+}

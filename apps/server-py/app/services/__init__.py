@@ -1,15 +1,18 @@
-from app.services import ai, auth, billing, export, graph_service, llm_json, llm_runtime, oasis, ontology, payment, provider_models, task_state
+from app.services import ai, auth, billing, cognee_backend, creative_memory, creative_workflow, export, llm_json, llm_runtime, memory_backend, memory_service, ontology, payment, provider_models, task_state
 
 __all__ = [
     "ai",
     "auth",
     "billing",
+    "cognee_backend",
+    "creative_memory",
+    "creative_workflow",
     "llm_json",
     "llm_runtime",
-    "oasis",
+    "memory_backend",
+    "memory_service",
     "ontology",
     "export",
-    "graph_service",
     "payment",
     "provider_models",
     "task_state",

@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed } from 'vue'
-import type { OasisConfig } from '@/types'
+import { useI18n } from 'vue-i18n'
+import type { LlmRuntimeConfig, UsageRetentionConfig } from '@/types'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Alert from '@/components/ui/Alert.vue'
@@ -9,21 +10,27 @@ import Textarea from '@/components/ui/Textarea.vue'
 import Checkbox from '@/components/ui/Checkbox.vue'
 import Select from '@/components/ui/Select.vue'
 
+const { t } = useI18n()
+
 const props = defineProps<{
-  oasisConfig: OasisConfig
+  llmRuntimeConfig: LlmRuntimeConfig
   llmModelConcurrencyOverridesInput: string
   llmRequestConfigError: string
   llmRequestConfigMessage: string
-  oasisAdvancedConfigError: string
-  oasisAdvancedConfigMessage: string
+  usageRetention: UsageRetentionConfig
+  usageRetentionError: string
+  usageRetentionMessage: string
+  usageCleanupMessage: string
 }>()
 
 const emit = defineEmits<{
   'reload-llm-request-config': []
   'save-llm-request-config': []
-  'reload-oasis-advanced-config': []
-  'save-oasis-advanced-config': []
   'update:llmModelConcurrencyOverridesInput': [value: string]
+  'reload-usage-retention': []
+  'save-usage-retention': []
+  'run-usage-cleanup': []
+  'update:usageRetention': [value: UsageRetentionConfig]
 }>()
 
 const llmModelConcurrencyOverridesInputValue = computed({
@@ -35,81 +42,70 @@ const llmModelConcurrencyOverridesInputValue = computed({
 <template>
   <div class="space-y-4">
     <div>
-      <h2 class="text-base font-semibold text-stone-800 dark:text-zinc-100">Advanced Settings</h2>
-      <p class="text-xs text-stone-500 dark:text-zinc-400">LLM request settings and scenario reasoning limits.</p>
+      <h2 class="text-base font-semibold text-stone-800 dark:text-zinc-100">{{ t('admin.advanced.title') }}</h2>
+      <p class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.subtitle') }}</p>
     </div>
 
     <Card class="space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-3">
         <div>
-          <h3 class="text-sm font-medium text-stone-700 dark:text-zinc-200">LLM Request Config</h3>
-          <p class="text-xs text-stone-500 dark:text-zinc-400">Configure timeout, retry count, and concurrency. These limits also affect local Graphiti graph ingest.</p>
+          <h3 class="text-sm font-medium text-stone-700 dark:text-zinc-200">{{ t('admin.advanced.llmRequest.title') }}</h3>
+          <p class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.llmRequest.hint') }}</p>
         </div>
-        <Button size="sm" variant="secondary" @click="emit('reload-llm-request-config')">Refresh</Button>
+        <Button size="sm" variant="secondary" @click="emit('reload-llm-request-config')">{{ t('common.refresh') }}</Button>
       </div>
 
       <div class="grid gap-2 md:grid-cols-3">
         <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">llm_request_timeout_seconds</label>
-          <Input v-model.number="oasisConfig.llm_request_timeout_seconds" type="number" min="5" />
+          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_request_timeout_seconds') }}</label>
+          <Input v-model.number="llmRuntimeConfig.llm_request_timeout_seconds" type="number" min="5" />
         </div>
         <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">llm_retry_count</label>
-          <Input v-model.number="oasisConfig.llm_retry_count" type="number" min="0" />
+          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_retry_count') }}</label>
+          <Input v-model.number="llmRuntimeConfig.llm_retry_count" type="number" min="0" />
         </div>
         <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">llm_retry_interval_seconds</label>
-          <Input v-model.number="oasisConfig.llm_retry_interval_seconds" type="number" min="0" step="0.1" />
+          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_retry_interval_seconds') }}</label>
+          <Input v-model.number="llmRuntimeConfig.llm_retry_interval_seconds" type="number" min="0" step="0.1" />
         </div>
         <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">llm_task_concurrency</label>
-          <Input v-model.number="oasisConfig.llm_task_concurrency" type="number" min="1" />
+          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_task_concurrency') }}</label>
+          <Input v-model.number="llmRuntimeConfig.llm_task_concurrency" type="number" min="1" />
         </div>
         <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">llm_model_default_concurrency</label>
-          <Input v-model.number="oasisConfig.llm_model_default_concurrency" type="number" min="1" />
+          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_model_default_concurrency') }}</label>
+          <Input v-model.number="llmRuntimeConfig.llm_model_default_concurrency" type="number" min="1" />
         </div>
         <div class="space-y-1 md:col-span-3">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">llm_model_concurrency_overrides (JSON object)</label>
+          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_fallback_model') }}</label>
+          <Input v-model="llmRuntimeConfig.llm_fallback_model" type="text" />
+        </div>
+        <div class="space-y-1 md:col-span-3">
+          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_model_concurrency_overrides') }}</label>
           <Textarea
             v-model="llmModelConcurrencyOverridesInputValue"
             :rows="4"
-            placeholder='{"your-model-id": 4}'
+            :placeholder="t('admin.advanced.llmRequest.overridesPlaceholder')"
           />
         </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">graphiti_chunk_size</label>
-          <Input v-model.number="oasisConfig.graphiti_chunk_size" type="number" min="240" max="12000" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">graphiti_chunk_overlap</label>
-          <Input v-model.number="oasisConfig.graphiti_chunk_overlap" type="number" min="0" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">graphiti_llm_max_tokens</label>
-          <Input v-model.number="oasisConfig.graphiti_llm_max_tokens" type="number" min="256" max="16384" />
-        </div>
-        <div class="md:col-span-1 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-xs text-stone-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-          Larger chunks reduce episode count but increase each Graphiti LLM request size. Overlap is capped at 25% of chunk size. Max tokens controls each Graphiti extraction response.
-        </div>
         <label class="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
-          <Checkbox v-model="oasisConfig.llm_prefer_stream" />
-          llm_prefer_stream
+          <Checkbox v-model="llmRuntimeConfig.llm_prefer_stream" />
+          {{ t('admin.advanced.fields.llm_prefer_stream') }}
         </label>
         <label class="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
-          <Checkbox v-model="oasisConfig.llm_stream_fallback_nonstream" />
-          llm_stream_fallback_nonstream
+          <Checkbox v-model="llmRuntimeConfig.llm_stream_fallback_nonstream" />
+          {{ t('admin.advanced.fields.llm_stream_fallback_nonstream') }}
         </label>
         <div class="space-y-1 md:col-span-3">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">llm_openai_api_style</label>
-          <Select v-model="oasisConfig.llm_openai_api_style">
+          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_openai_api_style') }}</label>
+          <Select v-model="llmRuntimeConfig.llm_openai_api_style">
             <option value="responses">responses</option>
             <option value="chat_completions">chat_completions</option>
           </Select>
         </div>
         <div class="space-y-1 md:col-span-3">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">llm_reasoning_effort</label>
-          <Select v-model="oasisConfig.llm_reasoning_effort">
+          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.fields.llm_reasoning_effort') }}</label>
+          <Select v-model="llmRuntimeConfig.llm_reasoning_effort">
             <option value="model_default">model_default</option>
             <option value="none">none</option>
             <option value="minimal">minimal</option>
@@ -120,7 +116,7 @@ const llmModelConcurrencyOverridesInputValue = computed({
             <option value="xhigh">xhigh</option>
           </Select>
           <p class="text-xs text-stone-500 dark:text-zinc-400">
-            Support depends on the selected model and gateway. Unsupported levels surface provider errors directly.
+            {{ t('admin.advanced.llmRequest.reasoningHint') }}
           </p>
         </div>
       </div>
@@ -129,87 +125,59 @@ const llmModelConcurrencyOverridesInputValue = computed({
       <Alert v-if="llmRequestConfigMessage" variant="success">{{ llmRequestConfigMessage }}</Alert>
 
       <div class="flex justify-end">
-        <Button size="sm" @click="emit('save-llm-request-config')">Save LLM Request Config</Button>
+        <Button size="sm" @click="emit('save-llm-request-config')">{{ t('admin.advanced.llmRequest.save') }}</Button>
       </div>
     </Card>
 
     <Card class="space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-3">
         <div>
-          <h3 class="text-sm font-medium text-stone-700 dark:text-zinc-200">Scenario Reasoning Config</h3>
-          <p class="text-xs text-stone-500 dark:text-zinc-400">Configure analysis prompts, iteration cadence, and activity limits.</p>
+          <h3 class="text-sm font-medium text-stone-700 dark:text-zinc-200">{{ t('admin.advanced.usageRetention.title') }}</h3>
+          <p class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.usageRetention.hint') }}</p>
         </div>
-        <Button size="sm" variant="secondary" @click="emit('reload-oasis-advanced-config')">Refresh</Button>
+        <Button size="sm" variant="secondary" @click="emit('reload-usage-retention')">{{ t('common.refresh') }}</Button>
       </div>
-
       <div class="grid gap-2 md:grid-cols-2">
-        <div class="space-y-1 md:col-span-2">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">analysis prompt prefix</label>
-          <Textarea
-            v-model="oasisConfig.analysis_prompt_prefix"
-            :rows="3"
-            placeholder="analysis prompt prefix"
-          />
-        </div>
-        <div class="space-y-1 md:col-span-2">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">runtime prompt prefix</label>
-          <Textarea
-            v-model="oasisConfig.simulation_prompt_prefix"
-            :rows="3"
-            placeholder="runtime prompt prefix"
-          />
-        </div>
-        <div class="space-y-1 md:col-span-2">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">report prompt prefix</label>
-          <Textarea
-            v-model="oasisConfig.report_prompt_prefix"
-            :rows="3"
-            placeholder="report prompt prefix"
+        <div class="space-y-1">
+          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.usageRetention.retentionDays') }}</label>
+          <Input
+            :model-value="usageRetention.retention_days ?? ''"
+            type="number"
+            min="1"
+            :placeholder="t('admin.advanced.usageRetention.unlimitedPlaceholder')"
+            @update:model-value="
+              emit('update:usageRetention', {
+                ...usageRetention,
+                retention_days: $event === '' || $event == null ? null : Number($event),
+              })
+            "
           />
         </div>
         <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">max_agent_profiles</label>
-          <Input v-model.number="oasisConfig.max_agent_profiles" type="number" min="1" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">max_events</label>
-          <Input v-model.number="oasisConfig.max_events" type="number" min="1" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">max_agent_activity</label>
-          <Input v-model.number="oasisConfig.max_agent_activity" type="number" min="1" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">min_total_hours</label>
-          <Input v-model.number="oasisConfig.min_total_hours" type="number" min="1" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">max_total_hours</label>
-          <Input v-model.number="oasisConfig.max_total_hours" type="number" min="1" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">min_minutes_per_round</label>
-          <Input v-model.number="oasisConfig.min_minutes_per_round" type="number" min="1" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">max_minutes_per_round</label>
-          <Input v-model.number="oasisConfig.max_minutes_per_round" type="number" min="1" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">max_actions_per_hour</label>
-          <Input v-model.number="oasisConfig.max_actions_per_hour" type="number" min="0.2" step="0.1" />
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs text-stone-500 dark:text-zinc-400">max_response_delay_minutes</label>
-          <Input v-model.number="oasisConfig.max_response_delay_minutes" type="number" min="1" />
+          <label class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.usageRetention.maxRecords') }}</label>
+          <Input
+            :model-value="usageRetention.max_records ?? ''"
+            type="number"
+            min="1"
+            :placeholder="t('admin.advanced.usageRetention.unlimitedPlaceholder')"
+            @update:model-value="
+              emit('update:usageRetention', {
+                ...usageRetention,
+                max_records: $event === '' || $event == null ? null : Number($event),
+              })
+            "
+          />
         </div>
       </div>
-
-      <Alert v-if="oasisAdvancedConfigError" variant="destructive">{{ oasisAdvancedConfigError }}</Alert>
-      <Alert v-if="oasisAdvancedConfigMessage" variant="success">{{ oasisAdvancedConfigMessage }}</Alert>
-
-      <div class="flex justify-end">
-        <Button size="sm" @click="emit('save-oasis-advanced-config')">Save Scenario Config</Button>
+      <p class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.advanced.usageRetention.note') }}</p>
+      <Alert v-if="usageRetentionError" variant="destructive">{{ usageRetentionError }}</Alert>
+      <Alert v-if="usageRetentionMessage" variant="success">{{ usageRetentionMessage }}</Alert>
+      <Alert v-if="usageCleanupMessage" variant="success">{{ usageCleanupMessage }}</Alert>
+      <div class="flex flex-wrap justify-end gap-2">
+        <Button size="sm" variant="secondary" @click="emit('run-usage-cleanup')">
+          {{ t('admin.advanced.usageRetention.runCleanup') }}
+        </Button>
+        <Button size="sm" @click="emit('save-usage-retention')">{{ t('admin.advanced.usageRetention.save') }}</Button>
       </div>
     </Card>
   </div>

@@ -1,0 +1,21 @@
+text_type: generic
+display_name: "通用文本"
+default_skills:
+  analyzer: analyzer
+  outliner: outliner
+  writer: continuation
+  auditor: critic
+auditor_dimensions:
+  - continuity
+  - evidence_grounding
+  - structure
+  - language_quality
+  - intent_alignment
+unit:
+  name: section
+  default_word_count: 1500
+control_docs:
+  intent: "templates/generic_intent.md"
+  focus: "templates/generic_focus.md"
+  rules: "templates/generic_rules.md"
+  bible: "templates/generic_bible.md"

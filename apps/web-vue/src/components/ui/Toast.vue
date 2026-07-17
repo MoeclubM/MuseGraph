@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { CheckCircle, XCircle, AlertTriangle, Info } from 'lucide-vue-next'
+import { CheckCircle, XCircle, AlertTriangle, Info } from '@lucide/vue'
 import type { ToastType } from '@/types'
 
 const props = defineProps<{

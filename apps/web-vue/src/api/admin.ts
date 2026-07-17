@@ -7,12 +7,15 @@ import type {
   Provider,
   PricingRule,
   AdminUser,
-  PaymentConfig,
-  OasisConfig,
+  PaymentAdapterAdmin,
+  PaymentAdapterTypeMeta,
+  LlmRuntimeConfig,
   PaymentOrderListResponse,
+  UsageRecordListResponse,
+  UsageRetentionConfig,
 } from '@/types'
 
-type RawOasisConfig = Partial<OasisConfig>
+type RawLlmRuntimeConfig = Partial<LlmRuntimeConfig>
 
 interface ProviderMutationPayload {
   name: string
@@ -79,11 +82,6 @@ export async function getAdminTasks(params?: {
   }
 }
 
-export async function getAdminTask(taskId: string): Promise<AdminTask> {
-  const { data } = await api.get<{ task: AdminTask }>(`/api/admin/tasks/${taskId}`)
-  return data.task
-}
-
 export async function cancelAdminTask(taskId: string): Promise<AdminTask> {
   const { data } = await api.post<{ task: AdminTask }>(`/api/admin/tasks/${taskId}/cancel`)
   return data.task
@@ -127,9 +125,8 @@ export async function updateUser(userId: string, payload: {
   return data
 }
 
-export async function addUserBalance(userId: string, amount: number): Promise<AdminUser> {
-  const { data } = await api.post<AdminUser>(`/api/admin/users/${userId}/balance`, { amount })
-  return data
+export async function resetUserPassword(userId: string, password: string): Promise<void> {
+  await api.post(`/api/admin/users/${userId}/password`, { password })
 }
 
 export async function deleteUser(userId: string): Promise<void> {
@@ -208,11 +205,6 @@ export async function removeProviderModel(providerId: string, model: string): Pr
   return normalizeProviderModelList(data, 'chat')
 }
 
-export async function getProviderEmbeddingModels(providerId: string): Promise<string[]> {
-  const { data } = await api.get<ProviderModelListPayload>(providerModelPath(providerId, 'embedding'))
-  return normalizeProviderModelList(data, 'embedding')
-}
-
 export async function addProviderEmbeddingModel(providerId: string, model: string): Promise<string[]> {
   const { data } = await api.post<ProviderModelListPayload>(providerModelPath(providerId, 'embedding'), { model })
   return normalizeProviderModelList(data, 'embedding')
@@ -223,11 +215,6 @@ export async function removeProviderEmbeddingModel(providerId: string, model: st
     params: { model },
   })
   return normalizeProviderModelList(data, 'embedding')
-}
-
-export async function getProviderRerankerModels(providerId: string): Promise<string[]> {
-  const { data } = await api.get<ProviderModelListPayload>(providerModelPath(providerId, 'reranker'))
-  return normalizeProviderModelList(data, 'reranker')
 }
 
 export async function addProviderRerankerModel(providerId: string, model: string): Promise<string[]> {
@@ -265,54 +252,56 @@ export async function updatePricing(ruleId: string, payload: Partial<PricingRule
   return data
 }
 
-export async function deletePricing(ruleId: string): Promise<void> {
-  await api.delete(`/api/admin/pricing/${ruleId}`)
+export async function getPaymentAdapterTypes(): Promise<PaymentAdapterTypeMeta[]> {
+  const { data } = await api.get<{ types: PaymentAdapterTypeMeta[] }>('/api/admin/payment-adapter-types')
+  return data.types || []
 }
 
-export async function getPaymentConfig(): Promise<PaymentConfig> {
-  const { data } = await api.get<PaymentConfig>('/api/admin/payment-config')
+export async function getPaymentAdapters(): Promise<PaymentAdapterAdmin[]> {
+  const { data } = await api.get<{ adapters: PaymentAdapterAdmin[] }>('/api/admin/payment-adapters')
+  return data.adapters || []
+}
+
+export async function createPaymentAdapter(payload: {
+  adapter_type: string
+  display_name: string
+  enabled?: boolean
+  sort_order?: number
+  config?: Record<string, unknown>
+}): Promise<PaymentAdapterAdmin> {
+  const { data } = await api.post<PaymentAdapterAdmin>('/api/admin/payment-adapters', payload)
   return data
 }
 
-export async function updatePaymentConfig(payload: {
-  enabled: boolean
-  url: string
-  pid: string
-  key?: string
-  payment_type?: string
-  notify_url?: string
-  return_url?: string
-}): Promise<PaymentConfig> {
-  const { data } = await api.put<PaymentConfig>('/api/admin/payment-config', payload)
+export async function updatePaymentAdapter(
+  adapterId: string,
+  payload: {
+    display_name?: string
+    enabled?: boolean
+    sort_order?: number
+    config?: Record<string, unknown>
+  },
+): Promise<PaymentAdapterAdmin> {
+  const { data } = await api.put<PaymentAdapterAdmin>(`/api/admin/payment-adapters/${adapterId}`, payload)
   return data
 }
 
-const DEFAULT_OASIS_CONFIG: OasisConfig = {
-  analysis_prompt_prefix: '',
-  simulation_prompt_prefix: '',
-  report_prompt_prefix: '',
-  max_agent_profiles: 16,
-  max_events: 16,
-  max_agent_activity: 48,
-  min_total_hours: 6,
-  max_total_hours: 336,
-  min_minutes_per_round: 10,
-  max_minutes_per_round: 240,
-  max_actions_per_hour: 20,
-  max_response_delay_minutes: 720,
+export async function deletePaymentAdapter(adapterId: string): Promise<void> {
+  await api.delete(`/api/admin/payment-adapters/${adapterId}`)
+}
+
+const DEFAULT_LLM_RUNTIME_CONFIG: LlmRuntimeConfig = {
   llm_request_timeout_seconds: 180,
   llm_retry_count: 4,
   llm_retry_interval_seconds: 2,
   llm_prefer_stream: true,
   llm_stream_fallback_nonstream: true,
+  llm_fallback_model: '',
   llm_openai_api_style: 'responses',
   llm_reasoning_effort: 'model_default',
   llm_task_concurrency: 4,
   llm_model_default_concurrency: 8,
   llm_model_concurrency_overrides: {},
-  graphiti_chunk_size: 4000,
-  graphiti_chunk_overlap: 160,
-  graphiti_llm_max_tokens: 16384,
 }
 
 function normalizeModelConcurrencyOverrides(raw: unknown): Record<string, number> {
@@ -327,77 +316,124 @@ function normalizeModelConcurrencyOverrides(raw: unknown): Record<string, number
   return normalized
 }
 
-function normalizeOasisConfig(payload: RawOasisConfig | null | undefined): OasisConfig {
+function normalizeLlmRuntimeConfig(payload: RawLlmRuntimeConfig | null | undefined): LlmRuntimeConfig {
   return {
-    analysis_prompt_prefix: String(payload?.analysis_prompt_prefix || ''),
-    simulation_prompt_prefix: String(payload?.simulation_prompt_prefix || ''),
-    report_prompt_prefix: String(payload?.report_prompt_prefix || ''),
-    max_agent_profiles: Number(payload?.max_agent_profiles ?? DEFAULT_OASIS_CONFIG.max_agent_profiles),
-    max_events: Number(payload?.max_events ?? DEFAULT_OASIS_CONFIG.max_events),
-    max_agent_activity: Number(payload?.max_agent_activity ?? DEFAULT_OASIS_CONFIG.max_agent_activity),
-    min_total_hours: Number(payload?.min_total_hours ?? DEFAULT_OASIS_CONFIG.min_total_hours),
-    max_total_hours: Number(payload?.max_total_hours ?? DEFAULT_OASIS_CONFIG.max_total_hours),
-    min_minutes_per_round: Number(payload?.min_minutes_per_round ?? DEFAULT_OASIS_CONFIG.min_minutes_per_round),
-    max_minutes_per_round: Number(payload?.max_minutes_per_round ?? DEFAULT_OASIS_CONFIG.max_minutes_per_round),
-    max_actions_per_hour: Number(payload?.max_actions_per_hour ?? DEFAULT_OASIS_CONFIG.max_actions_per_hour),
-    max_response_delay_minutes: Number(payload?.max_response_delay_minutes ?? DEFAULT_OASIS_CONFIG.max_response_delay_minutes),
     llm_request_timeout_seconds: Number(
-      payload?.llm_request_timeout_seconds ?? DEFAULT_OASIS_CONFIG.llm_request_timeout_seconds
+      payload?.llm_request_timeout_seconds ?? DEFAULT_LLM_RUNTIME_CONFIG.llm_request_timeout_seconds
     ),
-    llm_retry_count: Number(payload?.llm_retry_count ?? DEFAULT_OASIS_CONFIG.llm_retry_count),
+    llm_retry_count: Number(payload?.llm_retry_count ?? DEFAULT_LLM_RUNTIME_CONFIG.llm_retry_count),
     llm_retry_interval_seconds: Number(
-      payload?.llm_retry_interval_seconds ?? DEFAULT_OASIS_CONFIG.llm_retry_interval_seconds
+      payload?.llm_retry_interval_seconds ?? DEFAULT_LLM_RUNTIME_CONFIG.llm_retry_interval_seconds
     ),
     llm_prefer_stream:
       typeof payload?.llm_prefer_stream === 'boolean'
         ? payload.llm_prefer_stream
-        : DEFAULT_OASIS_CONFIG.llm_prefer_stream,
+        : DEFAULT_LLM_RUNTIME_CONFIG.llm_prefer_stream,
     llm_stream_fallback_nonstream:
       typeof payload?.llm_stream_fallback_nonstream === 'boolean'
         ? payload.llm_stream_fallback_nonstream
-        : DEFAULT_OASIS_CONFIG.llm_stream_fallback_nonstream,
+        : DEFAULT_LLM_RUNTIME_CONFIG.llm_stream_fallback_nonstream,
+    llm_fallback_model: String(payload?.llm_fallback_model ?? DEFAULT_LLM_RUNTIME_CONFIG.llm_fallback_model),
     llm_openai_api_style:
       typeof payload?.llm_openai_api_style === 'string' && payload.llm_openai_api_style.trim()
         ? payload.llm_openai_api_style.trim()
-        : DEFAULT_OASIS_CONFIG.llm_openai_api_style,
+        : DEFAULT_LLM_RUNTIME_CONFIG.llm_openai_api_style,
     llm_reasoning_effort:
       typeof payload?.llm_reasoning_effort === 'string' && payload.llm_reasoning_effort.trim()
         ? payload.llm_reasoning_effort.trim()
-        : DEFAULT_OASIS_CONFIG.llm_reasoning_effort,
+        : DEFAULT_LLM_RUNTIME_CONFIG.llm_reasoning_effort,
     llm_task_concurrency: Number(
-      payload?.llm_task_concurrency ?? DEFAULT_OASIS_CONFIG.llm_task_concurrency
+      payload?.llm_task_concurrency ?? DEFAULT_LLM_RUNTIME_CONFIG.llm_task_concurrency
     ),
     llm_model_default_concurrency: Number(
-      payload?.llm_model_default_concurrency ?? DEFAULT_OASIS_CONFIG.llm_model_default_concurrency
+      payload?.llm_model_default_concurrency ?? DEFAULT_LLM_RUNTIME_CONFIG.llm_model_default_concurrency
     ),
     llm_model_concurrency_overrides: normalizeModelConcurrencyOverrides(
       payload?.llm_model_concurrency_overrides
     ),
-    graphiti_chunk_size: Number(payload?.graphiti_chunk_size ?? DEFAULT_OASIS_CONFIG.graphiti_chunk_size),
-    graphiti_chunk_overlap: Number(payload?.graphiti_chunk_overlap ?? DEFAULT_OASIS_CONFIG.graphiti_chunk_overlap),
-    graphiti_llm_max_tokens: Number(
-      payload?.graphiti_llm_max_tokens ?? DEFAULT_OASIS_CONFIG.graphiti_llm_max_tokens
-    ),
   }
 }
 
-export async function getOasisConfig(): Promise<OasisConfig> {
-  const { data } = await api.get<RawOasisConfig>('/api/admin/oasis-config')
-  return normalizeOasisConfig(data)
+export async function getLlmRuntimeConfig(): Promise<LlmRuntimeConfig> {
+  const { data } = await api.get<RawLlmRuntimeConfig>('/api/admin/llm-runtime-config')
+  return normalizeLlmRuntimeConfig(data)
 }
 
-export async function updateOasisConfig(payload: Partial<OasisConfig>): Promise<OasisConfig> {
-  const { data } = await api.put<RawOasisConfig>('/api/admin/oasis-config', payload)
-  return normalizeOasisConfig(data)
+export async function updateLlmRuntimeConfig(payload: Partial<LlmRuntimeConfig>): Promise<LlmRuntimeConfig> {
+  const { data } = await api.put<RawLlmRuntimeConfig>('/api/admin/llm-runtime-config', payload)
+  return normalizeLlmRuntimeConfig(data)
 }
 
-export async function getUserOrders(
-  userId: string,
+export async function getAdminUsageRecords(
   page = 1,
   pageSize = 20,
+  filters?: {
+    search?: string
+    model?: string
+    user_id?: string
+    project_id?: string
+  },
+): Promise<UsageRecordListResponse> {
+  const { data } = await api.get<UsageRecordListResponse>('/api/admin/usage-records', {
+    params: {
+      page,
+      page_size: pageSize,
+      ...(filters?.search ? { search: filters.search } : {}),
+      ...(filters?.model ? { model: filters.model } : {}),
+      ...(filters?.user_id ? { user_id: filters.user_id } : {}),
+      ...(filters?.project_id ? { project_id: filters.project_id } : {}),
+    },
+  })
+  return data
+}
+
+export async function getUsageRetentionConfig(): Promise<UsageRetentionConfig> {
+  const { data } = await api.get<UsageRetentionConfig>('/api/admin/usage-retention-config')
+  return {
+    retention_days: data.retention_days ?? null,
+    max_records: data.max_records ?? null,
+  }
+}
+
+export async function updateUsageRetentionConfig(
+  payload: Partial<UsageRetentionConfig>,
+): Promise<UsageRetentionConfig> {
+  const { data } = await api.put<UsageRetentionConfig>('/api/admin/usage-retention-config', payload)
+  return {
+    retention_days: data.retention_days ?? null,
+    max_records: data.max_records ?? null,
+  }
+}
+
+export async function runUsageRetentionCleanup(): Promise<{
+  deleted_by_age: number
+  deleted_by_count: number
+}> {
+  const { data } = await api.post<{ deleted_by_age: number; deleted_by_count: number }>(
+    '/api/admin/usage-records/cleanup',
+  )
+  return data
+}
+
+export async function getAdminOrders(
+  page = 1,
+  pageSize = 20,
+  filters?: {
+    search?: string
+    status?: string
+    type?: string
+    user_id?: string
+  },
 ): Promise<PaymentOrderListResponse> {
-  const { data } = await api.get<PaymentOrderListResponse>(`/api/admin/users/${userId}/orders`, {
-    params: { page, page_size: pageSize },
+  const { data } = await api.get<PaymentOrderListResponse>('/api/admin/orders', {
+    params: {
+      page,
+      page_size: pageSize,
+      type: filters?.type ?? 'RECHARGE',
+      ...(filters?.search ? { search: filters.search } : {}),
+      ...(filters?.status ? { status: filters.status } : {}),
+      ...(filters?.user_id ? { user_id: filters.user_id } : {}),
+    },
   })
   return data
 }

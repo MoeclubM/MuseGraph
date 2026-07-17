@@ -1,20 +1,26 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
-import { getBalance, deposit, getPaymentOrders } from '@/api/billing'
-import type { PaymentOrder } from '@/types'
-import { Wallet, CreditCard, Banknote, CheckCircle } from 'lucide-vue-next'
+import { getBalance, deposit, getPaymentOrders, getPaymentMethods } from '@/api/billing'
+import type { PaymentOrder, PublicPaymentAdapter } from '@/types'
+import { Wallet, CreditCard, Banknote, CheckCircle } from '@lucide/vue'
+
+const { t } = useI18n()
 
 const balance = ref(0)
 const dailyUsage = ref(0)
 const monthlyUsage = ref(0)
 const amount = ref('')
-const paymentMethod = ref('alipay')
+const paymentAdapters = ref<PublicPaymentAdapter[]>([])
+const selectedAdapterId = ref('')
+const selectedChannel = ref('')
 const loading = ref(false)
 const balanceLoading = ref(true)
+const methodsLoading = ref(true)
 const success = ref(false)
 const error = ref<string | null>(null)
 const orders = ref<PaymentOrder[]>([])
@@ -23,10 +29,51 @@ const ordersError = ref<string | null>(null)
 
 const presetAmounts = [10, 20, 50, 100, 200, 500]
 
-const paymentMethods = [
-  { value: 'alipay', label: 'Alipay', icon: CreditCard },
-  { value: 'wxpay', label: 'WeChat Pay', icon: Banknote },
-]
+const channelIcon = (channelId: string) => {
+  if (channelId === 'wxpay') return Banknote
+  return CreditCard
+}
+
+const channelLabel = (channelId: string) => {
+  const key = `recharge.payment.${channelId}`
+  const translated = t(key)
+  return translated !== key ? translated : channelId
+}
+
+const paymentOptions = computed(() => {
+  const options: {
+    adapterId: string
+    adapterName: string
+    channelId: string
+    label: string
+    icon: typeof CreditCard
+  }[] = []
+  for (const adapter of paymentAdapters.value) {
+    for (const ch of adapter.channels || []) {
+      options.push({
+        adapterId: adapter.id,
+        adapterName: adapter.display_name,
+        channelId: ch.id,
+        label: `${adapter.display_name} · ${channelLabel(ch.id)}`,
+        icon: channelIcon(ch.id),
+      })
+    }
+  }
+  return options
+})
+
+const hasPaymentMethods = computed(() => paymentOptions.value.length > 0)
+
+const selectedOptionKey = computed({
+  get: () => (selectedAdapterId.value && selectedChannel.value
+    ? `${selectedAdapterId.value}:${selectedChannel.value}`
+    : ''),
+  set: (value: string) => {
+    const [adapterId, channelId] = value.split(':')
+    selectedAdapterId.value = adapterId || ''
+    selectedChannel.value = channelId || ''
+  },
+})
 
 async function loadBalance() {
   balanceLoading.value = true
@@ -36,9 +83,31 @@ async function loadBalance() {
     dailyUsage.value = data.daily_usage
     monthlyUsage.value = data.monthly_usage
   } catch {
-    // handle error
+    // handled by interceptor
   } finally {
     balanceLoading.value = false
+  }
+}
+
+async function loadPaymentMethods() {
+  methodsLoading.value = true
+  try {
+    const data = await getPaymentMethods()
+    paymentAdapters.value = data.adapters || []
+    const first = paymentOptions.value[0]
+    if (first) {
+      selectedAdapterId.value = first.adapterId
+      selectedChannel.value = first.channelId
+    } else {
+      selectedAdapterId.value = ''
+      selectedChannel.value = ''
+    }
+  } catch {
+    paymentAdapters.value = []
+    selectedAdapterId.value = ''
+    selectedChannel.value = ''
+  } finally {
+    methodsLoading.value = false
   }
 }
 
@@ -49,7 +118,7 @@ async function loadOrders() {
     const data = await getPaymentOrders(1, 20)
     orders.value = data.orders || []
   } catch {
-    ordersError.value = 'Failed to load recharge orders'
+    ordersError.value = t('recharge.errors.loadOrdersFailed')
     orders.value = []
   } finally {
     ordersLoading.value = false
@@ -59,14 +128,18 @@ async function loadOrders() {
 async function handleDeposit() {
   const numAmount = parseFloat(amount.value)
   if (!numAmount || numAmount <= 0) {
-    error.value = 'Please enter a valid amount'
+    error.value = t('recharge.errors.invalidAmount')
+    return
+  }
+  if (!selectedAdapterId.value || !selectedChannel.value) {
+    error.value = t('recharge.errors.noPaymentMethod')
     return
   }
   loading.value = true
   error.value = null
   success.value = false
   try {
-    const order = await deposit(numAmount, paymentMethod.value)
+    const order = await deposit(numAmount, selectedAdapterId.value, selectedChannel.value)
     if (order?.payment_url) {
       window.location.href = order.payment_url
       return
@@ -75,7 +148,7 @@ async function handleDeposit() {
     amount.value = ''
     await Promise.all([loadBalance(), loadOrders()])
   } catch (e: any) {
-    error.value = e.response?.data?.detail || e.response?.data?.message || e.message || 'Deposit failed'
+    error.value = e.response?.data?.detail || e.response?.data?.message || e.message || t('recharge.errors.depositFailed')
   } finally {
     loading.value = false
   }
@@ -101,58 +174,55 @@ function formatDateTime(value: string | null | undefined): string {
 }
 
 onMounted(async () => {
-  await Promise.all([loadBalance(), loadOrders()])
+  await Promise.all([loadBalance(), loadOrders(), loadPaymentMethods()])
 })
 </script>
 
 <template>
   <AppLayout>
-    <div class="muse-page-shell muse-page-shell-narrow">
-      <section class="muse-page-header">
-        <div>
-          <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Recharge</h1>
-          <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">Top up your account balance</p>
+    <div class="muse-page muse-page-shell muse-page-shell-narrow">
+      <header class="muse-page-hero">
+        <div class="min-w-0">
+          <h1 class="text-2xl muse-text-title">{{ t('recharge.title') }}</h1>
+          <p class="mt-2 muse-text-caption">{{ t('recharge.subtitle') }}</p>
         </div>
-      </section>
+      </header>
 
-      <!-- Balance Card -->
       <Card>
         <div class="flex items-center gap-4">
           <div class="flex h-12 w-12 items-center justify-center rounded-md bg-amber-500/15 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
             <Wallet class="w-6 h-6" />
           </div>
           <div class="flex-1">
-            <p class="text-sm text-stone-600 dark:text-zinc-400">Current Balance</p>
-            <p v-if="balanceLoading" class="text-2xl font-bold text-stone-900 dark:text-stone-100">--</p>
-            <p v-else class="text-2xl font-bold text-stone-900 dark:text-stone-100">${{ balance.toFixed(2) }}</p>
+            <p class="text-sm muse-text-muted">{{ t('recharge.currentBalance') }}</p>
+            <p v-if="balanceLoading" class="text-2xl font-bold muse-text-body">--</p>
+            <p v-else class="text-2xl font-bold muse-text-body">${{ balance.toFixed(2) }}</p>
           </div>
-          <div class="text-right space-y-1">
-            <p class="text-xs text-stone-500 dark:text-zinc-400">
-              Today: <span class="text-stone-700 dark:text-zinc-200">{{ dailyUsage }} ops</span>
+          <div class="space-y-1 text-right">
+            <p class="text-xs muse-text-muted">
+              {{ t('recharge.todayOps', { count: dailyUsage }) }}
             </p>
-            <p class="text-xs text-stone-500 dark:text-zinc-400">
-              This month: <span class="text-stone-700 dark:text-zinc-200">{{ monthlyUsage }} ops</span>
+            <p class="text-xs muse-text-muted">
+              {{ t('recharge.monthOps', { count: monthlyUsage }) }}
             </p>
           </div>
         </div>
       </Card>
 
-      <!-- Recharge Form -->
       <Card>
-        <h2 class="mb-4 text-base font-semibold text-stone-900 dark:text-stone-100">Add Funds</h2>
+        <h2 class="mb-4 text-base font-semibold muse-text-heading">{{ t('recharge.addFunds') }}</h2>
 
         <div v-if="success" class="mb-4 flex items-center gap-2 rounded-md border border-emerald-300/70 bg-emerald-100 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-700/50 dark:bg-emerald-900/20 dark:text-emerald-300">
           <CheckCircle class="w-4 h-4" />
-          Deposit successful! Your balance has been updated.
+          {{ t('recharge.depositSuccess') }}
         </div>
 
-        <div v-if="error" class="mb-4 rounded-md border border-red-300/80 bg-red-100 px-4 py-3 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
+        <div v-if="error" class="mb-4 muse-alert-error">
           {{ error }}
         </div>
 
-        <!-- Preset Amounts -->
         <div class="mb-4">
-          <label class="mb-2 block text-sm font-medium text-stone-700 dark:text-zinc-300">Quick Select</label>
+          <label class="mb-2 block text-sm font-medium muse-text-body">{{ t('recharge.quickSelect') }}</label>
           <div class="grid grid-cols-3 gap-2">
             <Button
               v-for="preset in presetAmounts"
@@ -166,80 +236,82 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- Custom Amount -->
         <div class="mb-4">
           <Input
             v-model="amount"
-            label="Custom Amount ($)"
+            :label="t('recharge.customAmount')"
             type="number"
-            placeholder="Enter amount"
+            :placeholder="t('recharge.customPlaceholder')"
           />
         </div>
 
-        <!-- Payment Method -->
-        <div class="mb-6">
-          <label class="mb-2 block text-sm font-medium text-stone-700 dark:text-zinc-300">Payment Method</label>
-          <div class="grid grid-cols-2 gap-2">
+        <div v-if="methodsLoading" class="mb-6 text-sm muse-text-muted">{{ t('common.loading') }}</div>
+
+        <div v-else-if="hasPaymentMethods" class="mb-6">
+          <label class="mb-2 block text-sm font-medium muse-text-body">{{ t('recharge.paymentMethod') }}</label>
+          <div class="grid gap-2 sm:grid-cols-2">
             <Button
-              v-for="method in paymentMethods"
-              :key="method.value"
-              :variant="paymentMethod === method.value ? 'primary' : 'secondary'"
+              v-for="opt in paymentOptions"
+              :key="`${opt.adapterId}:${opt.channelId}`"
+              :variant="selectedOptionKey === `${opt.adapterId}:${opt.channelId}` ? 'primary' : 'secondary'"
               class="h-auto w-full justify-start px-4 py-3 text-sm"
-              @click="paymentMethod = method.value"
+              @click="selectedOptionKey = `${opt.adapterId}:${opt.channelId}`"
             >
-              <component :is="method.icon" class="w-4 h-4" />
-              {{ method.label }}
+              <component :is="opt.icon" class="w-4 h-4" />
+              {{ opt.label }}
             </Button>
           </div>
         </div>
+
+        <p v-else class="mb-6 text-sm muse-text-muted">{{ t('recharge.noPaymentMethods') }}</p>
 
         <Button
           variant="primary"
           size="lg"
           class="w-full"
           :loading="loading"
-          :disabled="!amount || parseFloat(amount) <= 0"
+          :disabled="!amount || parseFloat(amount) <= 0 || !hasPaymentMethods"
           @click="handleDeposit"
         >
           <Wallet class="w-4 h-4" />
-          Deposit ${{ amount || '0' }}
+          {{ t('recharge.deposit', { amount: amount || '0' }) }}
         </Button>
       </Card>
 
-      <Card class="mt-6">
+      <Card>
         <div class="mb-3 flex items-center justify-between">
-          <h2 class="text-base font-semibold text-stone-900 dark:text-stone-100">Recharge Orders</h2>
+          <h2 class="text-base font-semibold muse-text-heading">{{ t('recharge.ordersTitle') }}</h2>
           <Button size="sm" variant="secondary" :loading="ordersLoading" @click="loadOrders">
-            Refresh
+            {{ t('common.refresh') }}
           </Button>
         </div>
 
-        <div v-if="ordersError" class="mb-3 rounded-md border border-red-300/80 bg-red-100 px-4 py-3 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
+        <div v-if="ordersError" class="mb-3 muse-alert-error">
           {{ ordersError }}
         </div>
 
-        <div v-if="ordersLoading" class="text-sm text-stone-600 dark:text-zinc-400">Loading orders...</div>
+        <div v-if="ordersLoading" class="text-sm muse-text-muted">{{ t('common.loading') }}</div>
 
         <div v-else-if="orders.length" class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
-              <tr class="border-b border-stone-300/80 text-left text-xs uppercase tracking-wide text-stone-500 dark:border-zinc-700 dark:text-zinc-400">
-                <th class="px-2 py-2">Order No</th>
-                <th class="px-2 py-2">Amount</th>
-                <th class="px-2 py-2">Status</th>
-                <th class="px-2 py-2">Method</th>
-                <th class="px-2 py-2">Created</th>
-                <th class="px-2 py-2">Paid</th>
+              <tr class="border-b border-stone-300/80 text-left text-xs uppercase tracking-wide muse-text-faint dark:border-zinc-700">
+                <th class="px-2 py-2">{{ t('recharge.columns.orderNo') }}</th>
+                <th class="px-2 py-2">{{ t('recharge.columns.amount') }}</th>
+                <th class="px-2 py-2">{{ t('recharge.columns.status') }}</th>
+                <th class="px-2 py-2">{{ t('recharge.columns.method') }}</th>
+                <th class="px-2 py-2">{{ t('recharge.columns.created') }}</th>
+                <th class="px-2 py-2">{{ t('recharge.columns.paid') }}</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="order in orders" :key="order.order_no" class="border-b border-stone-200/80 text-stone-700 dark:border-zinc-800/70 dark:text-zinc-300">
+              <tr v-for="order in orders" :key="order.order_no" class="border-b border-stone-200/80 muse-text-body dark:border-zinc-800/70">
                 <td class="px-2 py-2 font-mono text-xs">{{ order.order_no }}</td>
                 <td class="px-2 py-2">${{ Number(order.amount || 0).toFixed(2) }}</td>
                 <td class="px-2 py-2">
                   <span :class="orderStatusClass(order.status)">{{ order.status }}</span>
                 </td>
-                <td class="px-2 py-2">{{ order.payment_method || '—' }}</td>
+                <td class="px-2 py-2">{{ order.payment_method || t('common.emptyDash') }}</td>
                 <td class="px-2 py-2">{{ formatDateTime(order.created_at) }}</td>
                 <td class="px-2 py-2">{{ formatDateTime(order.paid_at) }}</td>
               </tr>
@@ -247,7 +319,7 @@ onMounted(async () => {
           </table>
         </div>
 
-        <p v-else class="text-sm text-stone-500 dark:text-zinc-400">No recharge orders yet.</p>
+        <p v-else class="text-sm muse-text-muted">{{ t('recharge.noOrders') }}</p>
       </Card>
     </div>
   </AppLayout>

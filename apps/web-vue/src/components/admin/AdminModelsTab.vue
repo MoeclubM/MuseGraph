@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { PricingRule, Provider } from '@/types'
 import Card from '@/components/ui/Card.vue'
+import Modal from '@/components/ui/Modal.vue'
 import Button from '@/components/ui/Button.vue'
 import Alert from '@/components/ui/Alert.vue'
 import Input from '@/components/ui/Input.vue'
 import Select from '@/components/ui/Select.vue'
 import Checkbox from '@/components/ui/Checkbox.vue'
+import AdminFormField from '@/components/admin/AdminFormField.vue'
 
 type ProviderModelKind = 'chat' | 'embedding' | 'reranker'
 type ModelRow = {
@@ -62,6 +65,13 @@ const emit = defineEmits<{
   'save-pricing': []
 }>()
 
+const { t } = useI18n()
+
+const searchQuery = ref('')
+const providerFilter = ref('')
+const kindFilter = ref<'' | ProviderModelKind>('')
+const billingFilter = ref<'' | 'TOKEN' | 'REQUEST' | 'NONE'>('')
+
 const providerModelProviderIdValue = computed({
   get: () => props.providerModelProviderId,
   set: (value: string | number) => emit('update:providerModelProviderId', String(value || '')),
@@ -81,95 +91,273 @@ const providerModelManualInputValue = computed({
   get: () => props.providerModelManualInput,
   set: (value: string | number) => emit('update:providerModelManualInput', String(value || '')),
 })
+
+const filteredRows = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase()
+  return props.modelRows.filter((row) => {
+    if (query) {
+      const haystack = `${row.model} ${row.providerName}`.toLowerCase()
+      if (!haystack.includes(query)) return false
+    }
+    if (providerFilter.value && row.providerId !== providerFilter.value) return false
+    if (kindFilter.value && row.kind !== kindFilter.value) return false
+    if (billingFilter.value) {
+      const mode = props.pricingByModel(row.model)?.billing_mode
+      if (billingFilter.value === 'NONE') return !mode
+      return mode === billingFilter.value
+    }
+    return true
+  })
+})
+
+function kindLabel(kind: ProviderModelKind): string {
+  if (kind === 'embedding') return t('admin.models.kindEmbedding')
+  if (kind === 'reranker') return t('admin.models.kindReranker')
+  return t('admin.models.kindLlm')
+}
+
+function addModelLabel(): string {
+  if (props.providerModelFormKind === 'embedding') return t('admin.models.addEmbedding')
+  if (props.providerModelFormKind === 'reranker') return t('admin.models.addReranker')
+  return t('admin.models.addModel')
+}
+
+function manualPlaceholder(): string {
+  if (props.providerModelFormKind === 'embedding') return t('admin.models.manualEmbeddingPlaceholder')
+  if (props.providerModelFormKind === 'reranker') return t('admin.models.manualRerankerPlaceholder')
+  return t('admin.models.manualLlmPlaceholder')
+}
 </script>
 
 <template>
-  <div class="space-y-4">
-    <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-3">
-      <h2 class="text-base font-semibold text-stone-800 dark:text-zinc-100">Models & Pricing</h2>
-      <div class="flex flex-wrap items-center gap-2 sm:flex-nowrap">
-        <span class="text-xs text-stone-500 dark:text-zinc-400">Token billing unit is fixed at 1M.</span>
-        <Button size="sm" @click="emit('open-model-form')">Add Model</Button>
+  <div class="space-y-3">
+    <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-2">
+      <div>
+        <h2 class="text-sm font-semibold muse-text-heading">{{ t('admin.models.title') }}</h2>
+        <p class="text-xs muse-text-muted">
+          {{ t('admin.models.filters.resultCount', { shown: filteredRows.length, total: modelRows.length }) }}
+          · {{ t('admin.models.tokenUnitHint') }}
+        </p>
       </div>
+      <Button size="sm" @click="emit('open-model-form')">{{ t('admin.models.addModel') }}</Button>
     </div>
 
-    <Card v-if="showModelForm" class="space-y-3">
-      <div class="grid gap-2 md:grid-cols-4">
-        <Select v-model="providerModelProviderIdValue" class="md:col-span-2">
-          <option value="">Select provider</option>
-          <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
-        </Select>
-        <Select v-model="providerModelFormKindValue">
-          <option value="chat">LLM</option>
-          <option value="embedding">Embedding</option>
-          <option value="reranker">Reranker</option>
-        </Select>
-        <div class="flex gap-2">
-          <Button size="sm" variant="secondary" class="flex-1" @click="emit('refresh-discover', providerModelFormKind, false)">Discover</Button>
-          <Button size="sm" class="flex-1" @click="emit('refresh-discover', providerModelFormKind, true)">Import</Button>
+    <Card variant="inset" class="muse-card-compact">
+      <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <AdminFormField :label="t('admin.models.filters.searchLabel')">
+          <Input
+            v-model="searchQuery"
+            size="sm"
+            :placeholder="t('admin.models.filters.searchModel')"
+          />
+        </AdminFormField>
+        <AdminFormField :label="t('admin.models.filters.providerLabel')">
+          <Select v-model="providerFilter" size="sm" :aria-label="t('admin.models.filters.providerLabel')">
+            <option value="">{{ t('admin.models.filters.allProviders') }}</option>
+            <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </Select>
+        </AdminFormField>
+        <AdminFormField :label="t('admin.models.filters.typeLabel')">
+          <Select v-model="kindFilter" size="sm" :aria-label="t('admin.models.filters.typeLabel')">
+            <option value="">{{ t('admin.models.filters.allTypes') }}</option>
+            <option value="chat">{{ t('admin.models.kindLlm') }}</option>
+            <option value="embedding">{{ t('admin.models.kindEmbedding') }}</option>
+            <option value="reranker">{{ t('admin.models.kindReranker') }}</option>
+          </Select>
+        </AdminFormField>
+        <AdminFormField :label="t('admin.models.filters.billingLabel')">
+          <Select v-model="billingFilter" size="sm" :aria-label="t('admin.models.filters.billingLabel')">
+            <option value="">{{ t('admin.models.filters.allBilling') }}</option>
+            <option value="TOKEN">{{ t('admin.models.billingToken') }}</option>
+            <option value="REQUEST">{{ t('admin.models.billingRequest') }}</option>
+            <option value="NONE">{{ t('admin.models.filters.billingNone') }}</option>
+          </Select>
+        </AdminFormField>
+      </div>
+    </Card>
+
+    <Modal
+      :show="showModelForm"
+      size="xl"
+      :title="t('admin.models.addModelFormTitle')"
+      @close="emit('close-model-form')"
+    >
+      <div class="space-y-4">
+        <p class="text-xs muse-text-muted">{{ t('admin.models.addModelFormSubtitle') }}</p>
+
+      <div class="space-y-3">
+        <p class="text-xs font-medium uppercase tracking-wide muse-text-faint">{{ t('admin.models.sectionBindTarget') }}</p>
+        <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <AdminFormField
+            class="md:col-span-2 xl:col-span-2"
+            :label="t('admin.models.selectProvider')"
+            :description="t('admin.models.providerHint')"
+          >
+            <Select
+              v-model="providerModelProviderIdValue"
+              size="md"
+              :aria-label="t('admin.models.selectProvider')"
+            >
+              <option value="">{{ t('admin.models.selectProvider') }}</option>
+              <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </Select>
+          </AdminFormField>
+          <AdminFormField
+            :label="t('admin.models.modelKind')"
+            :description="t('admin.models.modelKindHint')"
+          >
+            <Select
+              v-model="providerModelFormKindValue"
+              size="md"
+              :aria-label="t('admin.models.modelKind')"
+            >
+              <option value="chat">{{ t('admin.models.kindLlm') }}</option>
+              <option value="embedding">{{ t('admin.models.kindEmbedding') }}</option>
+              <option value="reranker">{{ t('admin.models.kindReranker') }}</option>
+            </Select>
+          </AdminFormField>
+          <div class="flex flex-col justify-end gap-1.5">
+            <p class="text-xs muse-text-muted">{{ t('admin.models.discoverHint') }}</p>
+            <div class="flex gap-2">
+              <Button size="sm" variant="secondary" class="flex-1" @click="emit('refresh-discover', providerModelFormKind, false)">{{ t('admin.models.discover') }}</Button>
+              <Button size="sm" class="flex-1" @click="emit('refresh-discover', providerModelFormKind, true)">{{ t('admin.models.import') }}</Button>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="grid gap-2 md:grid-cols-3">
-        <div class="flex gap-2 md:col-span-2">
-          <Select v-model="discoveredModelForCurrentKindValue" class="flex-1">
-            <option value="">Select discovered</option>
-            <option v-for="m in discoveredModelsForCurrentKind" :key="m" :value="m">{{ m }}</option>
-          </Select>
-          <Button size="sm" variant="secondary" @click="emit('add-model-discovered')">
-            {{ providerModelFormKind === 'embedding' ? 'Add Embedding' : providerModelFormKind === 'reranker' ? 'Add Reranker' : 'Add Model' }}
-          </Button>
-        </div>
-        <div class="flex gap-2">
-          <Input
-            v-model="providerModelManualInputValue"
-            class="flex-1"
-            :placeholder="providerModelFormKind === 'embedding' ? 'Manual embedding model id' : providerModelFormKind === 'reranker' ? 'Manual reranker model id' : 'Manual model id'"
-          />
-          <Button size="sm" variant="secondary" @click="emit('add-model-manual')">
-            {{ providerModelFormKind === 'embedding' ? 'Add Embedding' : providerModelFormKind === 'reranker' ? 'Add Reranker' : 'Add Model' }}
-          </Button>
-        </div>
+      <div class="space-y-3">
+        <p class="text-xs font-medium uppercase tracking-wide muse-text-faint">{{ t('admin.models.sectionDiscover') }}</p>
+        <AdminFormField
+          :label="t('admin.models.selectDiscovered')"
+          :description="t('admin.models.discoveredHint')"
+        >
+          <div class="flex gap-2">
+            <Select
+              v-model="discoveredModelForCurrentKindValue"
+              size="md"
+              class="flex-1"
+              :aria-label="t('admin.models.selectDiscovered')"
+            >
+              <option value="">{{ t('admin.models.selectDiscovered') }}</option>
+              <option v-for="m in discoveredModelsForCurrentKind" :key="m" :value="m">{{ m }}</option>
+            </Select>
+            <Button size="sm" variant="secondary" class="shrink-0" @click="emit('add-model-discovered')">{{ addModelLabel() }}</Button>
+          </div>
+        </AdminFormField>
+      </div>
+
+      <div class="space-y-3">
+        <p class="text-xs font-medium uppercase tracking-wide muse-text-faint">{{ t('admin.models.sectionManual') }}</p>
+        <AdminFormField
+          :label="t('admin.models.manualModelId')"
+          :description="t('admin.models.manualHint')"
+        >
+          <div class="flex gap-2">
+            <Input
+              v-model="providerModelManualInputValue"
+              class="flex-1"
+              size="sm"
+              :placeholder="manualPlaceholder()"
+            />
+            <Button size="sm" variant="secondary" class="shrink-0" @click="emit('add-model-manual')">{{ addModelLabel() }}</Button>
+          </div>
+        </AdminFormField>
       </div>
 
       <Alert v-if="providerModelErrorForCurrentKind" variant="destructive">{{ providerModelErrorForCurrentKind }}</Alert>
       <Alert v-if="providerModelMessageForCurrentKind" variant="success">{{ providerModelMessageForCurrentKind }}</Alert>
 
-      <div class="flex justify-end">
-        <Button size="sm" variant="secondary" @click="emit('close-model-form')">Close</Button>
+      <div class="flex justify-end border-t border-[color:var(--muse-border)] pt-3">
+        <Button size="sm" variant="secondary" @click="emit('close-model-form')">{{ t('admin.common.close') }}</Button>
       </div>
-    </Card>
+      </div>
+    </Modal>
 
-    <Card v-if="showPricingForm" class="space-y-3">
-      <h3 class="text-sm font-medium text-stone-700 dark:text-zinc-200">Pricing Rule</h3>
-      <div class="grid gap-2 md:grid-cols-2">
-        <Input list="known-models" v-model="pricingForm.model" placeholder="Model" />
-        <Select v-model="pricingForm.billing_mode">
-          <option value="TOKEN">TOKEN</option>
-          <option value="REQUEST">REQUEST</option>
-        </Select>
+    <Modal
+      :show="showPricingForm"
+      size="lg"
+      :title="t('admin.models.pricingRule')"
+      @close="emit('update:showPricingForm', false)"
+    >
+      <div class="space-y-4">
+        <p class="text-xs muse-text-muted">{{ t('admin.models.pricingRuleSubtitle') }}</p>
+      <div class="grid gap-3 md:grid-cols-2">
+        <AdminFormField
+          :label="t('admin.models.pricingModel')"
+          :description="t('admin.models.pricingModelHint')"
+        >
+          <Input
+            list="known-models"
+            v-model="pricingForm.model"
+            size="sm"
+            :placeholder="t('admin.models.manualLlmPlaceholder')"
+          />
+        </AdminFormField>
+        <AdminFormField
+          :label="t('admin.models.billingMode')"
+          :description="t('admin.models.billingModeHint')"
+        >
+          <Select v-model="pricingForm.billing_mode" size="md" :aria-label="t('admin.models.billingMode')">
+            <option value="TOKEN">{{ t('admin.models.billingToken') }}</option>
+            <option value="REQUEST">{{ t('admin.models.billingRequest') }}</option>
+          </Select>
+        </AdminFormField>
 
         <template v-if="pricingForm.billing_mode === 'TOKEN'">
-          <Input v-model.number="pricingForm.input_price" type="number" min="0" step="0.000001" placeholder="Input Price" />
-          <Input v-model.number="pricingForm.output_price" type="number" min="0" step="0.000001" placeholder="Output Price" />
-          <div class="rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-600 md:col-span-2 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-            Token Unit: 1,000,000 (fixed)
-          </div>
+          <AdminFormField
+            :label="t('admin.models.inputPrice')"
+            :description="t('admin.models.inputPriceHint')"
+          >
+            <Input
+              v-model.number="pricingForm.input_price"
+              type="number"
+              min="0"
+              step="0.000001"
+              placeholder="0"
+              size="sm"
+            />
+          </AdminFormField>
+          <AdminFormField
+            :label="t('admin.models.outputPrice')"
+            :description="t('admin.models.outputPriceHint')"
+          >
+            <Input
+              v-model.number="pricingForm.output_price"
+              type="number"
+              min="0"
+              step="0.000001"
+              placeholder="0"
+              size="sm"
+            />
+          </AdminFormField>
+          <p class="text-xs muse-text-muted md:col-span-2">
+            {{ t('admin.models.tokenUnitFixed') }}
+          </p>
         </template>
 
-        <Input
+        <AdminFormField
           v-else
-          v-model.number="pricingForm.request_price"
-          type="number"
-          min="0"
-          step="0.000001"
           class="md:col-span-2"
-          placeholder="Price Per Request"
-        />
+          :label="t('admin.models.pricePerRequest')"
+          :description="t('admin.models.pricePerRequestHint')"
+        >
+          <Input
+            v-model.number="pricingForm.request_price"
+            type="number"
+            min="0"
+            step="0.000001"
+            placeholder="0"
+            size="sm"
+          />
+        </AdminFormField>
 
-        <label class="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700 md:col-span-2 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
-          <Checkbox v-model="pricingForm.is_active" />
-          Active
+        <label class="flex items-start justify-between gap-3 rounded-md border border-[color:var(--muse-border)] bg-[color:var(--muse-field)] px-3 py-2.5 md:col-span-2">
+          <div class="min-w-0">
+            <p class="text-sm font-medium muse-text-body">{{ t('admin.models.pricingActive') }}</p>
+            <p class="mt-0.5 text-xs muse-text-muted">{{ t('admin.models.pricingActiveHint') }}</p>
+          </div>
+          <Checkbox v-model="pricingForm.is_active" class="mt-0.5 shrink-0" />
         </label>
       </div>
 
@@ -179,52 +367,58 @@ const providerModelManualInputValue = computed({
 
       <Alert v-if="pricingFormError" variant="destructive">{{ pricingFormError }}</Alert>
 
-      <div class="flex justify-end gap-2">
-        <Button size="sm" variant="secondary" @click="emit('update:showPricingForm', false)">Cancel</Button>
-        <Button size="sm" @click="emit('save-pricing')">Save</Button>
+      <div class="flex justify-end gap-2 border-t border-[color:var(--muse-border)] pt-3">
+        <Button size="sm" variant="secondary" @click="emit('update:showPricingForm', false)">{{ t('common.cancel') }}</Button>
+        <Button size="sm" @click="emit('save-pricing')">{{ t('common.save') }}</Button>
       </div>
-    </Card>
+      </div>
+    </Modal>
 
-    <Card :stack="false">
+    <Card variant="compact" :stack="false">
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
-            <thead class="bg-stone-100/80 dark:bg-zinc-800/60">
-              <tr class="border-b border-stone-300 dark:border-zinc-700">
-                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Model</th>
-                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Provider</th>
-                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Type</th>
-                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Mode</th>
-                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Pricing</th>
-                <th class="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="row in modelRows"
-                :key="`${row.providerId}:${row.kind}:${row.model}`"
-                class="border-b border-stone-200/80 transition-colors hover:bg-stone-100/70 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
-              >
-                <td class="px-3 py-2 font-mono text-xs text-stone-700 dark:text-zinc-200">{{ row.model }}</td>
-                <td class="px-3 py-2 text-stone-600 dark:text-zinc-300">{{ row.providerName }}</td>
-                <td class="px-3 py-2 text-stone-600 dark:text-zinc-300">
-                  {{ row.kind === 'chat' ? 'LLM' : row.kind === 'embedding' ? 'Embedding' : 'Reranker' }}
-                </td>
-                <td class="px-3 py-2">
-                  <span class="inline-flex rounded-full border border-stone-300 bg-stone-100 px-2 py-0.5 text-xs text-stone-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-                    {{ pricingByModel(row.model)?.billing_mode || 'N/A' }}
-                  </span>
-                </td>
-                <td class="px-3 py-2 text-stone-600 dark:text-zinc-300">{{ formatPricing(pricingByModel(row.model)) }}</td>
-                <td class="px-3 py-2 text-right">
-                  <div class="flex flex-wrap justify-end gap-2">
-                    <Button size="sm" variant="secondary" @click="pricingByModel(row.model) ? emit('edit-pricing', pricingByModel(row.model)!) : emit('new-pricing', row.model)">
-                      {{ pricingByModel(row.model) ? 'Edit' : 'Set' }}
-                    </Button>
-                    <Button size="sm" variant="danger" @click="emit('remove-model-binding', row)">Remove</Button>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
+          <thead class="bg-[color:var(--muse-bg-soft)]">
+            <tr class="border-b border-[color:var(--muse-border)]">
+              <th class="px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-wide muse-text-faint">{{ t('admin.models.columns.model') }}</th>
+              <th class="px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-wide muse-text-faint">{{ t('admin.models.columns.provider') }}</th>
+              <th class="px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-wide muse-text-faint">{{ t('admin.models.columns.type') }}</th>
+              <th class="px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-wide muse-text-faint">{{ t('admin.models.columns.mode') }}</th>
+              <th class="px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-wide muse-text-faint">{{ t('admin.models.columns.pricing') }}</th>
+              <th class="px-2 py-1.5 text-right text-[10px] font-medium uppercase tracking-wide muse-text-faint">{{ t('admin.common.action') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="row in filteredRows"
+              :key="`${row.providerId}:${row.kind}:${row.model}`"
+              class="border-b border-[color:var(--muse-border)] transition-colors hover:bg-[color:var(--muse-field-hover)]"
+            >
+              <td class="px-2 py-1.5 font-mono text-[11px] muse-text-body">{{ row.model }}</td>
+              <td class="px-2 py-1.5 text-xs muse-text-muted">{{ row.providerName }}</td>
+              <td class="px-2 py-1.5 text-xs muse-text-muted">{{ kindLabel(row.kind) }}</td>
+              <td class="px-2 py-1.5">
+                <span class="muse-badge border-[color:var(--muse-border)] bg-[color:var(--muse-field)] text-[color:var(--muse-text-muted)]">
+                  {{ pricingByModel(row.model)?.billing_mode === 'TOKEN' ? t('admin.models.billingToken') : pricingByModel(row.model)?.billing_mode === 'REQUEST' ? t('admin.models.billingRequest') : t('admin.common.na') }}
+                </span>
+              </td>
+              <td class="px-2 py-1.5 text-xs muse-text-muted">{{ formatPricing(pricingByModel(row.model)) }}</td>
+              <td class="px-2 py-1.5 text-right">
+                <div class="flex flex-wrap justify-end gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    @click="pricingByModel(row.model) ? emit('edit-pricing', pricingByModel(row.model)!) : emit('new-pricing', row.model)"
+                  >
+                    {{ pricingByModel(row.model) ? t('admin.common.edit') : t('admin.common.set') }}
+                  </Button>
+                  <Button size="sm" variant="danger" @click="emit('remove-model-binding', row)">{{ t('admin.common.remove') }}</Button>
+                </div>
+              </td>
+            </tr>
+            <tr v-if="!filteredRows.length">
+              <td colspan="6" class="px-2 py-6 text-center text-xs muse-text-muted">{{ t('admin.models.filters.noResults') }}</td>
+            </tr>
+          </tbody>
         </table>
       </div>
     </Card>

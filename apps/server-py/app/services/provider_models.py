@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
-from typing import Any
+from typing import Any, Literal
 
 from app.models.config import AIProviderConfig
 
@@ -52,11 +51,13 @@ def dump_provider_models(
     rerank_models = _normalize_string_list(reranker_models)
 
     if embed_models or rerank_models:
-        return {
+        payload = {
             "models": chat_models,
             "embedding_models": embed_models,
-            "reranker_models": rerank_models,
         }
+        if rerank_models:
+            payload["reranker_models"] = rerank_models
+        return payload
     return chat_models
 
 
@@ -68,19 +69,15 @@ def get_embedding_models(raw: Any) -> list[str]:
     return parse_provider_models(raw).get("embedding_models", [])
 
 
+def get_reranker_models(raw: Any) -> list[str]:
+    return parse_provider_models(raw).get("reranker_models", [])
+
+
 def get_models(raw: Any, kind: Literal["chat", "embedding"]) -> list[str]:
     parsed = parse_provider_models(raw)
     if kind == "embedding":
         return parsed.get("embedding_models", [])
     return parsed.get("models", [])
-
-
-def get_reranker_models(raw: Any) -> list[str]:
-    return parse_provider_models(raw).get("reranker_models", [])
-
-
-def get_provider_reranker_models(provider: AIProviderConfig) -> list[str]:
-    return get_reranker_models(provider.models)
 
 
 def get_provider_chat_models(provider: AIProviderConfig) -> list[str]:
@@ -89,6 +86,10 @@ def get_provider_chat_models(provider: AIProviderConfig) -> list[str]:
 
 def get_provider_embedding_models(provider: AIProviderConfig) -> list[str]:
     return get_embedding_models(provider.models)
+
+
+def get_provider_reranker_models(provider: AIProviderConfig) -> list[str]:
+    return get_reranker_models(provider.models)
 
 
 def get_provider_models(provider: AIProviderConfig, kind: Literal["chat", "embedding", "reranker"]) -> list[str]:

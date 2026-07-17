@@ -83,6 +83,16 @@ export const useAuthStore = defineStore('auth', () => {
     clearLocalSession()
   }
 
+  async function updateUser(payload: { nickname?: string; email?: string }) {
+    const updatedUser = await authApi.updateMe(payload)
+    user.value = updatedUser
+    localStorage.setItem('user', JSON.stringify(updatedUser))
+  }
+
+  async function changePassword(payload: { current_password: string; new_password: string }) {
+    await authApi.changePassword(payload)
+  }
+
   return {
     user,
     token,
@@ -93,6 +103,8 @@ export const useAuthStore = defineStore('auth', () => {
     register,
     fetchMe,
     setBalance,
+    updateUser,
+    changePassword,
     logout,
   }
 })

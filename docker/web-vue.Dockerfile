@@ -1,11 +1,11 @@
-FROM mirror.gcr.io/library/node:20-alpine AS builder
+FROM mirror.gcr.io/library/node:24-alpine AS builder
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 
 WORKDIR /app
 
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@11.13.1 --activate
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web-vue/package.json apps/web-vue/package.json

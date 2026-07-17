@@ -42,7 +42,6 @@ async function mockProjectApis(page: Page) {
       title: 'New Project',
       description: null,
       content: null,
-      graph_id: null,
       created_at: now,
       updated_at: now,
     })
@@ -66,9 +65,6 @@ async function mockAdminApis(page: Page) {
       page: 1,
       page_size: 20,
     }))
-  await page.route('**/api/admin/groups', (route) =>
-    fulfillJson(route, [{ id: 'group-1', name: 'default', description: 'Default group' }]))
-  await page.route('**/api/admin/plans', (route) => fulfillJson(route, []))
   await page.route('**/api/admin/providers', (route) =>
     fulfillJson(route, [{
       id: 'provider-1',
@@ -79,18 +75,29 @@ async function mockAdminApis(page: Page) {
       is_active: true,
       priority: 1,
     }]))
-  await page.route('**/api/admin/payment-config', (route) =>
+  await page.route('**/api/admin/payment-adapter-types', (route) =>
     fulfillJson(route, {
-      enabled: false,
-      url: '',
-      pid: '',
-      key: '',
-      has_key: false,
-      payment_type: 'alipay',
-      notify_url: '',
-      return_url: '',
+      types: [{ id: 'epay', label: 'EPay', description: 'Epay gateway' }],
     }))
-  await page.route('**/api/admin/model-groups', (route) => fulfillJson(route, []))
+  await page.route('**/api/admin/payment-adapters', (route) =>
+    fulfillJson(route, { adapters: [] }))
+  await page.route('**/api/admin/pricing', (route) => fulfillJson(route, []))
+  await page.route('**/api/admin/llm-runtime-config', (route) =>
+    fulfillJson(route, {
+      llm_request_timeout_seconds: 180,
+      llm_retry_count: 4,
+      llm_retry_interval_seconds: 2,
+      llm_prefer_stream: true,
+      llm_stream_fallback_nonstream: true,
+      llm_fallback_model: '',
+      llm_openai_api_style: 'responses',
+      llm_reasoning_effort: 'model_default',
+      llm_task_concurrency: 4,
+      llm_model_default_concurrency: 8,
+      llm_model_concurrency_overrides: {},
+    }))
+  await page.route('**/api/admin/tasks**', (route) =>
+    fulfillJson(route, { tasks: [], total: 0, limit: 50 }))
 }
 
 test('login -> dashboard smoke flow', async ({ page }) => {
@@ -100,12 +107,12 @@ test('login -> dashboard smoke flow', async ({ page }) => {
 
   await page.goto('/login')
   await page.getByPlaceholder('you@example.com').fill('user@example.com')
-  await page.getByPlaceholder('Enter your password').fill('password123')
-  await page.getByRole('button', { name: 'Sign In' }).click()
+  await page.getByPlaceholder('输入密码').fill('password123')
+  await page.getByRole('button', { name: '登录' }).click()
 
   await expect(page).toHaveURL(/\/dashboard$/)
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
-  await expect(page.getByText('No projects yet').first()).toBeVisible()
+  await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible()
+  await expect(page.getByText('暂无项目').first()).toBeVisible()
 })
 
 test('admin providers tab has no model-management controls', async ({ page }) => {
@@ -116,18 +123,18 @@ test('admin providers tab has no model-management controls', async ({ page }) =>
   }, { token: 'admin-token', user: adminUser })
 
   await page.goto('/admin')
-  await expect(page.getByRole('heading', { name: 'Admin Panel' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '运营与配置' })).toBeVisible()
 
-  await page.getByRole('button', { name: 'providers' }).click()
-  await expect(page.getByRole('heading', { name: 'Providers' })).toBeVisible()
-  await expect(page.getByRole('columnheader', { name: 'Name' })).toBeVisible()
-  await expect(page.getByRole('columnheader', { name: 'Type' })).toBeVisible()
+  await page.getByRole('button', { name: 'AI 服务商' }).click()
+  await expect(page.getByRole('heading', { name: 'AI 服务商' })).toBeVisible()
+  await expect(page.getByRole('columnheader', { name: '名称' })).toBeVisible()
+  await expect(page.getByRole('columnheader', { name: '类型' })).toBeVisible()
   await expect(page.getByRole('columnheader', { name: 'Models' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Discover' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Import' })).toHaveCount(0)
 
-  await page.getByRole('button', { name: 'models' }).click()
-  await expect(page.getByRole('heading', { name: 'Models' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Discover' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Import' })).toBeVisible()
+  await page.getByRole('button', { name: '模型与定价' }).click()
+  await expect(page.getByRole('heading', { name: '模型与定价' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '发现' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '导入并保存' })).toBeVisible()
 })

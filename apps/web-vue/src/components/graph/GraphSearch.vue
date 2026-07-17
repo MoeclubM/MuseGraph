@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { Search } from 'lucide-vue-next'
-import { searchGraph } from '@/api/graph'
+import { ref } from 'vue'
+import { Search } from '@lucide/vue'
+import { searchProjectMemory } from '@/api/memory'
 import Input from '@/components/ui/Input.vue'
 import Select from '@/components/ui/Select.vue'
-import Checkbox from '@/components/ui/Checkbox.vue'
 import Button from '@/components/ui/Button.vue'
 import Alert from '@/components/ui/Alert.vue'
 
@@ -14,36 +13,24 @@ const props = defineProps<{
 
 const query = ref('')
 const searchType = ref('INSIGHTS')
-const results = ref<any[]>([])
+const topK = ref(10)
+const results = ref<unknown[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const hasSearched = ref(false)
-const useReranker = ref(false)
-const rerankerTopN = ref<number>(6)
-const rerankerSupported = computed(() =>
-  searchType.value === 'RAG_COMPLETION'
-  || searchType.value === 'GRAPH_COMPLETION'
-  || searchType.value === 'GRAPH_SUMMARY_COMPLETION'
-)
 
 const searchTypes = [
   { value: 'INSIGHTS', label: 'Insights' },
-  { value: 'GRAPH_COMPLETION', label: 'Graph AI' },
-  { value: 'RAG_COMPLETION', label: 'RAG' },
-  { value: 'SUMMARIES', label: 'Summaries' },
   { value: 'CHUNKS', label: 'Chunks' },
-  { value: 'GRAPH_SUMMARY_COMPLETION', label: 'Graph Summary' },
+  { value: 'SUMMARIES', label: 'Summaries' },
 ]
 
-function extractText(result: any): string {
+function extractText(result: unknown): string {
   if (typeof result === 'object' && result !== null) {
-    return result.content || result.text || JSON.stringify(result, null, 2)
+    const row = result as Record<string, unknown>
+    return String(row.content || row.text || JSON.stringify(result, null, 2))
   }
-  const s = String(result)
-  // Parse Python dict string format: {'text': '...'}
-  const m = s.match(/'text'\s*:\s*'([^']*(?:''[^']*)*)'/)
-  if (m) return m[1].replace(/''/g, "'")
-  return s
+  return String(result)
 }
 
 async function handleSearch() {
@@ -52,15 +39,15 @@ async function handleSearch() {
   error.value = null
   hasSearched.value = true
   try {
-    const topN = Number(rerankerTopN.value || 0)
-    const effectiveUseReranker = rerankerSupported.value ? useReranker.value : false
-    results.value = await searchGraph(props.projectId, query.value, {
-      searchType: searchType.value,
-      useReranker: effectiveUseReranker,
-      rerankerTopN: effectiveUseReranker ? Math.max(1, Math.min(50, topN || 6)) : undefined,
+    const payload = await searchProjectMemory(props.projectId, query.value, {
+      search_type: searchType.value,
+      top_k: Math.max(1, Math.min(50, Number(topK.value) || 10)),
     })
-  } catch (e: any) {
-    error.value = e.response?.data?.detail || e.response?.data?.message || e.message || 'Search failed'
+    const hits = payload.results ?? payload.hits ?? payload.items
+    results.value = Array.isArray(hits) ? hits : []
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { detail?: string; message?: string } }; message?: string }
+    error.value = err.response?.data?.detail || err.response?.data?.message || err.message || 'Search failed'
     results.value = []
   } finally {
     loading.value = false
@@ -76,78 +63,34 @@ async function handleSearch() {
         <Input
           v-model="query"
           type="text"
-          placeholder="Search knowledge graph..."
+          placeholder="Search project memory..."
           input-class="pl-9 pr-3"
-          @keydown.enter="handleSearch"
+          @keydown.enter.prevent="handleSearch"
         />
       </div>
-      <div class="flex gap-2">
-      <Select
-        v-model="searchType"
-        class="min-w-0 flex-1"
-      >
-        <option v-for="st in searchTypes" :key="st.value" :value="st.value">
-          {{ st.label }}
-        </option>
-      </Select>
-      <Button
-        :disabled="loading || !query.trim()"
-        :loading="loading"
-        @click="handleSearch"
-      >
-        Search
-      </Button>
+      <div class="flex flex-wrap gap-2">
+        <Select v-model="searchType" class="min-w-[140px] flex-1">
+          <option v-for="type in searchTypes" :key="type.value" :value="type.value">{{ type.label }}</option>
+        </Select>
+        <Input v-model.number="topK" type="number" min="1" max="50" class="w-20" />
+        <Button :loading="loading" @click="handleSearch">Search</Button>
       </div>
     </div>
 
-    <div
-      v-if="rerankerSupported"
-      class="flex flex-wrap items-center gap-3 rounded-md border border-stone-300/70 bg-stone-100/70 px-3 py-2 dark:border-zinc-700/60 dark:bg-zinc-800/40"
-    >
-      <label class="inline-flex items-center gap-2 text-xs text-stone-700 dark:text-zinc-300">
-        <Checkbox v-model="useReranker" />
-        Enable reranker
-      </label>
-      <Input
-        v-model.number="rerankerTopN"
-        type="number"
-        :min="1"
-        :max="50"
-        class="w-24"
-        placeholder="Top N"
-      />
-      <span class="text-xs text-stone-500 dark:text-zinc-500">
-        Model uses project setting: <code>graph_reranker</code>
-      </span>
+    <Alert v-if="error" variant="destructive" class="text-sm">{{ error }}</Alert>
+
+    <div v-if="hasSearched && !loading && results.length === 0 && !error" class="text-xs text-stone-500 dark:text-zinc-500">
+      No results.
     </div>
 
-    <Alert v-if="error" variant="destructive">
-      {{ error }}
-    </Alert>
-
-    <div v-if="hasSearched && !loading && results.length === 0 && !error" class="text-center py-6">
-      <p class="text-sm text-stone-500 dark:text-zinc-500">No results found</p>
-    </div>
-
-    <div v-if="results.length > 0" class="space-y-2 max-h-80 overflow-y-auto">
-      <div
-        v-for="(result, idx) in results"
-        :key="idx"
-        class="rounded-lg border border-stone-300/70 bg-stone-100/70 p-3 dark:border-zinc-700/60 dark:bg-zinc-800/40"
+    <ul v-if="results.length" class="space-y-2">
+      <li
+        v-for="(result, index) in results"
+        :key="index"
+        class="rounded-md border border-stone-300/80 bg-stone-50/80 p-3 text-xs text-stone-700 dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-zinc-300"
       >
-        <p class="text-sm text-stone-700 dark:text-zinc-200 whitespace-pre-wrap">
-          {{ extractText(result) }}
-        </p>
-        <div v-if="result.score" class="mt-1">
-          <span class="text-xs text-stone-500 dark:text-zinc-500">Score: {{ result.score.toFixed(3) }}</span>
-        </div>
-        <div v-if="result.reranker_score !== undefined && result.reranker_score !== null" class="mt-1">
-          <span class="text-xs text-amber-700 dark:text-amber-300">
-            Rerank: {{ Number(result.reranker_score).toFixed(3) }}
-            <span v-if="result.reranker_source">({{ result.reranker_source }})</span>
-          </span>
-        </div>
-      </div>
-    </div>
+        <pre class="whitespace-pre-wrap break-words font-sans">{{ extractText(result) }}</pre>
+      </li>
+    </ul>
   </div>
 </template>

@@ -2,6 +2,7 @@
 import { computed, useId } from 'vue'
 import { cva } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
+import { controlSizeClasses, type ControlSize } from '@/lib/control-sizes'
 
 const props = withDefaults(
   defineProps<{
@@ -20,6 +21,7 @@ const props = withDefaults(
     name?: string
     autocapitalize?: string
     spellcheck?: boolean
+    size?: ControlSize
     inputClass?: string
     modelModifiers?: Record<string, boolean>
   }>(),
@@ -28,6 +30,7 @@ const props = withDefaults(
     disabled: false,
     modelValue: '',
     spellcheck: false,
+    size: 'md',
     modelModifiers: () => ({}),
   }
 )
@@ -40,24 +43,28 @@ const generatedId = useId()
 
 const inputId = computed(() => String(props.id || props.name || generatedId))
 
-const inputVariants = cva(
-  'muse-field-base muse-focus-ring h-11 w-full rounded-md px-3.5 text-sm outline-none',
-  {
-    variants: {
-      state: {
-        default: '',
-        error: 'muse-field-error',
-      },
+const inputVariants = cva('muse-field-base muse-focus-ring w-full rounded-md outline-none', {
+  variants: {
+    size: {
+      sm: controlSizeClasses.sm,
+      md: controlSizeClasses.md,
+      lg: controlSizeClasses.lg,
     },
-    defaultVariants: {
-      state: 'default',
+    state: {
+      default: '',
+      error: 'muse-field-error',
     },
-  }
-)
+  },
+  defaultVariants: {
+    size: 'md',
+    state: 'default',
+  },
+})
 
 const inputClasses = computed(() =>
   cn(
     inputVariants({
+      size: props.size,
       state: props.error ? 'error' : 'default',
     }),
     props.inputClass

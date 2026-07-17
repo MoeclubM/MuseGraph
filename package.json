@@ -1,6 +1,7 @@
 {
   "name": "musegraph",
   "version": "1.0.0",
+  "license": "Apache-2.0",
   "private": true,
   "scripts": {
     "dev": "turbo run dev",
@@ -13,17 +14,10 @@
     "clean": "turbo run clean && node -e \"require('node:fs').rmSync('node_modules', { recursive: true, force: true })\""
   },
   "devDependencies": {
-    "turbo": "^2.8.19"
+    "turbo": "^2.10.5"
   },
-  "packageManager": "pnpm@10.20.0",
+  "packageManager": "pnpm@11.13.1",
   "engines": {
-    "node": ">=20.0.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "msgpackr-extract",
-      "unrs-resolver"
-    ]
+    "node": ">=24.0.0"
   }
 }

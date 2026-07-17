@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
+from tests.conftest import get_endpoint_globals
+
 
 def _scalar_one_or_none(value):
     result = MagicMock()
@@ -17,30 +19,16 @@ def _scalar_one_or_none(value):
     return result
 
 
-def _get_endpoint_globals(app, endpoint_name: str) -> dict:
-    """Get the __globals__ dict of a named endpoint to patch its imports."""
-    for route in app.routes:
-        if hasattr(route, "endpoint") and getattr(route, "name", "") == endpoint_name:
-            return route.endpoint.__globals__
-        if hasattr(route, "routes"):
-            for sub in route.routes:
-                if hasattr(sub, "endpoint") and getattr(sub, "name", "") == endpoint_name:
-                    return sub.endpoint.__globals__
-    raise RuntimeError(f"Endpoint {endpoint_name!r} not found")
-
-
 @pytest.fixture()
 def _epay_globals():
     """Return the endpoint globals for payment_callback_epay."""
-    from tests.conftest import app
-    return _get_endpoint_globals(app, "payment_callback_epay")
+    return get_endpoint_globals("payment_callback_epay")
 
 
 @pytest.fixture()
 def _callback_globals():
     """Return the endpoint globals for payment_callback."""
-    from tests.conftest import app
-    return _get_endpoint_globals(app, "payment_callback")
+    return get_endpoint_globals("payment_callback")
 
 
 class TestEpayCallbackPost:
@@ -185,6 +173,7 @@ class TestOrderEndpoint:
             type="RECHARGE",
             amount=Decimal("50.00"),
             status="PAID",
+            payment_adapter_id="adapter-1",
             payment_method="alipay",
             created_at=datetime.now(timezone.utc),
             paid_at=datetime.now(timezone.utc),

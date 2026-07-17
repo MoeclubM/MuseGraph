@@ -33,15 +33,45 @@ const router = createRouter({
       meta: { auth: true },
     },
     {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('@/views/SettingsView.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/projects',
       name: 'projects',
       component: () => import('@/views/ProjectsView.vue'),
       meta: { auth: true },
     },
     {
+      path: '/plaza',
+      name: 'plaza',
+      component: () => import('@/views/PlazaView.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/projects/:id',
       name: 'project',
-      component: () => import('@/views/ProjectView.vue'),
+      component: () => import('@/views/AgentWorkspaceView.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/projects/:id/settings',
+      name: 'project-settings',
+      component: () => import('@/views/ProjectSettingsView.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/projects/:id/skills',
+      name: 'project-skills',
+      component: () => import('@/views/ProjectSkillsSettingsView.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/projects/:id/versions',
+      name: 'project-versions',
+      component: () => import('@/views/ProjectVersionsView.vue'),
       meta: { auth: true },
     },
     {
@@ -51,39 +81,21 @@ const router = createRouter({
       meta: { auth: true },
     },
     {
-      path: '/projects/:id/workflow',
-      name: 'workflow',
-      redirect: (to) => ({ path: `/projects/${to.params.id}` }),
-      meta: { auth: true },
-    },
-    {
-      path: '/simulation/:simulationId',
-      name: 'simulation',
-      component: () => import('@/views/SimulationView.vue'),
-      meta: { auth: true },
-    },
-    {
-      path: '/simulation/:simulationId/start',
-      name: 'simulation-run',
-      component: () => import('@/views/SimulationRunView.vue'),
-      meta: { auth: true },
-    },
-    {
-      path: '/report/:reportId',
-      name: 'report',
-      component: () => import('@/views/ReportView.vue'),
-      meta: { auth: true },
-    },
-    {
-      path: '/interaction/:reportId',
-      name: 'interaction',
-      component: () => import('@/views/InteractionView.vue'),
-      meta: { auth: true },
-    },
-    {
       path: '/admin',
       name: 'admin',
       component: () => import('@/views/AdminView.vue'),
+      meta: { auth: true, adminAuth: true },
+    },
+    {
+      path: '/admin/orders',
+      name: 'admin-orders',
+      component: () => import('@/views/AdminOrdersView.vue'),
+      meta: { auth: true, adminAuth: true },
+    },
+    {
+      path: '/admin/usage',
+      name: 'admin-usage',
+      component: () => import('@/views/AdminUsageView.vue'),
       meta: { auth: true, adminAuth: true },
     },
     {

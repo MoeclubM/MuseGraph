@@ -2,7 +2,10 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from app.services.http_client import create_async_http_client
 from sqlalchemy import and_, case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,11 +14,18 @@ from app.database import get_db
 from app.dependencies import require_admin
 from app.models.billing import Order, Usage
 from app.models.config import AIProviderConfig, PaymentConfig, PricingRule
+from app.models.payment_adapter import PaymentAdapter
 from app.models.project import TextOperation, TextProject
 from app.models.user import User
 from app.schemas.admin import StatsResponse, UserListResponse
-from app.services.auth import register_user
-from app.services.oasis import DEFAULT_OASIS_CONFIG, normalize_oasis_config as normalize_runtime_oasis_config
+from app.services.auth import hash_password, register_user
+from app.services.llm_runtime import merge_llm_runtime_config, normalize_llm_runtime_config
+from app.services.payment_adapters.registry import (
+    ADAPTER_TYPES,
+    serialize_adapter_admin,
+    validate_adapter_config,
+)
+from app.services.pricing_catalog import collect_pricing_catalog
 from app.services.task_state import TaskRecord, TaskStatus, task_manager
 from app.services.provider_models import (
     dump_provider_models,
@@ -23,7 +33,6 @@ from app.services.provider_models import (
     get_provider_chat_models,
     get_provider_embedding_models,
     get_provider_models,
-    get_provider_reranker_models,
     set_provider_models,
 )
 from app.services.provider_type import (
@@ -142,6 +151,17 @@ def _normalize_billing_mode(value: Any) -> str:
     return mode
 
 
+def _normalize_payment_types(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="payment_types must be a list")
+    payment_types: list[str] = []
+    for item in value:
+        payment_type = str(item or "").strip()
+        if payment_type and payment_type not in payment_types:
+            payment_types.append(payment_type)
+    return payment_types
+
+
 def _validate_pricing_payload(
     *,
     billing_mode: str,
@@ -185,7 +205,7 @@ def _collect_provider_model_names(provider: AIProviderConfig) -> set[str]:
     return {
         *get_provider_chat_models(provider),
         *get_provider_embedding_models(provider),
-        *get_provider_reranker_models(provider),
+        *get_provider_models(provider, "reranker"),
     }
 
 
@@ -512,17 +532,28 @@ async def get_stats(admin: User = Depends(require_admin), db: AsyncSession = Dep
         ).scalar()
         or 0
     )
+    usage_by_operation = (
+        select(
+            Usage.operation_id.label("operation_id"),
+            func.coalesce(func.sum(Usage.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(Usage.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(Usage.cost), 0).label("cost"),
+        )
+        .where(Usage.operation_id.is_not(None))
+        .group_by(Usage.operation_id)
+        .subquery()
+    )
     usage_operation_value_mismatch = int(
         (
             await db.execute(
-                select(func.count(Usage.id))
-                .select_from(Usage)
-                .join(TextOperation, TextOperation.id == Usage.operation_id)
+                select(func.count(usage_by_operation.c.operation_id))
+                .select_from(usage_by_operation)
+                .join(TextOperation, TextOperation.id == usage_by_operation.c.operation_id)
                 .where(
                     or_(
-                        Usage.input_tokens != TextOperation.input_tokens,
-                        Usage.output_tokens != TextOperation.output_tokens,
-                        Usage.cost != TextOperation.cost,
+                        usage_by_operation.c.input_tokens != TextOperation.input_tokens,
+                        usage_by_operation.c.output_tokens != TextOperation.output_tokens,
+                        usage_by_operation.c.cost != TextOperation.cost,
                     )
                 )
             )
@@ -756,6 +787,25 @@ async def add_user_balance(
     return _serialize_user(user)
 
 
+@router.post("/users/{user_id}/password")
+async def reset_user_password(
+    user_id: str,
+    body: dict,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    password = str(body.get("password", "")).strip()
+    if len(password) < 6:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="password must be at least 6 characters")
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user.password_hash = hash_password(password)
+    await db.flush()
+    return {"ok": True}
+
+
 @router.get("/users/{user_id}/orders")
 async def list_user_orders(
     user_id: str,
@@ -891,15 +941,69 @@ def _serialize_provider(provider: AIProviderConfig) -> dict[str, Any]:
         "base_url": provider.base_url,
         "models": get_provider_chat_models(provider),
         "embedding_models": get_provider_embedding_models(provider),
-        "reranker_models": get_provider_reranker_models(provider),
+        "reranker_models": get_provider_models(provider, "reranker"),
         "is_active": provider.is_active,
         "priority": provider.priority,
     }
 
 
 def _normalize_models(raw_models: Any) -> list[str]:
-    # Backward-compatible helper kept for existing tests/imports.
     return get_chat_models(raw_models)
+
+
+def _model_text_matches_kind(value: str, kind: str) -> bool:
+    text = str(value or "").lower()
+    if kind == "embedding":
+        return ("embedding" in text or "embed" in text) and "rerank" not in text
+    if kind == "reranker":
+        return "rerank" in text or "re-rank" in text
+    return True
+
+
+def _model_value_matches_kind(value: Any, kind: str) -> bool:
+    if isinstance(value, str):
+        return _model_text_matches_kind(value, kind)
+    if isinstance(value, list):
+        return any(_model_value_matches_kind(item, kind) for item in value)
+    if isinstance(value, dict):
+        return any(
+            (_model_text_matches_kind(key, kind) and bool(item))
+            or _model_value_matches_kind(item, kind)
+            for key, item in value.items()
+        )
+    return False
+
+
+def _discovered_model_matches_kind(entry: dict[str, Any], kind: str) -> bool:
+    if kind == "chat":
+        return True
+    model_id = str(entry.get("id") or "")
+    if _model_text_matches_kind(model_id, kind):
+        return True
+    raw = entry.get("raw")
+    if not isinstance(raw, dict):
+        return False
+    for field in (
+        "type",
+        "kind",
+        "model_type",
+        "modelType",
+        "task",
+        "task_type",
+        "taskType",
+        "mode",
+        "purpose",
+        "category",
+        "capability",
+        "capabilities",
+        "supported_tasks",
+        "supportedTasks",
+        "supported_endpoints",
+        "supportedEndpoints",
+    ):
+        if field in raw and _model_value_matches_kind(raw[field], kind):
+            return True
+    return False
 
 
 async def _get_provider_or_404(provider_id: str, db: AsyncSession) -> AIProviderConfig:
@@ -910,7 +1014,7 @@ async def _get_provider_or_404(provider_id: str, db: AsyncSession) -> AIProvider
     return provider
 
 
-async def _discover_models_for_provider(provider: AIProviderConfig) -> list[str]:
+async def _discover_models_for_provider(provider: AIProviderConfig) -> list[dict[str, Any]]:
     provider_type = _normalize_provider_type(provider.provider)
     api_key = (provider.api_key or "").strip()
     if not api_key:
@@ -918,19 +1022,46 @@ async def _discover_models_for_provider(provider: AIProviderConfig) -> list[str]
 
     try:
         if is_anthropic_provider(provider_type):
-            import anthropic
-            client = anthropic.AsyncAnthropic(api_key=api_key, base_url=provider.base_url or None)
-            response = await client.models.list()
-            entries = getattr(response, "data", []) or []
-            return sorted({item.id for item in entries if getattr(item, "id", None)})
+            base_url = str(provider.base_url or "https://api.anthropic.com/v1").rstrip("/")
+            headers = {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            }
+        else:
+            base_url = str(provider.base_url or "https://api.openai.com/v1").rstrip("/")
+            headers = {"Authorization": f"Bearer {api_key}"}
 
-        import openai
-        client = openai.AsyncOpenAI(api_key=api_key, base_url=provider.base_url or None)
-        response = await client.models.list()
-        entries = getattr(response, "data", []) or []
-        return sorted({item.id for item in entries if getattr(item, "id", None)})
+        async with create_async_http_client(timeout=30.0) as client:
+            response = await client.get(f"{base_url}/models", headers=headers)
+        response.raise_for_status()
+        payload = response.json()
+        entries = payload.get("data", []) if isinstance(payload, dict) else payload
+        if not isinstance(entries, list):
+            raise ValueError("provider /models response must contain a data list")
+        discovered: dict[str, dict[str, Any]] = {}
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            model_id = str(item.get("id") or item.get("name") or item.get("model") or "").strip()
+            if model_id:
+                discovered[model_id] = {"id": model_id, "raw": item}
+        return [discovered[model_id] for model_id in sorted(discovered)]
     except HTTPException:
         raise
+    except httpx.HTTPStatusError as exc:
+        detail = f"Provider model discovery returned HTTP {exc.response.status_code}"
+        try:
+            body = exc.response.json()
+            if isinstance(body, dict) and body.get("error"):
+                detail = f"{detail}: {body['error']}"
+        except Exception:
+            text = (exc.response.text or "").strip()
+            if text:
+                detail = f"{detail}: {text[:240]}"
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=detail,
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -1016,11 +1147,19 @@ async def _discover_provider_models_by_kind(
     db: AsyncSession,
 ) -> dict[str, Any]:
     provider = await _get_provider_or_404(provider_id, db)
-    discovered = await _discover_models_for_provider(provider)
+    discovered_entries = await _discover_models_for_provider(provider)
+    discovered = [str(entry["id"]) for entry in discovered_entries]
+    persistable_discovered = [
+        str(entry["id"])
+        for entry in discovered_entries
+        if _discovered_model_matches_kind(entry, kind)
+    ]
+    persistable_set = set(persistable_discovered)
+    not_persisted_discovered = [model for model in discovered if model not in persistable_set]
 
     current = get_provider_models(provider, kind)
     if persist:
-        merged = sorted(set(current).union(discovered))
+        merged = sorted(set(current).union(persistable_discovered))
         set_provider_models(provider, kind, merged)
         await db.flush()
         current = get_provider_models(provider, kind)
@@ -1029,6 +1168,9 @@ async def _discover_provider_models_by_kind(
         "provider_id": provider.id,
         "provider_name": provider.name,
         "discovered": discovered,
+        "persistable_discovered": persistable_discovered,
+        "not_persisted_discovered": not_persisted_discovered if persist else [],
+        "not_persisted_reason": "model_kind_not_confirmed" if persist and not_persisted_discovered else None,
         _provider_model_field(kind): current,
         "persisted": persist,
     }
@@ -1224,141 +1366,173 @@ async def delete_provider(
     return None
 
 
-def _oasis_default_payload() -> dict[str, Any]:
-    return dict(DEFAULT_OASIS_CONFIG)
-
-
-def _normalize_oasis_config(raw: Any) -> dict[str, Any]:
-    return normalize_runtime_oasis_config(raw)
-
-
-def _serialize_oasis_config(raw: Any) -> dict[str, Any]:
+def _serialize_llm_runtime_config(raw: Any) -> dict[str, Any]:
     cfg = raw if isinstance(raw, dict) else {}
-    return _normalize_oasis_config(cfg)
+    return normalize_llm_runtime_config(cfg)
 
 
-@router.get("/oasis-config")
-async def get_oasis_config(
+async def _load_llm_runtime_payment_config(db: AsyncSession) -> PaymentConfig | None:
+    result = await db.execute(select(PaymentConfig).where(PaymentConfig.type == "llm_runtime"))
+    return result.scalar_one_or_none()
+
+
+@router.get("/llm-runtime-config")
+async def get_llm_runtime_config(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(PaymentConfig).where(PaymentConfig.type == "oasis"))
-    item = result.scalar_one_or_none()
+    item = await _load_llm_runtime_payment_config(db)
     cfg = item.config if item and isinstance(item.config, dict) else None
-    return _serialize_oasis_config(cfg)
+    return _serialize_llm_runtime_config(cfg)
 
 
-@router.put("/oasis-config")
-async def upsert_oasis_config(
+@router.put("/llm-runtime-config")
+async def upsert_llm_runtime_config(
     body: dict,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(PaymentConfig).where(PaymentConfig.type == "oasis"))
-    item = result.scalar_one_or_none()
+    item = await _load_llm_runtime_payment_config(db)
     current = item.config if item and isinstance(item.config, dict) else {}
-    merged = {**current, **body}
-    normalized = _normalize_oasis_config(merged)
+    normalized = merge_llm_runtime_config(current, body)
 
     if not item:
-        item = PaymentConfig(name="oasis", type="oasis", is_active=True)
+        item = PaymentConfig(name="llm_runtime", type="llm_runtime", is_active=True)
         db.add(item)
 
     item.is_active = True
     item.config = normalized
     await db.flush()
-    return _serialize_oasis_config(item.config)
+    return _serialize_llm_runtime_config(item.config)
 
 
-def _epay_default_payload() -> dict[str, Any]:
+@router.get("/payment-adapter-types")
+async def list_payment_adapter_types(admin: User = Depends(require_admin)):
     return {
-        "enabled": False,
-        "url": "",
-        "pid": "",
-        "has_key": False,
-        "key": "",
-        "payment_type": "alipay",
-        "notify_url": "",
-        "return_url": "",
+        "types": [
+            {"id": type_id, **meta}
+            for type_id, meta in ADAPTER_TYPES.items()
+        ]
     }
 
 
-def _serialize_epay_config(item: PaymentConfig | None) -> dict[str, Any]:
-    if not item:
-        return _epay_default_payload()
-
-    cfg = item.config if isinstance(item.config, dict) else {}
-    secret_key = str(cfg.get("key") or "")
-    return {
-        "enabled": bool(item.is_active),
-        "url": str(cfg.get("url") or ""),
-        "pid": str(cfg.get("pid") or ""),
-        "key": "",
-        "has_key": bool(secret_key),
-        "payment_type": str(cfg.get("payment_type") or "alipay"),
-        "notify_url": str(cfg.get("notify_url") or ""),
-        "return_url": str(cfg.get("return_url") or ""),
-    }
-
-
-@router.get("/payment-config")
-async def get_payment_config(
+@router.get("/payment-adapters")
+async def list_payment_adapters(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(PaymentConfig).where(PaymentConfig.type == "epay"))
-    item = result.scalar_one_or_none()
-    return _serialize_epay_config(item)
+    result = await db.execute(
+        select(PaymentAdapter).order_by(
+            PaymentAdapter.sort_order.asc(),
+            PaymentAdapter.created_at.asc(),
+        )
+    )
+    items = result.scalars().all()
+    return {"adapters": [serialize_adapter_admin(item) for item in items]}
 
 
-@router.put("/payment-config")
-async def upsert_payment_config(
+@router.post("/payment-adapters")
+async def create_payment_adapter(
     body: dict,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    adapter_type = str(body.get("adapter_type") or "").strip()
+    display_name = str(body.get("display_name") or "").strip()
     enabled = bool(body.get("enabled", False))
-    url = str(body.get("url") or "").strip()
-    pid = str(body.get("pid") or "").strip()
-    incoming_key = str(body.get("key") or "").strip()
-    payment_type = str(body.get("payment_type") or "alipay").strip() or "alipay"
-    notify_url = str(body.get("notify_url") or "").strip()
-    return_url = str(body.get("return_url") or "").strip()
+    sort_order = int(body.get("sort_order") or 0)
+    incoming_config = body.get("config") if isinstance(body.get("config"), dict) else {}
 
-    result = await db.execute(select(PaymentConfig).where(PaymentConfig.type == "epay"))
-    item = result.scalar_one_or_none()
-    current_cfg = item.config if item and isinstance(item.config, dict) else {}
-    current_key = str(current_cfg.get("key") or "")
-    key = incoming_key or current_key
+    if adapter_type not in ADAPTER_TYPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid adapter_type")
+    if not display_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="display_name is required")
 
-    if enabled and (not url or not pid or not key):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="enabled=true requires url, pid and key",
-        )
+    stored_config, err = validate_adapter_config(adapter_type, enabled=enabled, config=incoming_config)
+    if err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
 
-    if not item:
-        item = PaymentConfig(name="epay", type="epay")
-        db.add(item)
-
-    item.is_active = enabled
-    item.config = {
-        "url": url,
-        "pid": pid,
-        "key": key,
-        "payment_type": payment_type,
-        "notify_url": notify_url,
-        "return_url": return_url,
-    }
+    item = PaymentAdapter(
+        adapter_type=adapter_type,
+        display_name=display_name,
+        config=stored_config,
+        enabled=enabled,
+        sort_order=sort_order,
+    )
+    db.add(item)
     await db.flush()
-    return _serialize_epay_config(item)
+    return serialize_adapter_admin(item)
+
+
+@router.put("/payment-adapters/{adapter_id}")
+async def update_payment_adapter(
+    adapter_id: str,
+    body: dict,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(PaymentAdapter).where(PaymentAdapter.id == adapter_id))
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment adapter not found")
+
+    if "display_name" in body:
+        display_name = str(body.get("display_name") or "").strip()
+        if not display_name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="display_name is required")
+        item.display_name = display_name
+    if "enabled" in body:
+        item.enabled = bool(body.get("enabled"))
+    if "sort_order" in body:
+        item.sort_order = int(body.get("sort_order") or 0)
+
+    if "config" in body:
+        incoming_config = body.get("config") if isinstance(body.get("config"), dict) else {}
+        current_cfg = item.config if isinstance(item.config, dict) else {}
+        existing_key = str(current_cfg.get("key") or "")
+        stored_config, err = validate_adapter_config(
+            item.adapter_type,
+            enabled=item.enabled,
+            config=incoming_config,
+            existing_key=existing_key,
+        )
+        if err:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
+        item.config = stored_config
+    elif item.enabled:
+        current_cfg = item.config if isinstance(item.config, dict) else {}
+        existing_key = str(current_cfg.get("key") or "")
+        _, err = validate_adapter_config(
+            item.adapter_type,
+            enabled=True,
+            config=current_cfg,
+            existing_key=existing_key,
+        )
+        if err:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
+
+    await db.flush()
+    return serialize_adapter_admin(item)
+
+
+@router.delete("/payment-adapters/{adapter_id}")
+async def delete_payment_adapter(
+    adapter_id: str,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(PaymentAdapter).where(PaymentAdapter.id == adapter_id))
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment adapter not found")
+    await db.delete(item)
+    await db.flush()
+    return {"ok": True}
 
 
 @router.get("/pricing")
 async def list_pricing(admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(PricingRule).order_by(PricingRule.model.asc()))
-    rules = result.scalars().all()
-    return [_serialize_pricing_rule(r) for r in rules]
+    return await collect_pricing_catalog(db, provider_active_only=False, pricing_active_only=False)
 
 
 @router.post("/pricing")
@@ -1467,34 +1641,125 @@ async def list_orders(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user_id: str | None = Query(default=None),
+    search: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     order_type: str = Query(default="RECHARGE", alias="type"),
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(Order)
+    query = (
+        select(
+            Order,
+            User.email.label("user_email"),
+            User.nickname.label("user_nickname"),
+            PaymentAdapter.display_name.label("payment_adapter_name"),
+        )
+        .join(User, User.id == Order.user_id)
+        .outerjoin(PaymentAdapter, PaymentAdapter.id == Order.payment_adapter_id)
+    )
     if user_id:
         query = query.where(Order.user_id == user_id)
+    if search:
+        term = f"%{str(search).strip()}%"
+        query = query.where(
+            or_(
+                Order.order_no.ilike(term),
+                User.email.ilike(term),
+                User.nickname.ilike(term),
+            )
+        )
     if status_filter:
         query = query.where(Order.status == str(status_filter).strip().upper())
     if order_type:
         query = query.where(Order.type == str(order_type).strip().upper())
 
-    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
     result = await db.execute(
         query.order_by(Order.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
     )
-    orders = result.scalars().all()
+    rows = result.all()
     return {
         "orders": [
             {
-                "id": o.id, "order_no": o.order_no, "user_id": o.user_id,
-                "type": o.type, "amount": float(o.amount), "status": o.status,
+                "id": o.id,
+                "order_no": o.order_no,
+                "user_id": o.user_id,
+                "user_email": user_email,
+                "user_nickname": user_nickname,
+                "type": o.type,
+                "amount": float(o.amount),
+                "status": o.status,
                 "payment_method": o.payment_method,
+                "payment_adapter_id": o.payment_adapter_id,
+                "payment_adapter_name": payment_adapter_name,
                 "paid_at": o.paid_at.isoformat() if o.paid_at else None,
                 "created_at": o.created_at.isoformat(),
             }
-            for o in orders
+            for o, user_email, user_nickname, payment_adapter_name in rows
         ],
-        "total": total, "page": page, "page_size": page_size,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
     }
+
+
+@router.get("/usage-records")
+async def admin_list_usage_records(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    user_id: str | None = Query(default=None),
+    model: str | None = Query(default=None),
+    project_id: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.usage_records import list_usage_records
+
+    return await list_usage_records(
+        db,
+        user_id=user_id,
+        model=model,
+        project_id=project_id,
+        search=search,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        page_size=page_size,
+        include_user=True,
+        include_project=True,
+    )
+
+
+@router.get("/usage-retention-config")
+async def get_usage_retention_config_admin(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.usage_retention import get_usage_retention_config
+
+    return await get_usage_retention_config(db)
+
+
+@router.put("/usage-retention-config")
+async def upsert_usage_retention_config_admin(
+    body: dict,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.usage_retention import upsert_usage_retention_config
+
+    return await upsert_usage_retention_config(db, body)
+
+
+@router.post("/usage-records/cleanup")
+async def run_usage_retention_cleanup(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.usage_retention import enforce_usage_retention
+
+    return await enforce_usage_retention(db)

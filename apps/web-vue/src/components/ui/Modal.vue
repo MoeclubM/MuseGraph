@@ -1,8 +1,26 @@
 <script setup lang="ts">
-defineProps<{
-  show: boolean
-  title?: string
-}>()
+import { computed } from 'vue'
+
+const props = withDefaults(
+  defineProps<{
+    show: boolean
+    title?: string
+    /** Dialog max width; default `md` matches legacy max-w-lg */
+    size?: 'md' | 'lg' | 'xl'
+  }>(),
+  { size: 'md' },
+)
+
+const panelMaxWidthClass = computed(() => {
+  switch (props.size) {
+    case 'lg':
+      return 'max-w-2xl'
+    case 'xl':
+      return 'max-w-3xl'
+    default:
+      return 'max-w-lg'
+  }
+})
 
 const emit = defineEmits<{
   close: []
@@ -28,7 +46,10 @@ function onBackdrop(e: MouseEvent) {
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4"
         @mousedown="onBackdrop"
       >
-        <div class="muse-surface w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-md">
+        <div
+          class="muse-surface w-full max-h-[90vh] overflow-y-auto rounded-md"
+          :class="panelMaxWidthClass"
+        >
           <div v-if="title" class="flex items-center justify-between border-b border-stone-300 px-6 py-4 dark:border-zinc-700">
             <h2 class="text-lg font-semibold text-stone-900 dark:text-stone-100">{{ title }}</h2>
             <button

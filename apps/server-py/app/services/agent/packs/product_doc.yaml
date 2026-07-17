@@ -1,0 +1,23 @@
+text_type: product_doc
+display_name: "产品文档"
+default_skills:
+  analyzer: analyzer
+  outliner: outliner
+  writer: continuation
+  auditor: critic
+auditor_dimensions:
+  - continuity
+  - evidence_grounding
+  - structure
+  - language_quality
+  - intent_alignment
+  - actionability
+  - completeness
+unit:
+  name: section
+  default_word_count: 600
+control_docs:
+  intent: "templates/product_doc_intent.md"
+  focus: "templates/product_doc_focus.md"
+  rules: "templates/product_doc_rules.md"
+  bible: "templates/product_doc_bible.md"

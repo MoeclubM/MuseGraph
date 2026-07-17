@@ -18,6 +18,33 @@ def _scalar_one_or_none(value):
     return result
 
 
+def _http_models_client(model_ids: list[str | dict]):
+    class _FakeResponse:
+        text = ""
+        status_code = 200
+
+        def json(self):
+            return {"data": [item if isinstance(item, dict) else {"id": item} for item in model_ids]}
+
+        def raise_for_status(self):
+            return None
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, *args, **kwargs):
+            return _FakeResponse()
+
+    return _FakeAsyncClient
+
+
 class TestProviderModels:
 
     @pytest.mark.asyncio
@@ -36,6 +63,27 @@ class TestProviderModels:
 
         assert resp.status_code == 200
         assert resp.json()["models"] == ["gpt-4o-mini", "gpt-4o"]
+
+    @pytest.mark.asyncio
+    async def test_list_provider_reranker_models_normalizes(self, admin_client: AsyncClient, mock_db: AsyncMock):
+        provider = SimpleNamespace(
+            id="provider-1",
+            name="NewAPI",
+            provider="openai_compatible",
+            api_key="sk-test",
+            base_url="https://example.com/v1",
+            models={
+                "models": ["gpt-4o-mini"],
+                "embedding_models": ["Qwen3-Embedding-0.6B"],
+                "reranker_models": ["Qwen3-Reranker-0.6B"],
+            },
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(provider)
+
+        resp = await admin_client.get("/api/admin/providers/provider-1/reranker-models")
+
+        assert resp.status_code == 200
+        assert resp.json()["reranker_models"] == ["Qwen3-Reranker-0.6B"]
 
     @pytest.mark.asyncio
     async def test_add_provider_model(self, admin_client: AsyncClient, mock_db: AsyncMock):
@@ -57,6 +105,32 @@ class TestProviderModels:
         assert resp.status_code == 200
         assert resp.json()["models"] == ["gpt-4o-mini", "gpt-4.1-mini"]
         assert provider.models == ["gpt-4o-mini", "gpt-4.1-mini"]
+        mock_db.flush.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_add_provider_reranker_model(self, admin_client: AsyncClient, mock_db: AsyncMock):
+        provider = SimpleNamespace(
+            id="provider-1",
+            name="NewAPI",
+            provider="openai_compatible",
+            api_key="sk-test",
+            base_url="https://example.com/v1",
+            models={"models": ["gpt-4o-mini"], "embedding_models": ["Qwen3-Embedding-0.6B"]},
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(provider)
+
+        resp = await admin_client.post(
+            "/api/admin/providers/provider-1/reranker-models",
+            json={"model": "Qwen3-Reranker-0.6B"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["reranker_models"] == ["Qwen3-Reranker-0.6B"]
+        assert provider.models == {
+            "models": ["gpt-4o-mini"],
+            "embedding_models": ["Qwen3-Embedding-0.6B"],
+            "reranker_models": ["Qwen3-Reranker-0.6B"],
+        }
         mock_db.flush.assert_awaited()
 
     @pytest.mark.asyncio
@@ -82,40 +156,32 @@ class TestProviderModels:
         mock_db.flush.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_remove_provider_reranker_model_prunes_orphan_pricing_and_project_references(
-        self,
-        admin_client: AsyncClient,
-        mock_db: AsyncMock,
-    ):
+    async def test_remove_provider_reranker_model(self, admin_client: AsyncClient, mock_db: AsyncMock):
         provider = SimpleNamespace(
             id="provider-1",
-            name="Primary",
+            name="NewAPI",
             provider="openai_compatible",
             api_key="sk-test",
-            base_url=None,
-            models={"models": ["chat-model"], "embedding_models": [], "reranker_models": ["reranker-model"]},
+            base_url="https://example.com/v1",
+            models={
+                "models": ["gpt-4o-mini"],
+                "embedding_models": ["Qwen3-Embedding-0.6B"],
+                "reranker_models": ["Qwen3-Reranker-0.6B"],
+            },
         )
-        orphan_rule = SimpleNamespace(id="rule-1", model="reranker-model")
-        project = SimpleNamespace(
-            id=str(uuid.uuid4()),
-            component_models={"graph_reranker": "reranker-model", "graph_build": "chat-model"},
-        )
-        mock_db.execute.side_effect = [
-            _scalar_one_or_none(provider),
-            _scalars_all([]),
-            _scalars_all([orphan_rule]),
-            _scalars_all([project]),
-        ]
+        mock_db.execute.return_value = _scalar_one_or_none(provider)
 
         resp = await admin_client.delete(
             "/api/admin/providers/provider-1/reranker-models",
-            params={"model": "reranker-model"},
+            params={"model": "Qwen3-Reranker-0.6B"},
         )
 
         assert resp.status_code == 200
         assert resp.json()["reranker_models"] == []
-        mock_db.delete.assert_any_await(orphan_rule)
-        assert project.component_models == {"graph_build": "chat-model"}
+        assert provider.models == {
+            "models": ["gpt-4o-mini"],
+            "embedding_models": ["Qwen3-Embedding-0.6B"],
+        }
         mock_db.flush.assert_awaited()
 
     @pytest.mark.asyncio
@@ -133,7 +199,7 @@ class TestProviderModels:
             models={
                 "models": ["MiniMax-M2.5", "Shared-Model"],
                 "embedding_models": ["Qwen3-Embedding-0.6B"],
-                "reranker_models": ["BAAI-bge-reranker-v2-m3"],
+                "reranker_models": ["Qwen3-Reranker-0.6B"],
             },
         )
         remaining_provider = SimpleNamespace(
@@ -149,9 +215,9 @@ class TestProviderModels:
         project = SimpleNamespace(
             id=str(uuid.uuid4()),
             component_models={
-                "graph_build": "MiniMax-M2.5",
-                "graph_embedding": "Qwen3-Embedding-0.6B",
-                "graph_reranker": "BAAI-bge-reranker-v2-m3",
+                "memory_build": "MiniMax-M2.5",
+                "memory_embedding": "Qwen3-Embedding-0.6B",
+                "memory_reranker": "Qwen3-Reranker-0.6B",
                 "default": "Shared-Model",
             },
         )
@@ -223,18 +289,10 @@ class TestProviderModels:
         )
         mock_db.execute.return_value = _scalar_one_or_none(provider)
 
-        class _FakeModels:
-            async def list(self):
-                return SimpleNamespace(data=[
-                    SimpleNamespace(id="gpt-4.1-mini"),
-                    SimpleNamespace(id="gpt-4o-mini"),
-                ])
-
-        class _FakeOpenAI:
-            def __init__(self, *args, **kwargs):
-                self.models = _FakeModels()
-
-        monkeypatch.setattr("openai.AsyncOpenAI", _FakeOpenAI)
+        monkeypatch.setattr(
+            "app.routers.admin.httpx.AsyncClient",
+            _http_models_client(["gpt-4.1-mini", "gpt-4o-mini"]),
+        )
 
         resp = await admin_client.post(
             "/api/admin/providers/provider-1/models/discover",
@@ -261,18 +319,10 @@ class TestProviderModels:
         )
         mock_db.execute.return_value = _scalar_one_or_none(provider)
 
-        class _FakeModels:
-            async def list(self):
-                return SimpleNamespace(data=[
-                    SimpleNamespace(id="Qwen3-Embedding-0.6B"),
-                    SimpleNamespace(id="text-embedding-3-small"),
-                ])
-
-        class _FakeOpenAI:
-            def __init__(self, *args, **kwargs):
-                self.models = _FakeModels()
-
-        monkeypatch.setattr("openai.AsyncOpenAI", _FakeOpenAI)
+        monkeypatch.setattr(
+            "app.routers.admin.httpx.AsyncClient",
+            _http_models_client(["Qwen3-Embedding-0.6B", "text-embedding-3-small"]),
+        )
 
         resp = await admin_client.post(
             "/api/admin/providers/provider-1/embedding-models/discover",
@@ -282,12 +332,48 @@ class TestProviderModels:
         assert resp.status_code == 200
         body = resp.json()
         assert body["discovered"] == ["Qwen3-Embedding-0.6B", "text-embedding-3-small"]
+        assert body["persistable_discovered"] == ["Qwen3-Embedding-0.6B", "text-embedding-3-small"]
+        assert body["not_persisted_discovered"] == []
         assert body["embedding_models"] == ["Qwen3-Embedding-0.6B", "text-embedding-3-small"]
         assert body["persisted"] is True
         assert provider.models == {
             "models": ["gpt-4o-mini"],
-            "embedding_models": ["Qwen3-Embedding-0.6B", "text-embedding-3-small"],
-            "reranker_models": [],
+            "embedding_models": ["Qwen3-Embedding-0.6B", "text-embedding-3-small"]
+        }
+        mock_db.flush.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_discover_provider_reranker_models_persist(self, admin_client: AsyncClient, mock_db: AsyncMock, monkeypatch):
+        provider = SimpleNamespace(
+            id="provider-1",
+            name="NewAPI",
+            provider="openai_compatible",
+            api_key="sk-test",
+            base_url=None,
+            models={"models": ["gpt-4o-mini"], "embedding_models": ["Qwen3-Embedding-0.6B"]},
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(provider)
+
+        monkeypatch.setattr(
+            "app.routers.admin.httpx.AsyncClient",
+            _http_models_client(["Qwen3-Reranker-0.6B", "jina-reranker-v2-base-multilingual"]),
+        )
+
+        resp = await admin_client.post(
+            "/api/admin/providers/provider-1/reranker-models/discover",
+            params={"persist": "true"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["discovered"] == ["Qwen3-Reranker-0.6B", "jina-reranker-v2-base-multilingual"]
+        assert body["persistable_discovered"] == ["Qwen3-Reranker-0.6B", "jina-reranker-v2-base-multilingual"]
+        assert body["not_persisted_discovered"] == []
+        assert body["reranker_models"] == ["Qwen3-Reranker-0.6B", "jina-reranker-v2-base-multilingual"]
+        assert provider.models == {
+            "models": ["gpt-4o-mini"],
+            "embedding_models": ["Qwen3-Embedding-0.6B"],
+            "reranker_models": ["Qwen3-Reranker-0.6B", "jina-reranker-v2-base-multilingual"],
         }
         mock_db.flush.assert_awaited()
 
@@ -308,21 +394,10 @@ class TestProviderModels:
         )
         mock_db.execute.return_value = _scalar_one_or_none(provider)
 
-        class _FakeModels:
-            async def list(self):
-                return SimpleNamespace(
-                    data=[
-                        SimpleNamespace(id="gpt-4.1-mini"),
-                        SimpleNamespace(id="Qwen3-Embedding-0.6B"),
-                        SimpleNamespace(id="text-embedding-3-small"),
-                    ]
-                )
-
-        class _FakeOpenAI:
-            def __init__(self, *args, **kwargs):
-                self.models = _FakeModels()
-
-        monkeypatch.setattr("openai.AsyncOpenAI", _FakeOpenAI)
+        monkeypatch.setattr(
+            "app.routers.admin.httpx.AsyncClient",
+            _http_models_client(["gpt-4.1-mini", "Qwen3-Embedding-0.6B", "text-embedding-3-small"]),
+        )
 
         resp = await admin_client.post(
             "/api/admin/providers/provider-1/embedding-models/discover",
@@ -332,11 +407,94 @@ class TestProviderModels:
         assert resp.status_code == 200
         body = resp.json()
         assert body["discovered"] == ["Qwen3-Embedding-0.6B", "gpt-4.1-mini", "text-embedding-3-small"]
-        assert body["embedding_models"] == ["Qwen3-Embedding-0.6B", "gpt-4.1-mini", "text-embedding-3-small"]
+        assert body["persistable_discovered"] == ["Qwen3-Embedding-0.6B", "text-embedding-3-small"]
+        assert body["not_persisted_discovered"] == ["gpt-4.1-mini"]
+        assert body["not_persisted_reason"] == "model_kind_not_confirmed"
+        assert body["embedding_models"] == ["Qwen3-Embedding-0.6B", "text-embedding-3-small"]
         assert provider.models == {
             "models": ["gpt-4o-mini"],
-            "embedding_models": ["Qwen3-Embedding-0.6B", "gpt-4.1-mini", "text-embedding-3-small"],
-            "reranker_models": [],
+            "embedding_models": ["Qwen3-Embedding-0.6B", "text-embedding-3-small"]
+        }
+
+    @pytest.mark.asyncio
+    async def test_discover_provider_reranker_models_does_not_persist_chat_results(
+        self,
+        admin_client: AsyncClient,
+        mock_db: AsyncMock,
+        monkeypatch,
+    ):
+        provider = SimpleNamespace(
+            id="provider-1",
+            name="NewAPI",
+            provider="openai_compatible",
+            api_key="sk-test",
+            base_url=None,
+            models={"models": ["gpt-4o-mini"], "embedding_models": ["Qwen3-Embedding-0.6B"]},
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(provider)
+
+        monkeypatch.setattr(
+            "app.routers.admin.httpx.AsyncClient",
+            _http_models_client(["gpt-4.1-mini", "Qwen3-Reranker-0.6B"]),
+        )
+
+        resp = await admin_client.post(
+            "/api/admin/providers/provider-1/reranker-models/discover",
+            params={"persist": "true"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["discovered"] == ["Qwen3-Reranker-0.6B", "gpt-4.1-mini"]
+        assert body["persistable_discovered"] == ["Qwen3-Reranker-0.6B"]
+        assert body["not_persisted_discovered"] == ["gpt-4.1-mini"]
+        assert body["not_persisted_reason"] == "model_kind_not_confirmed"
+        assert body["reranker_models"] == ["Qwen3-Reranker-0.6B"]
+        assert provider.models == {
+            "models": ["gpt-4o-mini"],
+            "embedding_models": ["Qwen3-Embedding-0.6B"],
+            "reranker_models": ["Qwen3-Reranker-0.6B"],
+        }
+
+    @pytest.mark.asyncio
+    async def test_discover_provider_embedding_models_persists_structurally_identified_results(
+        self,
+        admin_client: AsyncClient,
+        mock_db: AsyncMock,
+        monkeypatch,
+    ):
+        provider = SimpleNamespace(
+            id="provider-1",
+            name="NewAPI",
+            provider="openai_compatible",
+            api_key="sk-test",
+            base_url=None,
+            models={"models": ["gpt-4o-mini"], "embedding_models": []},
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(provider)
+
+        monkeypatch.setattr(
+            "app.routers.admin.httpx.AsyncClient",
+            _http_models_client([
+                {"id": "vector-v1", "type": "embedding"},
+                {"id": "chat-v1", "type": "chat"},
+            ]),
+        )
+
+        resp = await admin_client.post(
+            "/api/admin/providers/provider-1/embedding-models/discover",
+            params={"persist": "true"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["discovered"] == ["chat-v1", "vector-v1"]
+        assert body["persistable_discovered"] == ["vector-v1"]
+        assert body["not_persisted_discovered"] == ["chat-v1"]
+        assert body["embedding_models"] == ["vector-v1"]
+        assert provider.models == {
+            "models": ["gpt-4o-mini"],
+            "embedding_models": ["vector-v1"],
         }
 
     @pytest.mark.asyncio
@@ -356,20 +514,10 @@ class TestProviderModels:
         )
         mock_db.execute.return_value = _scalar_one_or_none(provider)
 
-        class _FakeModels:
-            async def list(self):
-                return SimpleNamespace(
-                    data=[
-                        SimpleNamespace(id="gpt-4.1-mini"),
-                        SimpleNamespace(id="Qwen3-Embedding-0.6B"),
-                    ]
-                )
-
-        class _FakeOpenAI:
-            def __init__(self, *args, **kwargs):
-                self.models = _FakeModels()
-
-        monkeypatch.setattr("openai.AsyncOpenAI", _FakeOpenAI)
+        monkeypatch.setattr(
+            "app.routers.admin.httpx.AsyncClient",
+            _http_models_client(["gpt-4.1-mini", "Qwen3-Embedding-0.6B"]),
+        )
 
         resp = await admin_client.post(
             "/api/admin/providers/provider-1/models/discover",
@@ -382,12 +530,11 @@ class TestProviderModels:
         assert body["models"] == ["Qwen3-Embedding-0.6B", "gpt-4.1-mini"]
         assert provider.models == {
             "models": ["Qwen3-Embedding-0.6B", "gpt-4.1-mini"],
-            "embedding_models": ["Qwen3-Embedding-0.6B"],
-            "reranker_models": [],
+            "embedding_models": ["Qwen3-Embedding-0.6B"]
         }
 
     @pytest.mark.asyncio
-    async def test_create_provider_accepts_openai_alias(self, admin_client: AsyncClient, mock_db: AsyncMock):
+    async def test_create_provider_rejects_provider_alias(self, admin_client: AsyncClient, mock_db: AsyncMock):
         resp = await admin_client.post(
             "/api/admin/providers",
             json={
@@ -396,9 +543,8 @@ class TestProviderModels:
                 "api_key": "sk-test",
             },
         )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["provider"] == "openai_compatible"
+        assert resp.status_code == 400
+        assert "provider must be one of" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_create_provider_rejects_models_field(self, admin_client: AsyncClient, mock_db: AsyncMock):
@@ -455,6 +601,61 @@ def _scalars_first(item):
 class TestPricingRules:
 
     @pytest.mark.asyncio
+    async def test_list_pricing_includes_registered_unpriced_models(
+        self,
+        admin_client: AsyncClient,
+        mock_db: AsyncMock,
+    ):
+        provider = SimpleNamespace(
+            id="provider-newapi",
+            name="NewAPI Telecom",
+            provider="openai_compatible",
+            api_key="sk-test",
+            base_url="https://provider.example/v1",
+            models={
+                "models": ["nvidia/nemotron-3-ultra-550b-a55b:free"],
+                "embedding_models": ["Qwen3-Embedding-0.6B"],
+                "reranker_models": ["Qwen3-Reranker-0.6B"],
+            },
+        )
+        priced_rule = SimpleNamespace(
+            id="rule-embed",
+            model="Qwen3-Embedding-0.6B",
+            billing_mode="TOKEN",
+            input_price=Decimal("0.010000"),
+            output_price=Decimal("0"),
+            token_unit=1_000_000,
+            request_price=Decimal("0"),
+            is_active=True,
+        )
+        mock_db.execute.side_effect = [
+            _scalars_all([provider]),
+            _scalars_all([priced_rule]),
+        ]
+
+        resp = await admin_client.get("/api/admin/pricing")
+
+        assert resp.status_code == 200
+        body = {item["model"]: item for item in resp.json()}
+        assert body["nvidia/nemotron-3-ultra-550b-a55b:free"] == {
+            "id": None,
+            "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "model_type": "chat",
+            "providers": ["NewAPI Telecom"],
+            "has_pricing": False,
+            "billing_mode": "TOKEN",
+            "input_price": 0.0,
+            "output_price": 0.0,
+            "token_unit": 1_000_000,
+            "request_price": 0.0,
+            "is_active": False,
+        }
+        assert body["Qwen3-Embedding-0.6B"]["model_type"] == "embedding"
+        assert body["Qwen3-Embedding-0.6B"]["has_pricing"] is True
+        assert body["Qwen3-Reranker-0.6B"]["model_type"] == "reranker"
+        assert body["Qwen3-Reranker-0.6B"]["has_pricing"] is False
+
+    @pytest.mark.asyncio
     async def test_update_pricing_renames_provider_and_project_model_references(
         self,
         admin_client: AsyncClient,
@@ -479,6 +680,7 @@ class TestPricingRules:
             models={
                 "models": ["MiniMax-M2.5", "MiniMax-M2.7"],
                 "embedding_models": ["MiniMax-M2.5", "Qwen3-Embedding-0.6B"],
+                "reranker_models": ["MiniMax-M2.5", "Qwen3-Reranker-0.6B"],
             },
         )
         untouched_provider = SimpleNamespace(
@@ -487,13 +689,14 @@ class TestPricingRules:
             provider="openai_compatible",
             api_key="sk-test-2",
             base_url="https://example.org/v1",
-            models={"models": ["Other-Model"], "embedding_models": ["Embed-Only"]},
+            models={"models": ["Other-Model"], "embedding_models": ["Embed-Only"], "reranker_models": ["Rerank-Only"]},
         )
         project = SimpleNamespace(
             id=str(uuid.uuid4()),
             component_models={
                 "operation_create": "MiniMax-M2.5",
-                "graph_embedding": "MiniMax-M2.5",
+                "memory_embedding": "MiniMax-M2.5",
+                "memory_reranker": "MiniMax-M2.5",
                 "default": "MiniMax-M2.7",
             },
         )
@@ -526,15 +729,17 @@ class TestPricingRules:
         assert provider.models == {
             "models": ["MiniMax-M2.7"],
             "embedding_models": ["MiniMax-M2.7", "Qwen3-Embedding-0.6B"],
-            "reranker_models": [],
+            "reranker_models": ["MiniMax-M2.7", "Qwen3-Reranker-0.6B"],
         }
         assert untouched_provider.models == {
             "models": ["Other-Model"],
             "embedding_models": ["Embed-Only"],
+            "reranker_models": ["Rerank-Only"],
         }
         assert project.component_models == {
             "operation_create": "MiniMax-M2.7",
-            "graph_embedding": "MiniMax-M2.7",
+            "memory_embedding": "MiniMax-M2.7",
+            "memory_reranker": "MiniMax-M2.7",
             "default": "MiniMax-M2.7",
         }
         assert untouched_project.component_models == {"default": "Other-Model"}
@@ -648,6 +853,20 @@ class TestAdminUsers:
         assert resp.status_code == 204
         mock_db.delete.assert_awaited_once_with(user)
 
+    @pytest.mark.asyncio
+    async def test_reset_user_password(self, admin_client: AsyncClient, mock_db: AsyncMock):
+        user = SimpleNamespace(id="user-4", password_hash="old")
+        mock_db.execute.return_value = _scalar_one_or_none(user)
+
+        resp = await admin_client.post(
+            "/api/admin/users/user-4/password",
+            json={"password": "newpass123"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert user.password_hash != "old"
+        mock_db.flush.assert_awaited()
+
 
 class TestAdminTasks:
 
@@ -700,181 +919,110 @@ class TestAdminTasks:
         assert body["task"]["task_id"] == task.task_id
 
 
-class TestPaymentConfig:
+class TestLlmRuntimeAdminConfig:
 
     @pytest.mark.asyncio
-    async def test_get_payment_config_default(self, admin_client: AsyncClient, mock_db: AsyncMock):
+    async def test_get_llm_runtime_config_returns_defaults(self, admin_client: AsyncClient, mock_db: AsyncMock):
         mock_db.execute.return_value = _scalar_one_or_none(None)
 
-        resp = await admin_client.get("/api/admin/payment-config")
+        resp = await admin_client.get("/api/admin/llm-runtime-config")
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["enabled"] is False
-        assert body["has_key"] is False
+        assert body["llm_request_timeout_seconds"] == 180
+        assert body["llm_retry_count"] == 4
+        assert body["llm_task_concurrency"] == 4
+        assert body["llm_model_default_concurrency"] == 8
 
     @pytest.mark.asyncio
-    async def test_update_payment_config_requires_fields_when_enabled(self, admin_client: AsyncClient, mock_db: AsyncMock):
-        mock_db.execute.return_value = _scalar_one_or_none(None)
+    async def test_put_llm_runtime_config_merges_fields(self, admin_client: AsyncClient, mock_db: AsyncMock):
+        existing = SimpleNamespace(
+            id="cfg-1",
+            name="llm_runtime",
+            type="llm_runtime",
+            is_active=True,
+            config={
+                "llm_request_timeout_seconds": 120,
+                "llm_retry_count": 1,
+            },
+        )
+        mock_db.execute.return_value = _scalar_one_or_none(existing)
 
         resp = await admin_client.put(
-            "/api/admin/payment-config",
-            json={"enabled": True, "url": "", "pid": "", "key": ""},
+            "/api/admin/llm-runtime-config",
+            json={"llm_retry_count": 2, "llm_task_concurrency": 6},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["llm_request_timeout_seconds"] == 120
+        assert body["llm_retry_count"] == 2
+        assert body["llm_task_concurrency"] == 6
+        assert existing.config["llm_retry_count"] == 2
+
+
+class TestPaymentAdapters:
+
+    @pytest.mark.asyncio
+    async def test_list_payment_adapters_empty(self, admin_client: AsyncClient, mock_db: AsyncMock):
+        mock_db.execute.return_value = _scalars_all([])
+
+        resp = await admin_client.get("/api/admin/payment-adapters")
+
+        assert resp.status_code == 200
+        assert resp.json()["adapters"] == []
+
+    @pytest.mark.asyncio
+    async def test_create_payment_adapter_requires_fields_when_enabled(self, admin_client: AsyncClient, mock_db: AsyncMock):
+        resp = await admin_client.post(
+            "/api/admin/payment-adapters",
+            json={
+                "adapter_type": "epay",
+                "display_name": "EPay Main",
+                "enabled": True,
+                "config": {"url": "", "pid": "", "key": ""},
+            },
         )
 
         assert resp.status_code == 400
         assert "requires url, pid and key" in resp.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_update_payment_config_keeps_existing_key(self, admin_client: AsyncClient, mock_db: AsyncMock):
+    async def test_update_payment_adapter_keeps_existing_key(self, admin_client: AsyncClient, mock_db: AsyncMock):
         existing = SimpleNamespace(
-            type="epay",
-            is_active=True,
+            id="adapter-1",
+            adapter_type="epay",
+            display_name="EPay Main",
+            enabled=True,
+            sort_order=0,
             config={
                 "url": "https://pay.example.com",
                 "pid": "10001",
                 "key": "secret-key",
-                "payment_type": "alipay",
+                "payment_types": ["alipay"],
                 "notify_url": "",
                 "return_url": "",
             },
+            created_at=None,
+            updated_at=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(existing)
 
         resp = await admin_client.put(
-            "/api/admin/payment-config",
+            "/api/admin/payment-adapters/adapter-1",
             json={
-                "enabled": True,
-                "url": "https://pay.example.com",
-                "pid": "10001",
-                "key": "",
-                "payment_type": "wxpay",
+                "config": {
+                    "url": "https://pay.example.com",
+                    "pid": "10001",
+                    "key": "",
+                    "payment_types": ["alipay", "wxpay"],
+                },
             },
         )
 
         assert resp.status_code == 200
         body = resp.json()
         assert body["enabled"] is True
-        assert body["has_key"] is True
-        assert body["payment_type"] == "wxpay"
-
-
-class TestOasisConfig:
-
-    @pytest.mark.asyncio
-    async def test_get_oasis_config_default(self, admin_client: AsyncClient, mock_db: AsyncMock):
-        mock_db.execute.return_value = _scalar_one_or_none(None)
-
-        resp = await admin_client.get("/api/admin/oasis-config")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["max_agent_profiles"] == 16
-        assert body["llm_request_timeout_seconds"] == 180
-        assert body["llm_retry_count"] == 4
-        assert body["llm_retry_interval_seconds"] == 2.0
-        assert body["llm_prefer_stream"] is True
-        assert body["llm_stream_fallback_nonstream"] is True
-        assert body["llm_openai_api_style"] == "responses"
-        assert body["llm_reasoning_effort"] == "model_default"
-        assert body["llm_task_concurrency"] == 4
-        assert body["llm_model_default_concurrency"] == 8
-        assert body["llm_model_concurrency_overrides"] == {}
-        assert body["graphiti_chunk_size"] == 4000
-        assert body["graphiti_chunk_overlap"] == 160
-        assert body["graphiti_llm_max_tokens"] == 16384
-
-    @pytest.mark.asyncio
-    async def test_update_oasis_config_clamps_llm_retry_settings(self, admin_client: AsyncClient, mock_db: AsyncMock):
-        existing = SimpleNamespace(type="oasis", is_active=True, config={})
-        mock_db.execute.return_value = _scalar_one_or_none(existing)
-
-        resp = await admin_client.put(
-            "/api/admin/oasis-config",
-            json={
-                "llm_request_timeout_seconds": 99999,
-                "llm_retry_count": -3,
-                "llm_retry_interval_seconds": 999,
-                "llm_openai_api_style": "invalid",
-                "llm_reasoning_effort": "invalid",
-                "llm_task_concurrency": 999,
-                "llm_model_default_concurrency": 0,
-                "llm_model_concurrency_overrides": {
-                    "gpt-4o-mini": 999,
-                    "": 3,
-                    "invalid": "abc",
-                },
-                "graphiti_chunk_size": 100,
-                "graphiti_chunk_overlap": 999,
-                "graphiti_llm_max_tokens": 99999,
-            },
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["llm_request_timeout_seconds"] == 1800
-        assert body["llm_retry_count"] == 0
-        assert body["llm_retry_interval_seconds"] == 60.0
-        assert body["llm_openai_api_style"] == "responses"
-        assert body["llm_reasoning_effort"] == "model_default"
-        assert body["llm_task_concurrency"] == 64
-        assert body["llm_model_default_concurrency"] == 1
-        assert body["llm_model_concurrency_overrides"] == {"gpt-4o-mini": 64}
-        assert body["graphiti_chunk_size"] == 240
-        assert body["graphiti_chunk_overlap"] == 60
-        assert body["graphiti_llm_max_tokens"] == 16384
-
-    @pytest.mark.asyncio
-    async def test_update_oasis_config_partial_merge_preserves_existing_fields(
-        self,
-        admin_client: AsyncClient,
-        mock_db: AsyncMock,
-    ):
-        existing = SimpleNamespace(
-            type="oasis",
-            is_active=True,
-            config={
-                "analysis_prompt_prefix": "existing-analysis",
-                "max_events": 22,
-                "llm_request_timeout_seconds": 90,
-                "llm_retry_count": 4,
-                "llm_retry_interval_seconds": 2.5,
-                "llm_prefer_stream": False,
-                "llm_stream_fallback_nonstream": False,
-                "llm_openai_api_style": "chat_completions",
-                "llm_reasoning_effort": "high",
-                "llm_task_concurrency": 3,
-                "llm_model_default_concurrency": 6,
-                "llm_model_concurrency_overrides": {"gpt-4o-mini": 4},
-                "graphiti_chunk_size": 8000,
-                "graphiti_chunk_overlap": 400,
-                "graphiti_llm_max_tokens": 12000,
-            },
-        )
-        mock_db.execute.return_value = _scalar_one_or_none(existing)
-
-        resp = await admin_client.put(
-            "/api/admin/oasis-config",
-            json={
-                "llm_retry_count": 1,
-            },
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["analysis_prompt_prefix"] == "existing-analysis"
-        assert body["max_events"] == 22
-        assert body["llm_request_timeout_seconds"] == 90
-        assert body["llm_retry_count"] == 1
-        assert body["llm_retry_interval_seconds"] == 2.5
-        assert body["llm_prefer_stream"] is False
-        assert body["llm_stream_fallback_nonstream"] is False
-        assert body["llm_openai_api_style"] == "chat_completions"
-        assert body["llm_reasoning_effort"] == "high"
-        assert body["llm_task_concurrency"] == 3
-        assert body["llm_model_default_concurrency"] == 6
-        assert body["llm_model_concurrency_overrides"] == {"gpt-4o-mini": 4}
-        assert body["graphiti_chunk_size"] == 8000
-        assert body["graphiti_chunk_overlap"] == 400
-        assert body["graphiti_llm_max_tokens"] == 12000
+        assert body["config"]["has_key"] is True
+        assert body["config"]["payment_types"] == ["alipay", "wxpay"]
 

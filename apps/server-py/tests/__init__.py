@@ -24,8 +24,7 @@ def ensure_bucket() -> None:
     _storage_root().mkdir(parents=True, exist_ok=True)
 
 
-def upload_file(file_name: str, data: bytes, content_type: str) -> str:
-    del content_type  # kept for interface compatibility
+def upload_file(file_name: str, data: bytes, _content_type: str) -> str:
     ensure_bucket()
     target_path = _resolve_target_path(file_name)
     target_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,21 @@
+text_type: article
+display_name: "文章 / 博客"
+default_skills:
+  analyzer: analyzer
+  outliner: outliner
+  writer: continuation
+  auditor: critic
+auditor_dimensions:
+  - continuity
+  - evidence_grounding
+  - structure
+  - language_quality
+  - intent_alignment
+unit:
+  name: section
+  default_word_count: 1500
+control_docs:
+  intent: "templates/article_intent.md"
+  focus: "templates/article_focus.md"
+  rules: "templates/article_rules.md"
+  bible: "templates/article_bible.md"

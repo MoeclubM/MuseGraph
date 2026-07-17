@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import { getBalance, getPricing } from '@/api/billing'
 import { useAuthStore } from '@/stores/auth'
 import type { PricingRule } from '@/types'
-import { Wallet, ArrowUpRight, Receipt, Coins } from 'lucide-vue-next'
+import { Wallet, ArrowUpRight, Receipt, Coins } from '@lucide/vue'
 
 const router = useRouter()
+const { t } = useI18n()
 const authStore = useAuthStore()
 
 const rules = ref<PricingRule[]>([])
@@ -29,9 +31,13 @@ function formatUsd2(value: number): string {
 
 function formatRule(rule: PricingRule): string {
   if (rule.billing_mode === 'REQUEST') {
-    return `${formatUsd(rule.request_price)} / request`
+    return `${formatUsd(rule.request_price)}${t('pricing.perRequest')}`
   }
-  return `${formatUsd(rule.input_price)} input + ${formatUsd(rule.output_price)} output / ${rule.token_unit.toLocaleString()} tokens`
+  return t('pricing.tokenBilling', {
+    input: formatUsd(rule.input_price),
+    output: formatUsd(rule.output_price),
+    unit: rule.token_unit.toLocaleString(),
+  })
 }
 
 async function loadPricingPage() {
@@ -52,7 +58,7 @@ async function loadPricingPage() {
       authStore.setBalance(balance.value)
     }
   } catch (e: any) {
-    loadError.value = e?.response?.data?.detail || e?.message || 'Failed to load pricing'
+    loadError.value = e?.response?.data?.detail || e?.message || t('pricing.errors.loadFailed')
   } finally {
     loading.value = false
   }
@@ -65,25 +71,22 @@ onMounted(() => {
 
 <template>
   <AppLayout>
-    <div class="muse-page-shell muse-page-shell-wide">
-      <section class="muse-page-header">
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Pricing</h1>
-            <p class="mt-1 text-sm text-stone-600 dark:text-zinc-400">Models are billed per token or per request. Recharge before use.</p>
-          </div>
-          <Button v-if="authStore.isAuthenticated" variant="secondary" @click="loadPricingPage">Refresh</Button>
+    <div class="muse-page muse-page-shell muse-page-shell-wide">
+      <header class="muse-page-hero">
+        <div class="min-w-0 flex-1">
+          <h1 class="text-2xl muse-text-title">{{ t('pricing.title') }}</h1>
+          <p class="mt-2 muse-text-caption">{{ t('pricing.subtitle') }}</p>
         </div>
-      </section>
+      </header>
 
       <div v-if="authStore.isAuthenticated" class="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <Card class="border-amber-400/50">
+        <Card>
           <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-sm text-stone-600 dark:text-zinc-400">Current Balance</p>
-              <p class="mt-1 text-2xl font-bold text-stone-900 dark:text-stone-100">{{ formatUsd2(balance) }}</p>
-              <p class="mt-2 text-xs text-stone-600 dark:text-zinc-400">
-                Today: {{ formatUsd2(dailyUsage) }} · This month: {{ formatUsd2(monthlyUsage) }}
+              <p class="text-sm muse-text-muted">{{ t('pricing.currentBalance') }}</p>
+              <p class="mt-1 text-2xl font-bold muse-text-body">{{ formatUsd2(balance) }}</p>
+              <p class="mt-2 text-xs muse-text-muted">
+                {{ t('pricing.todayMonth', { today: formatUsd2(dailyUsage), month: formatUsd2(monthlyUsage) }) }}
               </p>
             </div>
             <div class="rounded-md bg-amber-500/15 p-2 text-amber-700 dark:text-amber-300">
@@ -95,27 +98,27 @@ onMounted(() => {
         <Card>
           <div class="flex h-full items-center justify-between gap-4">
             <div>
-              <p class="text-sm font-medium text-stone-900 dark:text-stone-100">Recharge Entry</p>
-              <p class="mt-1 text-xs text-stone-600 dark:text-zinc-400">Jump directly to recharge when balance is low.</p>
+              <p class="text-sm font-medium muse-text-body">{{ t('pricing.rechargeEntry') }}</p>
+              <p class="mt-1 text-xs muse-text-muted">{{ t('pricing.rechargeHint') }}</p>
             </div>
             <Button variant="primary" @click="router.push('/recharge')">
               <ArrowUpRight class="h-4 w-4" />
-              Recharge
+              {{ t('pricing.recharge') }}
             </Button>
           </div>
         </Card>
       </div>
 
       <div v-if="loading" class="flex items-center justify-center py-20">
-        <div class="h-8 w-8 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />
+        <div class="muse-spinner" />
       </div>
 
-      <div v-else-if="loadError" class="rounded-md border border-red-400/40 bg-red-100/50 p-4 text-sm text-red-700 dark:border-red-700/60 dark:bg-red-900/20 dark:text-red-300">
+      <div v-else-if="loadError" class="muse-alert-error">
         {{ loadError }}
       </div>
 
-      <div v-else-if="rules.length === 0" class="rounded-md border border-stone-300/90 bg-stone-100/70 p-8 sm:p-10 text-center text-sm text-stone-600 dark:border-zinc-700 dark:bg-zinc-800/50 dark:text-zinc-400">
-        No pricing rules are available yet.
+      <div v-else-if="rules.length === 0" class="muse-card muse-card-inset muse-card-padded p-8 sm:p-10 text-center text-sm muse-text-muted">
+        {{ t('pricing.noRules') }}
       </div>
 
       <div v-else class="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -126,7 +129,7 @@ onMounted(() => {
           :class="rule.is_active === false ? 'opacity-70' : ''"
         >
           <div class="flex items-center justify-between gap-2">
-            <h3 class="text-base font-semibold text-stone-900 break-all dark:text-stone-100">{{ rule.model }}</h3>
+            <h3 class="text-base font-semibold break-all muse-text-body">{{ rule.model }}</h3>
             <span
               class="rounded-full px-2 py-0.5 text-[11px] font-medium"
               :class="
@@ -139,18 +142,18 @@ onMounted(() => {
             </span>
           </div>
 
-          <p class="text-sm text-stone-700 dark:text-zinc-300">
+          <p class="text-sm muse-text-body">
             {{ formatRule(rule) }}
           </p>
 
-          <div class="flex items-center justify-between text-xs text-stone-600 dark:text-zinc-400">
+          <div class="flex items-center justify-between text-xs muse-text-muted">
             <span class="inline-flex items-center gap-1">
               <Receipt class="h-3.5 w-3.5" />
-              {{ rule.billing_mode === 'TOKEN' ? 'Billed by input/output tokens' : 'Fixed price per request' }}
+              {{ rule.billing_mode === 'TOKEN' ? t('pricing.billedByToken') : t('pricing.billedByRequest') }}
             </span>
             <span class="inline-flex items-center gap-1">
               <Coins class="h-3.5 w-3.5" />
-              {{ rule.is_active === false ? 'Disabled' : 'Active' }}
+              {{ rule.is_active === false ? t('pricing.disabled') : t('pricing.active') }}
             </span>
           </div>
         </Card>

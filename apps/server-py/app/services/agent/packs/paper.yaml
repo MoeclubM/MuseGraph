@@ -1,0 +1,23 @@
+text_type: paper
+display_name: "学术论文"
+default_skills:
+  analyzer: analyzer
+  outliner: outliner
+  writer: continuation
+  auditor: critic
+auditor_dimensions:
+  - continuity
+  - evidence_grounding
+  - structure
+  - language_quality
+  - intent_alignment
+  - citation_validity
+  - claim_precision
+unit:
+  name: section
+  default_word_count: 2500
+control_docs:
+  intent: "templates/paper_intent.md"
+  focus: "templates/paper_focus.md"
+  rules: "templates/paper_rules.md"
+  bible: "templates/paper_bible.md"

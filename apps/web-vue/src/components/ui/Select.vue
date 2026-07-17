@@ -1,18 +1,27 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, useAttrs } from 'vue'
 import { cva } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
+import { selectSizeClasses, type ControlSize } from '@/lib/control-sizes'
+
+defineOptions({
+  inheritAttrs: false,
+})
 
 const props = withDefaults(
   defineProps<{
     modelValue?: unknown
     disabled?: boolean
     error?: string
+    size?: ControlSize
+    ariaLabel?: string
   }>(),
   {
     modelValue: undefined,
     disabled: false,
     error: '',
+    size: 'md',
+    ariaLabel: '',
   }
 )
 
@@ -20,16 +29,24 @@ const emit = defineEmits<{
   'update:modelValue': [value: unknown]
 }>()
 
+const attrs = useAttrs()
+
 const selectVariants = cva(
-  'muse-field-base muse-focus-ring h-11 w-full cursor-pointer appearance-none rounded-md px-3.5 pr-10 text-sm outline-none',
+  'muse-field-base muse-focus-ring w-full cursor-pointer appearance-none rounded-md outline-none',
   {
     variants: {
+      size: {
+        sm: selectSizeClasses.sm,
+        md: selectSizeClasses.md,
+        lg: selectSizeClasses.lg,
+      },
       state: {
         default: '',
         error: 'muse-field-error',
       },
     },
     defaultVariants: {
+      size: 'md',
       state: 'default',
     },
   }
@@ -38,8 +55,10 @@ const selectVariants = cva(
 const classes = computed(() =>
   cn(
     selectVariants({
+      size: props.size,
       state: props.error ? 'error' : 'default',
-    })
+    }),
+    attrs.class as string | undefined
   )
 )
 
@@ -54,10 +73,12 @@ function onChange(e: Event) {
 </script>
 
 <template>
-  <div class="group relative">
+  <div class="group relative inline-block w-full">
     <select
+      v-bind="{ ...attrs, class: undefined }"
       :value="modelValue"
       :disabled="disabled"
+      :aria-label="ariaLabel || undefined"
       :class="classes"
       @change="onChange"
     >

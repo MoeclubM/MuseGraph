@@ -1,15 +1,15 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { Project, Operation, ProjectChapter } from '@/types'
+import type { Project, ProjectChapter } from '@/types'
 import * as projectsApi from '@/api/projects'
 
 export const useProjectStore = defineStore('project', () => {
   const projects = ref<Project[]>([])
   const currentProject = ref<Project | null>(null)
-  const operations = ref<Operation[]>([])
   const loading = ref(false)
   const projectLoading = ref(false)
   const chapterSaving = ref(false)
+  let fetchProjectsSeq = 0
 
   const orderedChapters = computed<ProjectChapter[]>(() => {
     const chapters = currentProject.value?.chapters || []
@@ -23,11 +23,15 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   async function fetchProjects() {
+    const seq = ++fetchProjectsSeq
     loading.value = true
     try {
-      projects.value = await projectsApi.getProjects()
+      const data = await projectsApi.getProjects()
+      if (seq !== fetchProjectsSeq) return data
+      projects.value = data
+      return data
     } finally {
-      loading.value = false
+      if (seq === fetchProjectsSeq) loading.value = false
     }
   }
 
@@ -44,7 +48,6 @@ export const useProjectStore = defineStore('project', () => {
     data: {
       title: string
       description?: string
-      simulation_requirement?: string
       component_models?: Record<string, string>
       operation_prompts?: Record<string, string>
     }
@@ -56,7 +59,7 @@ export const useProjectStore = defineStore('project', () => {
 
   async function updateProject(
     id: string,
-    data: Partial<Pick<Project, 'title' | 'description' | 'simulation_requirement' | 'component_models' | 'operation_prompts' | 'oasis_analysis'>>
+    data: Partial<Pick<Project, 'title' | 'description' | 'component_models' | 'operation_prompts'>>
   ) {
     const updated = await projectsApi.updateProject(id, data)
     applyProjectUpdate(updated)
@@ -65,16 +68,9 @@ export const useProjectStore = defineStore('project', () => {
 
   async function deleteProject(id: string) {
     await projectsApi.deleteProject(id)
+    fetchProjectsSeq += 1
     projects.value = projects.value.filter((p) => p.id !== id)
     if (currentProject.value?.id === id) currentProject.value = null
-  }
-
-  async function fetchOperations(projectId: string) {
-    try {
-      operations.value = await projectsApi.getOperations(projectId)
-    } catch {
-      operations.value = []
-    }
   }
 
   async function fetchChapters(projectId: string) {
@@ -158,7 +154,6 @@ export const useProjectStore = defineStore('project', () => {
   return {
     projects,
     currentProject,
-    operations,
     loading,
     projectLoading,
     chapterSaving,
@@ -168,7 +163,6 @@ export const useProjectStore = defineStore('project', () => {
     createProject,
     updateProject,
     deleteProject,
-    fetchOperations,
     fetchChapters,
     createChapter,
     updateChapter,

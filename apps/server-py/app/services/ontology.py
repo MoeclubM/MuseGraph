@@ -2,14 +2,10 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.config import AIProviderConfig
-from app.services.ai import DEFAULT_MODEL
-from app.services.ai import call_llm
+from app.services.ai import call_llm, require_structured_json_model
 from app.services.llm_json import StrictJsonSchemaModel, extract_json_object
-from app.services.provider_models import get_provider_chat_models
 
 
 class OntologyEntityType(StrictJsonSchemaModel):
@@ -25,21 +21,48 @@ class OntologyEdgeType(StrictJsonSchemaModel):
     description: str
 
 
+class OntologyMemoryDimension(StrictJsonSchemaModel):
+    name: str
+    description: str
+
+
 class OntologyResponse(StrictJsonSchemaModel):
+    text_type: str
+    text_type_confidence: float
+    text_type_reason: str
+    memory_dimensions: list[OntologyMemoryDimension]
     entity_types: list[OntologyEntityType]
     edge_types: list[OntologyEdgeType]
     analysis_summary: str
 
 
-_ONTOLOGY_PROMPT_MAX_CHARS = 8000
+_ONTOLOGY_PROMPT_MAX_CHARS = 50000
 _ONTOLOGY_MIN_TIMEOUT_SECONDS = 300
 _ONTOLOGY_MAX_TOKENS = 4096
+_ONTOLOGY_MAX_ENTITY_TYPES = 24
+_ONTOLOGY_MAX_EDGE_TYPES = 40
+_ONTOLOGY_MAX_MEMORY_DIMENSIONS = 12
+_TEXT_TYPE_VALUES = (
+    "fiction",
+    "screenplay",
+    "game_lore",
+    "nonfiction",
+    "academic",
+    "business",
+    "business_report",
+    "marketing",
+    "product_doc",
+    "resume",
+    "technical",
+    "poetry",
+    "other",
+)
 
 
 def _normalize_name(name: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", (name or "").strip().upper())
     cleaned = re.sub(r"_+", "_", cleaned).strip("_")
-    return cleaned[:64] or "CONCEPT"
+    return cleaned[:64]
 
 
 def _pick_first_list(data: dict[str, Any], keys: list[str]) -> list[Any]:
@@ -57,6 +80,22 @@ def _to_example_list(value: Any) -> list[str]:
         parts = re.split(r"[,\n;，；、]+", value)
         return [p.strip() for p in parts if p.strip()][:8]
     return []
+
+
+def _normalize_text_type(value: Any) -> str:
+    cleaned = re.sub(r"[^a-z0-9_]+", "_", str(value or "").strip().lower())
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return cleaned[:64]
+
+
+def _normalize_confidence(value: Any) -> float | None:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return None
+    if 0 <= confidence <= 1:
+        return confidence
+    return None
 
 
 def _normalize_entity_item(item: Any) -> dict[str, Any] | None:
@@ -82,16 +121,34 @@ def _normalize_edge_item(item: Any) -> dict[str, Any] | None:
     }
 
 
+def _normalize_dimension_item(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    name = _normalize_text_type(item.get("name"))
+    if not name:
+        return None
+    return {
+        "name": name,
+        "description": str(item.get("description") or "").strip(),
+    }
+
+
 def _normalize_ontology_payload(data: dict[str, Any]) -> dict[str, Any]:
+    dimensions_raw = _pick_first_list(data, ["memory_dimensions"])
     entities_raw = _pick_first_list(data, ["entity_types"])
     edges_raw = _pick_first_list(data, ["edge_types"])
 
+    dimensions = [normalized for normalized in (_normalize_dimension_item(item) for item in dimensions_raw) if normalized]
     entities = [normalized for normalized in (_normalize_entity_item(item) for item in entities_raw) if normalized]
     edges = [normalized for normalized in (_normalize_edge_item(item) for item in edges_raw) if normalized]
 
     analysis_summary = str(data.get("analysis_summary") or "").strip()
 
     return {
+        "text_type": _normalize_text_type(data.get("text_type")),
+        "text_type_confidence": _normalize_confidence(data.get("text_type_confidence")),
+        "text_type_reason": str(data.get("text_type_reason") or "").strip(),
+        "memory_dimensions": dimensions,
         "entity_types": entities,
         "edge_types": edges,
         "analysis_summary": analysis_summary,
@@ -99,8 +156,23 @@ def _normalize_ontology_payload(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _sanitize_ontology(data: dict[str, Any]) -> dict[str, Any]:
+    dimensions_raw = data.get("memory_dimensions") if isinstance(data.get("memory_dimensions"), list) else []
     entities_raw = data.get("entity_types") if isinstance(data.get("entity_types"), list) else []
     edges_raw = data.get("edge_types") if isinstance(data.get("edge_types"), list) else []
+
+    memory_dimensions: list[dict[str, Any]] = []
+    seen_dimensions: set[str] = set()
+    for item in dimensions_raw:
+        normalized = _normalize_dimension_item(item)
+        if not normalized:
+            continue
+        name = normalized["name"]
+        if name in seen_dimensions:
+            continue
+        seen_dimensions.add(name)
+        memory_dimensions.append(normalized)
+        if len(memory_dimensions) >= _ONTOLOGY_MAX_MEMORY_DIMENSIONS:
+            break
 
     entity_types: list[dict[str, Any]] = []
     seen_entities: set[str] = set()
@@ -111,6 +183,8 @@ def _sanitize_ontology(data: dict[str, Any]) -> dict[str, Any]:
         if not raw_name:
             continue
         name = _normalize_name(raw_name)
+        if not name:
+            continue
         if name in seen_entities:
             continue
         seen_entities.add(name)
@@ -121,10 +195,12 @@ def _sanitize_ontology(data: dict[str, Any]) -> dict[str, Any]:
                 "examples": [str(x).strip() for x in (item.get("examples") or []) if str(x).strip()][:8],
             }
         )
-        if len(entity_types) >= 24:
+        if len(entity_types) >= _ONTOLOGY_MAX_ENTITY_TYPES:
             break
 
     edge_types: list[dict[str, Any]] = []
+    valid_entity_names = {item["name"] for item in entity_types}
+    seen_edges: set[tuple[str, str, str]] = set()
     for item in edges_raw:
         if not isinstance(item, dict):
             continue
@@ -136,6 +212,14 @@ def _sanitize_ontology(data: dict[str, Any]) -> dict[str, Any]:
         name = _normalize_name(raw_name)
         source_type = _normalize_name(raw_source_type)
         target_type = _normalize_name(raw_target_type)
+        if not name or not source_type or not target_type:
+            continue
+        if source_type not in valid_entity_names or target_type not in valid_entity_names:
+            continue
+        edge_key = (name, source_type, target_type)
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
         edge_types.append(
             {
                 "name": name,
@@ -144,10 +228,14 @@ def _sanitize_ontology(data: dict[str, Any]) -> dict[str, Any]:
                 "description": str(item.get("description") or "").strip(),
             }
         )
-        if len(edge_types) >= 40:
+        if len(edge_types) >= _ONTOLOGY_MAX_EDGE_TYPES:
             break
 
     return {
+        "text_type": _normalize_text_type(data.get("text_type")),
+        "text_type_confidence": _normalize_confidence(data.get("text_type_confidence")),
+        "text_type_reason": str(data.get("text_type_reason") or "").strip(),
+        "memory_dimensions": memory_dimensions,
         "entity_types": entity_types,
         "edge_types": edge_types,
         "analysis_summary": str(data.get("analysis_summary") or "").strip(),
@@ -162,6 +250,19 @@ def _is_minimal_ontology(ontology: dict[str, Any]) -> bool:
     entity_name = str((entities[0] or {}).get("name") or "").strip().upper() if isinstance(entities[0], dict) else ""
     edge_name = str((edges[0] or {}).get("name") or "").strip().upper() if isinstance(edges[0], dict) else ""
     return entity_name == "CONCEPT" and edge_name == "RELATED_TO"
+
+
+# Narrative / story-driven text types where a CONCEPT/RELATED_TO-only
+# ontology is almost certainly too generic and should be retried.  For
+# non-narrative types (technical docs, product specs, resumes, etc.) a
+# minimal ontology may be appropriate and should not force a retry.
+_NARRATIVE_TEXT_TYPES = frozenset({"fiction", "screenplay", "game_lore", "poetry"})
+
+
+def _is_text_type_narrative(text_type: str) -> bool:
+    """Return True when *text_type* is a narrative/story-driven category."""
+    normalized = _normalize_text_type(text_type)
+    return normalized in _NARRATIVE_TEXT_TYPES
 
 
 def _build_ontology_source_excerpt(text: str, *, max_chars: int = 12000) -> str:
@@ -219,12 +320,28 @@ def _build_ontology_source_excerpt(text: str, *, max_chars: int = 12000) -> str:
 
 def _build_ontology_prompt(text: str, requirement: str | None) -> str:
     sampled_text = _build_ontology_source_excerpt(text, max_chars=_ONTOLOGY_PROMPT_MAX_CHARS)
+    text_types = ", ".join(_TEXT_TYPE_VALUES)
     return (
         "You are an ontology architect. Read the input text and propose an ontology.\n"
         "Use the provided response schema.\n"
+        f"First classify text_type as one of: {text_types}. Use lowercase snake_case.\n"
+        "Set text_type_confidence from 0 to 1 and explain the decision in text_type_reason.\n"
+        "Return 4-12 memory_dimensions: project-specific lanes that future writing must retrieve and update. "
+        "Examples: character_state, timeline_event, relationship_change, open_thread, claim_evidence, brand_voice, audience_pain, rule_constraint, feature_spec, skill_inventory, metric_definition, system_dependency.\n"
         "Rules: 8-24 entity types, 12-40 edge types, concise names in uppercase snake case.\n"
-        "Cover narrative roles, factions, places, objects, events, abilities, conflicts, motives, time points, and supernatural concepts when present.\n"
-        "Prefer concrete domain relations over generic RELATED_TO, including family, location, possession, transformation, conflict, obligation, and event participation.\n"
+        "Every edge source_type and target_type must refer to one of the returned entity type names.\n"
+        "Derive entity types and edge types from the actual content of the text. "
+        "Do not default to fiction-specific types (Person, Place, Organization) unless the text is actually narrative. "
+        "Adapt the schema and memory_dimensions to the detected text_type: "
+        "fiction needs characters/events/foreshadows/conflicts; "
+        "nonfiction needs claims/evidence/citations/concepts; "
+        "business or marketing needs products/audiences/messages/metrics; "
+        "game lore needs factions/locations/items/quests/rules; "
+        "product docs need features/specs/requirements/dependencies; "
+        "resumes need experience/skills/education/achievements; "
+        "business reports need findings/metrics/recommendations/risks; "
+        "technical docs need systems/APIs/configurations/procedures.\n"
+        "Prefer concrete domain relations over generic RELATED_TO, including family, location, possession, transformation, conflict, obligation, event participation, supports/refutes, cites, unlocks, depends_on, implements, configures, and reports_to when present.\n"
         "Do not add commentary.\n\n"
         f"Requirement:\n{(requirement or '').strip()}\n\n"
         f"Text:\n{sampled_text}"
@@ -233,15 +350,22 @@ def _build_ontology_prompt(text: str, requirement: str | None) -> str:
 
 def _build_retry_prompt(text: str, requirement: str | None) -> str:
     sampled_text = _build_ontology_source_excerpt(text, max_chars=_ONTOLOGY_PROMPT_MAX_CHARS)
+    text_types = ", ".join(_TEXT_TYPE_VALUES)
     return (
         "Build a rich ontology for the text.\n"
         "Use the provided response schema.\n"
         "Hard constraints:\n"
-        "1) At least 8 entity_types and at least 12 edge_types when the text supports them.\n"
-        "2) Do not use generic placeholders like only CONCEPT/RELATED_TO.\n"
-        "3) Use concrete relation names and valid source_type/target_type.\n"
-        "4) Preserve narrative completeness: people, places, groups, objects, events, abilities, conflicts, motives, and temporal relations.\n"
-        "5) Return only the structured result.\n\n"
+        f"0) Detect text_type as one of: {text_types}; include text_type_confidence between 0 and 1 and text_type_reason.\n"
+        "1) Include 4-12 memory_dimensions as project-specific retrieval/writeback lanes.\n"
+        "2) At least 8 entity_types and at least 12 edge_types when the text supports them.\n"
+        "3) Derive entity and edge types from the actual content; do not default to fiction-specific types for non-narrative text. "
+        "A CONCEPT/RELATED_TO-only ontology is acceptable only for non-narrative text types.\n"
+        "4) Use concrete relation names and valid source_type/target_type.\n"
+        "5) Preserve type-specific completeness: narrative state for fiction, claim/evidence structure for nonfiction, "
+        "scenario mechanics for game lore, product/audience/message structure for marketing, "
+        "feature/spec structure for product docs, experience/skills structure for resumes, "
+        "findings/metrics structure for business reports, system/API structure for technical docs.\n"
+        "6) Return only the structured result.\n\n"
         f"Requirement:\n{(requirement or '').strip()}\n\n"
         f"Text:\n{sampled_text}"
     )
@@ -274,38 +398,25 @@ async def generate_ontology(
     model: str | None = None,
 ) -> dict[str, Any]:
     payload_text = (text or "").strip()
-    selected_model = (model or "").strip() or DEFAULT_MODEL
+    selected_model = (model or "").strip()
     if not payload_text:
         raise ValueError("No source text provided for ontology generation")
+    try:
+        selected_model = require_structured_json_model(selected_model, "Ontology generation")
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
 
     provider_name = ""
     input_tokens = 0
     output_tokens = 0
     api_called = False
     try:
-        # Pick a model from active providers first.
-        result = await db.execute(
-            select(AIProviderConfig).where(AIProviderConfig.is_active == True).order_by(AIProviderConfig.priority.desc())
-        )
-        providers = result.scalars().all()
-        selected_model = (model or "").strip() or None
-        for provider in providers:
-            if selected_model:
-                break
-            provider_models = get_provider_chat_models(provider)
-            if provider_models:
-                selected_model = provider_models[0]
-                break
-        if not selected_model:
-            selected_model = DEFAULT_MODEL
-
         llm_result = await call_llm(
             selected_model,
             _build_ontology_prompt(payload_text, requirement),
             db,
             max_tokens=_ONTOLOGY_MAX_TOKENS,
             prefer_stream_override=True,
-            stream_fallback_nonstream_override=False,
             minimum_timeout_seconds=_ONTOLOGY_MIN_TIMEOUT_SECONDS,
             response_schema=OntologyResponse,
         )
@@ -328,10 +439,22 @@ async def generate_ontology(
             raise ValueError(error_code)
 
         sanitized = _sanitize_ontology(_normalize_ontology_payload(parsed))
-        needs_retry = (
+        sanitized_text_type = str(sanitized.get("text_type") or "").strip()
+        # For non-narrative text types, a CONCEPT/RELATED_TO-only ontology
+        # may be appropriate, so only flag it as "too generic" when the text
+        # is narrative (fiction, screenplay, game_lore, poetry).
+        minimal_for_narrative = (
             _is_minimal_ontology(sanitized)
+            and _is_text_type_narrative(sanitized_text_type)
+        )
+        needs_retry = (
+            minimal_for_narrative
+            or not sanitized.get("memory_dimensions")
             or not sanitized.get("entity_types")
             or not sanitized.get("edge_types")
+            or not sanitized_text_type
+            or sanitized.get("text_type_confidence") is None
+            or not str(sanitized.get("text_type_reason") or "").strip()
         )
         if needs_retry:
             retry_result = await call_llm(
@@ -340,8 +463,7 @@ async def generate_ontology(
                 db,
                 max_tokens=_ONTOLOGY_MAX_TOKENS,
                 prefer_stream_override=True,
-                stream_fallback_nonstream_override=False,
-                minimum_timeout_seconds=_ONTOLOGY_MIN_TIMEOUT_SECONDS,
+                    minimum_timeout_seconds=_ONTOLOGY_MIN_TIMEOUT_SECONDS,
                 response_schema=OntologyResponse,
             )
             input_tokens += int(retry_result.get("input_tokens") or 0)
@@ -364,16 +486,32 @@ async def generate_ontology(
                 raise ValueError(error_code)
 
             retry_sanitized = _sanitize_ontology(_normalize_ontology_payload(retry_parsed))
+            if not retry_sanitized.get("memory_dimensions"):
+                raise ValueError("retry_output_missing_memory_dimensions")
             if not retry_sanitized.get("entity_types") or not retry_sanitized.get("edge_types"):
                 raise ValueError("retry_output_missing_valid_entity_or_edge_types")
-            if _is_minimal_ontology(retry_sanitized):
+            if _is_minimal_ontology(retry_sanitized) and _is_text_type_narrative(str(retry_sanitized.get("text_type") or "")):
                 raise ValueError("retry_output_too_generic_concept_related_to")
+            if not str(retry_sanitized.get("text_type") or "").strip():
+                raise ValueError("retry_output_missing_text_type")
+            if retry_sanitized.get("text_type_confidence") is None:
+                raise ValueError("retry_output_invalid_text_type_confidence")
+            if not str(retry_sanitized.get("text_type_reason") or "").strip():
+                raise ValueError("retry_output_missing_text_type_reason")
             sanitized = retry_sanitized
 
+        if not sanitized.get("memory_dimensions"):
+            raise ValueError("llm_output_missing_memory_dimensions")
         if not sanitized["entity_types"] or not sanitized["edge_types"]:
             raise ValueError("llm_output_missing_valid_entity_or_edge_types")
-        if _is_minimal_ontology(sanitized):
+        if _is_minimal_ontology(sanitized) and _is_text_type_narrative(str(sanitized.get("text_type") or "")):
             raise ValueError("llm_output_too_generic_concept_related_to")
+        if not str(sanitized.get("text_type") or "").strip():
+            raise ValueError("llm_output_missing_text_type")
+        if sanitized.get("text_type_confidence") is None:
+            raise ValueError("llm_output_invalid_text_type_confidence")
+        if not str(sanitized.get("text_type_reason") or "").strip():
+            raise ValueError("llm_output_missing_text_type_reason")
 
         summary = (sanitized.get("analysis_summary") or "").strip()
         if not summary:
@@ -392,43 +530,52 @@ async def generate_ontology(
         raise RuntimeError(f"ontology_pipeline_failed:{type(exc).__name__}:{str(exc)[:120]}") from exc
 
 
-def build_graph_input_with_ontology(text: str, ontology: dict[str, Any] | None) -> str:
+def build_memory_input_with_ontology(text: str, ontology: dict[str, Any] | None) -> str:
     if not ontology:
         return text
-    try:
-        entities = ontology.get("entity_types") or []
-        edges = ontology.get("edge_types") or []
-        ontology_header = {
-            "entity_types": [
-                {"name": e.get("name"), "description": e.get("description")}
-                for e in entities
-                if isinstance(e, dict)
-            ],
-            "edge_types": [
-                {
-                    "name": r.get("name"),
-                    "source_type": r.get("source_type"),
-                    "target_type": r.get("target_type"),
-                }
-                for r in edges
-                if isinstance(r, dict)
-            ],
-        }
-        extraction_rules = (
-            "[GRAPH_EXTRACTION_RULES]\n"
-            "1) People, organizations, and other entities must use canonical names. Treat aliases as aliases of the same entity instead of creating new entities.\n"
-            "2) Event phrases such as deaths, funerals, or ceremonies must be modeled as event nodes instead of person entities.\n"
-            "3) Scene or location phrases must not be used as person aliases.\n"
-            "4) Preserve concrete narrative facts: kinship, meetings, travel, residence, ownership, role changes, conflicts, promises, transformations, and cause-effect events.\n"
-            "5) Keep important objects, places, factions, supernatural beings, and time points as separate nodes when they affect the story.\n"
-            "[/GRAPH_EXTRACTION_RULES]\n\n"
-        )
-        return (
-            "[ONTOLOGY_CONTEXT]\n"
-            + json.dumps(ontology_header, ensure_ascii=False)
-            + "\n[/ONTOLOGY_CONTEXT]\n\n"
-            + extraction_rules
-            + text
-        )
-    except Exception:
-        return text
+    dimensions = ontology.get("memory_dimensions") or []
+    entities = ontology.get("entity_types") or []
+    edges = ontology.get("edge_types") or []
+    ontology_header = {
+        "text_type": ontology.get("text_type"),
+        "memory_dimensions": [
+            {"name": d.get("name"), "description": d.get("description")}
+            for d in dimensions
+            if isinstance(d, dict)
+        ],
+        "entity_types": [
+            {"name": e.get("name"), "description": e.get("description")}
+            for e in entities
+            if isinstance(e, dict)
+        ],
+        "edge_types": [
+            {
+                "name": r.get("name"),
+                "source_type": r.get("source_type"),
+                "target_type": r.get("target_type"),
+            }
+            for r in edges
+            if isinstance(r, dict)
+        ],
+    }
+    extraction_rules = (
+        "[MEMORY_EXTRACTION_RULES]\n"
+        "1) Use canonical names for entities. Treat aliases, abbreviations, and alternate names as references to the same entity instead of creating separate entities.\n"
+        "2) Model significant occurrences (events, milestones, decisions, changes, transitions) as distinct nodes rather than attributes of other entities.\n"
+        "3) Distinguish between different entity categories appropriate to the text domain; do not conflate locations with actors, concepts with instances, or containers with contents.\n"
+        "4) Preserve concrete domain facts: relationships, dependencies, ownership, membership, participation, transformations, state changes, cause-effect chains, and temporal sequences.\n"
+        "5) Keep important objects, places, organizations, systems, concepts, and time points as separate nodes when they affect the content.\n"
+        "6) Classify extracted facts into the ontology memory_dimensions so retrieval can target the right lane.\n"
+        "7) Adapt extraction depth to the text type: narrative texts benefit from character/event/relationship detail; "
+        "analytical texts benefit from claim/evidence/methodology structure; "
+        "technical texts benefit from system/configuration/procedure granularity; "
+        "business texts benefit from stakeholder/product/metric/constraint clarity.\n"
+        "[/MEMORY_EXTRACTION_RULES]\n\n"
+    )
+    return (
+        "[ONTOLOGY_CONTEXT]\n"
+        + json.dumps(ontology_header, ensure_ascii=False)
+        + "\n[/ONTOLOGY_CONTEXT]\n\n"
+        + extraction_rules
+        + text
+    )

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { AdminTask } from '@/types'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
@@ -33,6 +34,8 @@ const emit = defineEmits<{
   cancel: [task: AdminTask]
   'update:filters': [value: TaskFilters]
 }>()
+
+const { t } = useI18n()
 
 function updateFilters(patch: Partial<TaskFilters>) {
   emit('update:filters', {
@@ -93,27 +96,27 @@ function isTaskCancelling(taskId: string): boolean {
 <template>
   <div class="space-y-4">
     <div>
-      <h2 class="text-base font-semibold text-stone-800 dark:text-zinc-100">Task Management</h2>
-      <p class="text-xs text-stone-500 dark:text-zinc-400">Inspect, filter, and cancel active system tasks.</p>
+      <h2 class="text-base font-semibold text-stone-800 dark:text-zinc-100">{{ t('admin.tasks.title') }}</h2>
+      <p class="text-xs text-stone-500 dark:text-zinc-400">{{ t('admin.tasks.subtitle') }}</p>
     </div>
 
     <Card class="space-y-3">
       <div class="grid gap-2 md:grid-cols-5">
-        <Select v-model="statusFilter">
-          <option value="">all status</option>
-          <option value="pending">pending</option>
-          <option value="processing">processing</option>
-          <option value="completed">completed</option>
-          <option value="failed">failed</option>
-          <option value="cancelled">cancelled</option>
+        <Select v-model="statusFilter" size="sm">
+          <option value="">{{ t('admin.tasks.allStatus') }}</option>
+          <option value="pending">{{ t('admin.tasks.statusPending') }}</option>
+          <option value="processing">{{ t('admin.tasks.statusProcessing') }}</option>
+          <option value="completed">{{ t('admin.tasks.statusCompleted') }}</option>
+          <option value="failed">{{ t('admin.tasks.statusFailed') }}</option>
+          <option value="cancelled">{{ t('admin.tasks.statusCancelled') }}</option>
         </Select>
-        <Input v-model="taskTypeFilter" placeholder="task_type" />
-        <Input v-model="projectIdFilter" placeholder="project_id" />
-        <Input v-model="userIdFilter" placeholder="user_id" />
-        <Input v-model.number="limitFilter" type="number" min="1" max="1000" />
+        <Input v-model="taskTypeFilter" size="sm" :placeholder="t('admin.tasks.taskTypePlaceholder')" />
+        <Input v-model="projectIdFilter" size="sm" :placeholder="t('admin.tasks.projectIdPlaceholder')" />
+        <Input v-model="userIdFilter" size="sm" :placeholder="t('admin.tasks.userIdPlaceholder')" />
+        <Input v-model.number="limitFilter" size="sm" type="number" min="1" max="1000" />
       </div>
       <div class="flex justify-end gap-2">
-        <Button size="sm" variant="secondary" :loading="loading" @click="emit('refresh')">Refresh</Button>
+        <Button size="sm" variant="secondary" :loading="loading" @click="emit('refresh')">{{ t('common.refresh') }}</Button>
       </div>
       <Alert v-if="error" variant="destructive">{{ error }}</Alert>
       <Alert v-if="message" variant="success">{{ message }}</Alert>
@@ -121,18 +124,18 @@ function isTaskCancelling(taskId: string): boolean {
 
     <Card :stack="false">
       <div class="pb-3 text-xs text-stone-500 dark:text-zinc-400">
-        Total: {{ total }}
+        {{ t('admin.tasks.total', { count: total }) }}
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
             <thead class="bg-stone-100/80 dark:bg-zinc-800/60">
               <tr class="border-b border-stone-300 dark:border-zinc-700">
-                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Task</th>
-                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Status</th>
-                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Progress</th>
-                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Owner</th>
-                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Message</th>
-                <th class="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">Action</th>
+                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">{{ t('admin.tasks.columns.task') }}</th>
+                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">{{ t('admin.tasks.columns.status') }}</th>
+                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">{{ t('admin.tasks.columns.progress') }}</th>
+                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">{{ t('admin.tasks.columns.owner') }}</th>
+                <th class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">{{ t('admin.tasks.columns.message') }}</th>
+                <th class="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-stone-500 dark:text-zinc-400">{{ t('admin.common.action') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -164,11 +167,11 @@ function isTaskCancelling(taskId: string): boolean {
                   <p class="mt-1 text-xs text-stone-500 dark:text-zinc-400">{{ Number(task.progress || 0) }}%</p>
                 </td>
                 <td class="px-3 py-2 align-top">
-                  <p class="text-xs text-stone-600 dark:text-zinc-300">project: {{ task.metadata?.project_id || '-' }}</p>
-                  <p class="text-xs text-stone-600 dark:text-zinc-300">user: {{ task.metadata?.user_id || '-' }}</p>
+                  <p class="text-xs text-stone-600 dark:text-zinc-300">{{ t('admin.tasks.projectLabel', { id: task.metadata?.project_id || '—' }) }}</p>
+                  <p class="text-xs text-stone-600 dark:text-zinc-300">{{ t('admin.tasks.userLabel', { id: task.metadata?.user_id || '—' }) }}</p>
                 </td>
                 <td class="px-3 py-2 align-top">
-                  <p class="max-w-[340px] text-xs text-stone-700 dark:text-zinc-200 line-clamp-3">{{ task.message || '-' }}</p>
+                  <p class="max-w-[340px] text-xs text-stone-700 dark:text-zinc-200 line-clamp-3">{{ task.message || '—' }}</p>
                   <p v-if="task.error" class="max-w-[340px] text-xs text-red-700 dark:text-red-300 line-clamp-3">{{ task.error }}</p>
                 </td>
                 <td class="px-3 py-2 align-top text-right">
@@ -180,14 +183,14 @@ function isTaskCancelling(taskId: string): boolean {
                     :disabled="isTaskCancelling(task.task_id)"
                     @click="emit('cancel', task)"
                   >
-                    Cancel
+                    {{ t('admin.tasks.cancel') }}
                   </Button>
-                  <span v-else class="text-xs text-stone-400 dark:text-zinc-500">-</span>
+                  <span v-else class="text-xs text-stone-400 dark:text-zinc-500">—</span>
                 </td>
               </tr>
               <tr v-if="!tasks.length">
                 <td colspan="6" class="px-3 py-8 text-center text-sm text-stone-500 dark:text-zinc-400">
-                  No tasks
+                  {{ t('admin.tasks.empty') }}
                 </td>
               </tr>
             </tbody>

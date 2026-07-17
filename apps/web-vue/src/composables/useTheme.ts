@@ -1,9 +1,12 @@
 import { computed, ref } from 'vue'
+import { palettes, type PaletteId } from './palettes'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
-const STORAGE_KEY = 'musegraph.theme.mode'
+const THEME_KEY = 'musegraph.theme.mode'
+const PALETTE_KEY = 'musegraph.theme.palette'
 const themeMode = ref<ThemeMode>('system')
+const paletteId = ref<PaletteId>('amber')
 const systemDark = ref(false)
 
 let mediaQuery: MediaQueryList | null = null
@@ -16,12 +19,24 @@ function resolveMode(mode: ThemeMode): 'light' | 'dark' {
   return mode
 }
 
+function applyPalette() {
+  if (typeof document === 'undefined') return
+  const root = document.documentElement
+  const resolved = resolveMode(themeMode.value)
+  const palette = palettes[paletteId.value]
+  const vars = resolved === 'dark' ? palette.dark : palette.light
+  for (const [key, value] of Object.entries(vars)) {
+    root.style.setProperty(key, value)
+  }
+}
+
 function applyThemeClass() {
   if (typeof document === 'undefined') return
   const resolved = resolveMode(themeMode.value)
   const root = document.documentElement
   root.classList.toggle('dark', resolved === 'dark')
   root.setAttribute('data-theme', resolved)
+  applyPalette()
 }
 
 function handleSystemThemeChange(event: MediaQueryListEvent) {
@@ -38,11 +53,16 @@ export function initTheme() {
   }
   systemDark.value = mediaQuery.matches
 
-  const stored = window.localStorage.getItem(STORAGE_KEY)
-  if (stored === 'light' || stored === 'dark' || stored === 'system') {
-    themeMode.value = stored
+  const storedMode = window.localStorage.getItem(THEME_KEY)
+  if (storedMode === 'light' || storedMode === 'dark' || storedMode === 'system') {
+    themeMode.value = storedMode
   } else {
     themeMode.value = 'system'
+  }
+
+  const storedPalette = window.localStorage.getItem(PALETTE_KEY) as PaletteId | null
+  if (storedPalette && palettes[storedPalette]) {
+    paletteId.value = storedPalette
   }
 
   if (!listenerBound) {
@@ -63,14 +83,24 @@ export function useTheme() {
   function setTheme(mode: ThemeMode) {
     themeMode.value = mode
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(STORAGE_KEY, mode)
+      window.localStorage.setItem(THEME_KEY, mode)
     }
     applyThemeClass()
+  }
+
+  function setPalette(id: PaletteId) {
+    paletteId.value = id
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(PALETTE_KEY, id)
+    }
+    applyPalette()
   }
 
   return {
     themeMode,
     resolvedTheme,
     setTheme,
+    paletteId,
+    setPalette,
   }
 }

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import bcrypt
+from pwdlib import PasswordHash
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,19 +9,15 @@ from app.config import settings
 from app.models.user import Session, User
 from app.redis import redis_client
 
+password_hash = PasswordHash.recommended()
+
 
 def hash_password(password: str) -> str:
-    # Truncate to 72 bytes for bcrypt
-    password_bytes = password.encode('utf-8')[:72]
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(password_bytes, salt).decode('utf-8')
+    return password_hash.hash(password)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    # Truncate to 72 bytes for bcrypt
-    plain_bytes = plain.encode('utf-8')[:72]
-    hashed_bytes = hashed.encode('utf-8')
-    return bcrypt.checkpw(plain_bytes, hashed_bytes)
+    return password_hash.verify(plain, hashed)
 
 
 async def create_session(user_id: str, db: AsyncSession) -> str:

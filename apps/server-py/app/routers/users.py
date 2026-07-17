@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,9 +8,35 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.billing import Usage
 from app.models.user import User
+from app.schemas.usage import UsageRecordListResponse
 from app.schemas.user import UserResponse, UserUsageResponse
+from app.services.usage_records import list_usage_records
 
 router = APIRouter()
+
+
+@router.get("/me/usage/details", response_model=UsageRecordListResponse)
+async def get_my_usage_details(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    model: str | None = Query(default=None),
+    project_id: str | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await list_usage_records(
+        db,
+        user_id=current_user.id,
+        model=model,
+        project_id=project_id,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        page_size=page_size,
+        include_project=True,
+    )
 
 
 @router.get("/{user_id}", response_model=UserResponse)
@@ -65,4 +91,31 @@ async def get_user_usage(user_id: str, current_user: User = Depends(get_current_
         total_cost=float(total_row[2]),
         daily_requests=daily_count,
         monthly_requests=monthly_count,
+    )
+
+
+@router.get("/{user_id}/usage/details", response_model=UsageRecordListResponse)
+async def get_user_usage_details(
+    user_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    model: str | None = Query(default=None),
+    project_id: str | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if current_user.id != user_id and not current_user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    return await list_usage_records(
+        db,
+        user_id=user_id,
+        model=model,
+        project_id=project_id,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        page_size=page_size,
+        include_project=True,
     )

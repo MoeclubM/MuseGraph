@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -21,6 +21,12 @@ class Usage(Base):
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cost: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=Decimal("0"))
+    provider: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    billing_mode: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    request_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="SUCCESS", nullable=False)
+    source: Mapped[str] = mapped_column(String(32), default="llm", nullable=False)
+    metadata_json: Mapped[Optional[dict]] = mapped_column("metadata", JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -46,6 +52,9 @@ class Order(Base):
     type: Mapped[str] = mapped_column(String(20), nullable=False)  # RECHARGE
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="PENDING")  # PENDING / PAID / CANCELLED / REFUNDED / EXPIRED
+    payment_adapter_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("payment_adapters.id", ondelete="SET NULL"), nullable=True
+    )
     payment_method: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     payment_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

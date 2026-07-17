@@ -11,7 +11,12 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.billing import Order
 from app.models.user import User
-from app.services.payment import create_payment_order, process_epay_callback, process_payment_callback
+from app.services.payment import (
+    create_payment_order,
+    process_epay_callback,
+    process_payment_callback,
+)
+from app.services.payment_adapters.registry import list_enabled_adapters
 
 router = APIRouter()
 
@@ -19,7 +24,33 @@ router = APIRouter()
 class CreateOrderRequest(BaseModel):
     type: str = "RECHARGE"
     amount: float
+    payment_adapter_id: str
     payment_method: Optional[str] = None
+
+
+@router.get("/methods")
+async def list_payment_methods(
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    adapters = await list_enabled_adapters(db)
+    return {"adapters": adapters}
+
+
+@router.get("/config")
+async def get_payment_config_legacy(
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deprecated: use GET /methods. Kept for older clients."""
+    adapters = await list_enabled_adapters(db)
+    payment_types: list[str] = []
+    for adapter in adapters:
+        for ch in adapter.get("channels", []):
+            cid = str(ch.get("id") or "")
+            if cid and cid not in payment_types:
+                payment_types.append(cid)
+    return {"enabled": bool(adapters), "payment_types": payment_types, "adapters": adapters}
 
 
 @router.post("/create")
@@ -34,20 +65,26 @@ async def create_order(
 
     callback_url = str(request.url_for("payment_callback_epay"))
     return_url = f"{settings.APP_URL.rstrip('/')}/recharge"
-    order, payment_url = await create_payment_order(
-        user_id=user.id,
-        order_type=body.type,
-        amount=body.amount,
-        payment_method=body.payment_method,
-        notify_url=callback_url,
-        return_url=return_url,
-        db=db,
-    )
+    try:
+        order, payment_url = await create_payment_order(
+            user_id=user.id,
+            order_type=body.type,
+            amount=body.amount,
+            payment_adapter_id=body.payment_adapter_id,
+            payment_method=body.payment_method,
+            notify_url=callback_url,
+            return_url=return_url,
+            db=db,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     return {
         "order_no": order.order_no,
         "amount": float(order.amount),
         "status": order.status,
         "payment_url": payment_url,
+        "payment_adapter_id": order.payment_adapter_id,
     }
 
 
@@ -57,6 +94,7 @@ def _serialize_order(order: Order) -> dict:
         "type": order.type,
         "amount": float(order.amount),
         "status": order.status,
+        "payment_adapter_id": order.payment_adapter_id,
         "payment_method": order.payment_method,
         "paid_at": order.paid_at.isoformat() if order.paid_at else None,
         "created_at": order.created_at.isoformat(),
@@ -79,6 +117,7 @@ async def payment_callback(
 @router.api_route("/callback/epay", methods=["GET", "POST"], name="payment_callback_epay")
 async def payment_callback_epay(
     request: Request,
+    adapter_id: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -87,7 +126,7 @@ async def payment_callback_epay(
             params = {str(k): str(v) for k, v in form.items()}
         else:
             params = {str(k): str(v) for k, v in request.query_params.items()}
-        await process_epay_callback(params, db)
+        await process_epay_callback(params, db, adapter_id=adapter_id)
         return PlainTextResponse("success")
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

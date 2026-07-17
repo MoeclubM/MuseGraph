@@ -167,15 +167,15 @@ class TestLogin:
 
     @pytest.mark.asyncio
     async def test_login_invalid_credentials(self):
-        from tests.conftest import _bcrypt_mock
-
         mock_db = AsyncMock()
         mock_db.add = MagicMock()
         mock_db.commit = AsyncMock()
         mock_db.rollback = AsyncMock()
 
-        # Use a mock password hash
-        user = FakeUser(email="login@example.com", password_hash="$2b$12$incorrecthash")
+        user = FakeUser(
+            email="login@example.com",
+            password_hash=hash_password("correctpassword"),
+        )
         mock_db.execute = AsyncMock(return_value=_make_scalar_result(user))
 
         async def _override_get_db():
@@ -183,18 +183,12 @@ class TestLogin:
 
         app.dependency_overrides[get_db] = _override_get_db
 
-        # Temporarily change bcrypt.checkpw to return False for this test
-        original_checkpw = _bcrypt_mock.checkpw
-        _bcrypt_mock.checkpw = MagicMock(return_value=False)
-        try:
-            transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://test") as ac:
-                resp = await ac.post("/api/auth/login", json={
-                    "email": "login@example.com",
-                    "password": "wrongpassword",
-                })
-        finally:
-            _bcrypt_mock.checkpw = original_checkpw
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.post("/api/auth/login", json={
+                "email": "login@example.com",
+                "password": "wrongpassword",
+            })
 
         assert resp.status_code == 401
         assert resp.json()["detail"] == "Invalid credentials"

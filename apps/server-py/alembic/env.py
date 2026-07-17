@@ -12,10 +12,17 @@ from app.database import Base
 # Import all models so they are registered on Base.metadata
 from app.models import (  # noqa: F401
     AIProviderConfig,
+    AgentMessage,
+    AgentSession,
+    AgentStep,
     Deposit,
     Order,
     PaymentConfig,
+    PaymentAdapter,
     PricingRule,
+    ProjectChapter,
+    ProjectFact,
+    ProjectMember,
     PromptTemplate,
     Session,
     TextOperation,

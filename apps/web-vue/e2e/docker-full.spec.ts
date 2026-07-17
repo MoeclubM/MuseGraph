@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 
 const ADMIN_EMAIL = process.env.PW_ADMIN_EMAIL || 'admin@example.com'
 const ADMIN_PASSWORD = process.env.PW_ADMIN_PASSWORD || 'Admin123!Pass'
@@ -8,7 +8,10 @@ const REQUESTED_MODEL_NAME = process.env.PW_MODEL_NAME || ''
 const REQUESTED_EMBEDDING_MODEL_NAME = process.env.PW_EMBEDDING_MODEL_NAME || ''
 const PROVIDER_API_KEY = process.env.PW_PROVIDER_API_KEY || ''
 const TEST_USER_PASSWORD = process.env.PW_TEST_USER_PASSWORD || 'User123!Pass'
-const GRAPH_FIXTURE_TEXT = `Harbor Transit Compact Fixture
+const AGENT_TIMEOUT_MS = Number(process.env.PW_AGENT_TIMEOUT_MS || 20 * 60 * 1000)
+const AGENT_POLL_MS = Number(process.env.PW_AGENT_POLL_MS || 5000)
+
+const SAMPLE_CHAPTER = `Harbor Transit Compact Fixture
 
 Lena Torres coordinates ferry operations for TideLine Ferries in Greywake Bay. After a morning traffic failure blocks East Pier, the city transport office, TideLine Ferries, the hospital, port vendors, and neighborhood representatives form a temporary coordination room.
 
@@ -42,7 +45,7 @@ interface ModelSelection {
 }
 
 test.describe('Docker Full Flow', () => {
-  test('register user, configure provider/pricing and run full project/graph/oasis flow', async ({ page, request }) => {
+  test('register user, configure provider/pricing and run agent workspace flow', async ({ page, request }) => {
     test.setTimeout(35 * 60 * 1000)
 
     const testUserEmail = `pw-user-${Date.now()}@example.com`
@@ -53,22 +56,15 @@ test.describe('Docker Full Flow', () => {
     const provider = await upsertProviderInAdminApi(request, adminToken)
     const modelSelection = await ensureProviderModelsInAdminApi(request, adminToken, provider)
     await upsertPricingInAdminApi(request, adminToken, modelSelection.model)
-    await tuneOasisRuntimeInAdminApi(request, adminToken)
+    await tuneLlmRuntimeInAdminApi(request, adminToken)
     await topUpUserBalanceInAdminApi(request, adminToken, testUserEmail, 500)
     await login(page, testUserEmail, TEST_USER_PASSWORD)
     const userToken = await getAuthToken(page)
 
-    await createProjectFromDashboard(page)
-    await runCreateOperation(page, request, userToken, modelSelection.model)
-    await replaceDraftWithCompactGraphFixture(page, request, userToken)
-    await runOntologyToGraphToOasisPipeline(
-      page,
-      request,
-      userToken,
-      modelSelection.model,
-      modelSelection.embeddingModel
-    )
-    await runContinueOperation(page, request, userToken, modelSelection.model)
+    const projectId = await createProjectFromDashboard(page)
+    await configureProjectAgentModels(request, userToken, projectId, modelSelection)
+    await seedChapterFixture(request, userToken, projectId)
+    await runAgentChatTurn(page, request, userToken, projectId, modelSelection.model)
   })
 })
 
@@ -99,8 +95,8 @@ async function loginAdminInApi(request: APIRequestContext): Promise<string> {
 async function login(page: Page, email: string, password: string) {
   await page.goto('/login')
   await page.getByPlaceholder('you@example.com').fill(email)
-  await page.getByPlaceholder('Enter your password').fill(password)
-  await page.getByRole('button', { name: 'Sign In' }).click()
+  await page.getByPlaceholder('输入密码').fill(password)
+  await page.getByRole('button', { name: '登录' }).click()
   await expect(page).toHaveURL(/\/dashboard$/)
 }
 
@@ -266,9 +262,9 @@ async function upsertPricingInAdminApi(request: APIRequestContext, token: string
   })
 }
 
-async function tuneOasisRuntimeInAdminApi(request: APIRequestContext, token: string) {
-  const current = await adminApi<Record<string, unknown>>(request, token, 'GET', '/api/admin/oasis-config')
-  await adminApi(request, token, 'PUT', '/api/admin/oasis-config', {
+async function tuneLlmRuntimeInAdminApi(request: APIRequestContext, token: string) {
+  const current = await adminApi<Record<string, unknown>>(request, token, 'GET', '/api/admin/llm-runtime-config')
+  await adminApi(request, token, 'PUT', '/api/admin/llm-runtime-config', {
     ...current,
     llm_request_timeout_seconds: 600,
     llm_retry_count: 1,
@@ -277,15 +273,6 @@ async function tuneOasisRuntimeInAdminApi(request: APIRequestContext, token: str
     llm_stream_fallback_nonstream: true,
     llm_openai_api_style: 'chat_completions',
     llm_reasoning_effort: 'low',
-    max_agent_profiles: 3,
-    max_events: 4,
-    max_agent_activity: 8,
-    min_total_hours: 3,
-    max_total_hours: 6,
-    min_minutes_per_round: 30,
-    max_minutes_per_round: 60,
-    max_actions_per_hour: 2,
-    report_prompt_prefix: 'Keep the report concise. Return only essential findings and next actions.',
   })
 }
 
@@ -311,335 +298,126 @@ async function topUpUserBalanceInAdminApi(
   })
 }
 
-async function createProjectFromDashboard(page: Page) {
+async function createProjectFromDashboard(page: Page): Promise<string> {
   e2eLog('Create project: open projects page')
   await page.goto('/projects')
-  await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible()
   await page.getByRole('button', { name: /New Project|Create Project/i }).first().click()
   await page.getByPlaceholder('Project title').fill(`E2E Full Flow ${Date.now()}`)
   await page.getByRole('button', { name: 'Create', exact: true }).click()
   await expect(page).toHaveURL(/\/projects\/[^/]+$/)
-  e2eLog('Create project: waiting for project workspace shell')
-  await expect(page.getByRole('tab', { name: /Graph \+ RAG/i })).toBeVisible({ timeout: 60000 })
-  await expect(page.getByRole('tab', { name: /AI Create/i })).toBeVisible({ timeout: 60000 })
-  await expect(page.getByRole('tab', { name: /Scenario Sim/i })).toBeVisible({ timeout: 60000 })
+  e2eLog('Create project: waiting for agent workspace')
+  await expect(page.getByTestId('agent-chat-input')).toBeVisible({ timeout: 60000 })
+  return currentProjectId(page)
 }
 
-async function openTab(page: Page, tabName: RegExp) {
-  const target = page
-    .getByRole('tab', { name: tabName })
-    .or(page.getByRole('button', { name: tabName }))
-    .first()
-  await expect(target).toBeVisible({ timeout: 60000 })
-  await target.click({ timeout: 20000 })
-}
-
-async function runCreateOperation(page: Page, request: APIRequestContext, token: string, model: string) {
-  e2eLog(`AI Create: start with model ${model}`)
-  e2eLog('AI Create: opening tab')
-  await openTab(page, /AI Create/i)
-  e2eLog('AI Create: tab open')
-  e2eLog(`AI Create: selecting model ${model}`)
-  await selectModelByLabel(page, 'Operation Model', model)
-  e2eLog('AI Create: model selected')
-  e2eLog('AI Create: filling prompt')
-  await page.getByPlaceholder('Describe theme, style, setting, and any must-have elements.').fill(
-    'Write a concise four-paragraph story under 700 words about coastal public transit coordination, competing stakeholders, and risk response.'
-  )
-  e2eLog('AI Create: filling outline')
-  await page.getByPlaceholder('Generated outline will appear here. You can edit before drafting.').fill(
-    '1. A harbor commute failure becomes a public issue.\n2. Operators and officials publish a compact pilot plan.\n3. Community representatives demand measurable checkpoints.\n4. The group reaches a practical risk response agreement.'
-  )
-  e2eLog('AI Create: clicking draft generation')
-  await clickAndWait(page.getByRole('button', { name: /Step 3\. Generate Draft|Generate Draft From Outline/i }))
-  e2eLog('AI Create: waiting for operation completion via API')
-  await waitForOperationStatus(page, request, token, 'CREATE', 300000)
-  e2eLog('AI Create: operation completed')
-  e2eLog('AI Create: waiting for project content readiness')
-  await waitForProjectContentReady(page, request, token, 180000)
-  e2eLog('AI Create: reloading workspace to refresh generated content')
-  await page.reload({ waitUntil: 'networkidle' })
-  await expect(page).toHaveURL(/\/projects\/.+/)
-}
-
-async function replaceDraftWithCompactGraphFixture(page: Page, request: APIRequestContext, token: string) {
-  e2eLog('Graph fixture: replacing generated draft with compact downstream source')
-  const editor = page.getByPlaceholder('Write chapter content here...')
-  await expect(editor).toBeVisible({ timeout: 60000 })
-  await editor.fill(GRAPH_FIXTURE_TEXT)
-  await page.getByRole('button', { name: 'Save' }).click()
-
-  const projectId = await currentProjectId(page)
-  await expect
-    .poll(
-      async () => {
-        const response = await request.fetch(`/api/projects/${projectId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (!response.ok()) return `error:${response.status()}`
-        const payload = (await response.json()) as { chapters?: Array<{ content?: string | null }> }
-        return (payload.chapters || []).some((chapter) => String(chapter.content || '').trim() === GRAPH_FIXTURE_TEXT)
-          ? 'SAVED'
-          : 'PENDING'
-      },
-      { timeout: 60000, intervals: [1000, 2000, 3000] }
-    )
-    .toBe('SAVED')
-}
-
-async function runContinueOperation(page: Page, request: APIRequestContext, token: string, model: string) {
-  e2eLog(`AI Continue: start with model ${model}`)
-  await openTab(page, /AI Create/i)
-  e2eLog('AI Continue: clicking continue mode')
-  await clickAndWait(page.getByRole('button', { name: 'Continue' }))
-  await selectModelByLabel(page, 'Operation Model', model)
-  await page.getByPlaceholder('Describe what should happen next and any writing constraints.').fill(
-    'Continue the story with risk handling, negotiation, and a realistic consensus-building outcome.'
-  )
-  await page.getByPlaceholder('Continuation outline and checks from graph analysis will appear here.').fill(
-    '1. The community and operators hold a joint coordination meeting.\n2. The main disagreements are quantified into measurable checkpoints.\n3. After rollout, feedback gradually turns positive.'
-  )
-  await clickAndWait(page.getByRole('button', { name: /Run Continue/i }))
-  e2eLog('AI Continue: waiting for operation completion via API')
-  await waitForOperationStatus(page, request, token, 'CONTINUE', 12 * 60 * 1000)
-  e2eLog('AI Continue: operation completed')
-}
-
-async function runOntologyToGraphToOasisPipeline(
-  page: Page,
+async function configureProjectAgentModels(
   request: APIRequestContext,
   token: string,
-  model: string,
-  embeddingModel: string
+  projectId: string,
+  selection: ModelSelection,
 ) {
-  await openTab(page, /Graph \+ RAG/i)
-  await expect(page.getByRole('button', { name: 'Generate Ontology' })).toBeEnabled({ timeout: 60000 })
-
-  await selectModelByLabel(page, 'Ontology Model', model)
-  await selectModelByLabel(page, 'Graph Build Model', model)
-  await selectModelByLabel(page, 'Embedding Model', embeddingModel)
-  await page.getByPlaceholder('Optional requirement').fill(
-    'Build a compact ontology for this transit coordination fixture. Return exactly 6 entity_types and exactly 8 edge_types.'
-  )
-
-  await clickAndWait(page.getByRole('button', { name: 'Generate Ontology' }))
-  await waitForLatestGraphTaskCompleted(page, request, token, 'ontology_generate', 10 * 60 * 1000)
-  await expect(page.getByText('Ontology ready')).toBeVisible({ timeout: 300000 })
-
-  e2eLog('Graph pipeline: build knowledge graph')
-  const buildGraphButtons = page.getByRole('button', { name: /Build Knowledge Graph/i })
-  e2eLog(`Graph pipeline: build button count ${await buildGraphButtons.count()}`)
-  const buildGraphButton = buildGraphButtons.first()
-  e2eLog(`Graph pipeline: build button text ${(await buildGraphButton.textContent())?.trim() || '<empty>'}`)
-  e2eLog(`Graph pipeline: build button disabled attr ${String(await buildGraphButton.getAttribute('disabled'))}`)
-  await expect(buildGraphButton).toBeEnabled({ timeout: 60000 })
-  await buildGraphButton.scrollIntoViewIfNeeded()
-  e2eLog('Graph pipeline: build button scrolled into view')
-  const buildButtonHitTest = await buildGraphButton.evaluate((el) => {
-    const rect = el.getBoundingClientRect()
-    const x = rect.left + rect.width / 2
-    const y = rect.top + rect.height / 2
-    const top = document.elementFromPoint(x, y)
-    return {
-      same: !!top && (top === el || el.contains(top)),
-      topTag: top?.tagName || null,
-      topText: (top?.textContent || '').trim().slice(0, 80),
-    }
+  const getRes = await request.fetch(`/api/projects/${projectId}`, {
+    headers: { Authorization: `Bearer ${token}` },
   })
-  e2eLog(`Graph pipeline: build button hit test ${JSON.stringify(buildButtonHitTest)}`)
-  e2eLog('Graph pipeline: clicking build button')
-  await buildGraphButton.click({ timeout: 20000 })
-  e2eLog('Graph pipeline: click returned')
-  await waitForGraphReady(page, request, token, 10 * 60 * 1000)
-  e2eLog('Graph pipeline: graph is ready')
-
-  e2eLog('Scenario pipeline: open Scenario Sim tab')
-  await openTab(page, /Scenario Sim/i)
-  await page.getByPlaceholder('Describe the scenario analysis focus').fill('Focus on behavior shifts, risk inflection points, and propagation paths.')
-  await selectModelByLabel(page, 'Analysis Model', model)
-  await selectModelByLabel(page, 'Execution Model', model)
-  await selectModelByLabel(page, 'Report Model', model)
-
-  e2eLog('Scenario pipeline: generate analysis')
-  await clickAndWait(page.getByRole('button', { name: 'Generate Scenario Analysis' }))
-  await expect(page.getByText('Scenario analysis is ready. Guidance and analysis profiles are now available for continuation workflows.'))
-    .toBeVisible({ timeout: 12 * 60 * 1000 })
-
-  e2eLog('Scenario pipeline: prepare runtime package')
-  await clickAndWait(page.getByRole('button', { name: 'Prepare Runtime Package' }))
-  await expect(page.getByText('Runtime Package:')).toBeVisible({ timeout: 12 * 60 * 1000 })
-
-  e2eLog('Scenario pipeline: execute run')
-  await clickAndWait(page.getByRole('button', { name: 'Execute Scenario Run' }))
-  await expect(page.getByText('Run:')).toBeVisible({ timeout: 12 * 60 * 1000 })
-
-  e2eLog('Scenario pipeline: generate report')
-  await clickAndWait(page.getByRole('button', { name: 'Generate OASIS Report' }))
-  await expect(page.getByText(/^Report: report_/).first()).toBeVisible({ timeout: 12 * 60 * 1000 })
+  if (!getRes.ok()) {
+    throw new Error(`GET /api/projects/${projectId} failed: ${getRes.status()}`)
+  }
+  const project = (await getRes.json()) as { component_models?: Record<string, string> }
+  const componentModels = {
+    ...(project.component_models || {}),
+    operation_agent_task: selection.model,
+    memory_build: selection.model,
+    memory_embedding: selection.embeddingModel,
+    memory_reranker: process.env.PW_RERANKER_MODEL || selection.embeddingModel,
+  }
+  const putRes = await request.fetch(`/api/projects/${projectId}`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    data: { component_models: componentModels },
+  })
+  if (!putRes.ok()) {
+    throw new Error(`PUT /api/projects/${projectId} failed: ${putRes.status()}`)
+  }
 }
 
-async function waitForOperationStatus(
+async function seedChapterFixture(request: APIRequestContext, token: string, projectId: string) {
+  e2eLog('Agent flow: seed chapter fixture via API')
+  const response = await request.fetch(`/api/projects/${projectId}/chapters`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    data: { title: 'E2E Harbor Fixture', content: SAMPLE_CHAPTER },
+  })
+  if (!response.ok()) {
+    const detail = (await response.text()).slice(0, 800)
+    throw new Error(`POST chapter failed: ${response.status()} ${detail}`)
+  }
+}
+
+async function runAgentChatTurn(
   page: Page,
   request: APIRequestContext,
   token: string,
-  type: 'CREATE' | 'CONTINUE',
-  timeoutMs: number
+  projectId: string,
+  model: string,
 ) {
-  const projectId = await currentProjectId(page)
-  const startedAt = Date.now()
-  const intervals = [1000, 2000, 3000, 5000]
-  let attempt = 0
-  let lastState = 'missing'
+  e2eLog('Agent flow: send chat from workspace UI')
+  const textarea = page.getByTestId('agent-chat-input')
+  await textarea.fill(
+    '请简要分析这段港口交通协调素材中的主要角色与冲突，并给出 3 条可执行的后续写作建议。'
+  )
+  const select = page.locator('select').first()
+  if (await select.count()) {
+    await select.selectOption(model)
+  }
+  const chatResponse = page.waitForResponse(
+    (res) =>
+      res.url().includes(`/api/projects/${projectId}/agent/chat`)
+      && res.request().method() === 'POST'
+      && res.status() === 202,
+    { timeout: 60000 },
+  )
+  await page.getByTestId('agent-send-button').click()
+  const response = await chatResponse
+  const payload = (await response.json()) as { session_id: string }
+  await waitForAgentSession(request, token, projectId, payload.session_id)
+  e2eLog('Agent flow: session completed')
+}
 
-  while (Date.now() - startedAt < timeoutMs) {
-    const response = await request.fetch(`/api/projects/${projectId}/operations`, {
+async function waitForAgentSession(
+  request: APIRequestContext,
+  token: string,
+  projectId: string,
+  sessionId: string,
+  timeoutMs = AGENT_TIMEOUT_MS,
+) {
+  const deadline = Date.now() + timeoutMs
+  let lastStatus = 'unknown'
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, AGENT_POLL_MS))
+    const response = await request.fetch(`/api/projects/${projectId}/agent/chat/${sessionId}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
     if (!response.ok()) {
-      lastState = `error:${response.status()}`
-    } else {
-      const payload = (await response.json()) as Array<{
-        type?: string
-        status?: string
-        output?: string | null
-        error?: string | null
-        message?: string | null
-      }>
-      const match = payload.find((item) => String(item.type || '').toUpperCase() === type)
-      if (!match) {
-        lastState = 'missing'
-      } else {
-        const status = String(match.status || '').toUpperCase()
-        if (status === 'FAILED') {
-          const detail = String(match.error || match.message || '').trim()
-          throw new Error(detail ? `${type} failed: ${detail}` : `${type} failed`)
-        }
-        if (status === 'COMPLETED' && String(match.output || '').trim()) {
-          return
-        }
-        lastState = status || 'pending'
-      }
+      lastStatus = `error:${response.status()}`
+      continue
     }
-
-    await page.waitForTimeout(intervals[Math.min(attempt, intervals.length - 1)])
-    attempt += 1
-  }
-
-  throw new Error(`Timed out waiting for ${type}, last state: ${lastState}`)
-}
-
-async function waitForProjectContentReady(
-  page: Page,
-  request: APIRequestContext,
-  token: string,
-  timeoutMs: number
-) {
-  const projectId = await currentProjectId(page)
-  await expect
-    .poll(
-      async () => {
-        const response = await request.fetch(`/api/projects/${projectId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (!response.ok()) return `error:${response.status()}`
-        const payload = (await response.json()) as {
-          content?: string | null
-          chapters?: Array<{ content?: string | null }>
-        }
-        const projectContent = String(payload.content || '').trim()
-        const chapterReady = Array.isArray(payload.chapters)
-          ? payload.chapters.some((chapter) => String(chapter?.content || '').trim().length > 0)
-          : false
-        return projectContent.length > 0 || chapterReady ? 'READY' : 'EMPTY'
-      },
-      { timeout: timeoutMs, intervals: [1000, 2000, 3000, 5000] }
-    )
-    .toBe('READY')
-}
-
-async function waitForGraphReady(page: Page, request: APIRequestContext, token: string, timeoutMs: number) {
-  e2eLog('Graph pipeline: waiting for graph readiness')
-  const projectId = await currentProjectId(page)
-  await expect
-    .poll(
-      async () => {
-        const [statusResponse, taskResponse] = await Promise.all([
-          request.fetch(`/api/projects/${projectId}/graphs`, {
-            headers: { Authorization: `Bearer ${token}` },
-          }),
-          request.fetch(`/api/projects/${projectId}/graphs/tasks?task_type=graph_build&limit=5`, {
-            headers: { Authorization: `Bearer ${token}` },
-          }),
-        ])
-        if (!statusResponse.ok()) return 'error'
-        const payload = (await statusResponse.json()) as { status?: string; graph_freshness?: string }
-
-        if (taskResponse.ok()) {
-          const taskPayload = (await taskResponse.json()) as {
-            tasks?: Array<{ status?: string; error?: string | null; message?: string | null }>
-          }
-          const latestTask = (taskPayload.tasks || [])[0]
-          if (latestTask && String(latestTask.status || '').toLowerCase() === 'failed') {
-            return `failed:${String(latestTask.error || latestTask.message || 'Graph build task failed')}`
-          }
-        }
-
-        if (payload.status !== 'ready') return payload.status || 'pending'
-        if (payload.graph_freshness === 'syncing') return 'syncing'
-        return 'ready'
-      },
-      { timeout: timeoutMs, intervals: [1000, 2000, 3000, 5000] }
-    )
-    .toBe('ready')
-}
-
-async function waitForLatestGraphTaskCompleted(
-  page: Page,
-  request: APIRequestContext,
-  token: string,
-  taskType: string,
-  timeoutMs: number
-) {
-  const projectId = await currentProjectId(page)
-  const startedAt = Date.now()
-  const intervals = [1000, 2000, 3000, 5000]
-  let attempt = 0
-  let lastState = 'missing'
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const response = await request.fetch(
-      `/api/projects/${projectId}/graphs/tasks?task_type=${encodeURIComponent(taskType)}&limit=5`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    )
-    if (!response.ok()) {
-      lastState = `error:${response.status()}`
-    } else {
-      const payload = (await response.json()) as {
-        tasks?: Array<{ status?: string; error?: string | null; message?: string | null }>
+    const session = (await response.json()) as { status?: string }
+    lastStatus = String(session.status || '')
+    if (['completed', 'failed', 'partial'].includes(lastStatus)) {
+      if (lastStatus === 'failed') {
+        throw new Error(`Agent session failed: ${sessionId}`)
       }
-      const task = (payload.tasks || [])[0]
-      if (!task) {
-        lastState = 'missing'
-      } else {
-        const status = String(task.status || '').toLowerCase()
-        if (status === 'failed') {
-          const detail = String(task.error || task.message || '').trim()
-          throw new Error(detail ? `${taskType} failed: ${detail}` : `${taskType} failed`)
-        }
-        if (status === 'cancelled') {
-          const detail = String(task.message || '').trim()
-          throw new Error(detail ? `${taskType} cancelled: ${detail}` : `${taskType} cancelled`)
-        }
-        if (status === 'completed') return
-        lastState = status || 'pending'
-      }
+      return
     }
-
-    await page.waitForTimeout(intervals[Math.min(attempt, intervals.length - 1)])
-    attempt += 1
   }
-
-  throw new Error(`Timed out waiting for ${taskType}, last state: ${lastState}`)
+  throw new Error(`Agent session timed out (last status: ${lastStatus})`)
 }
 
 async function currentProjectId(page: Page): Promise<string> {
@@ -649,37 +427,3 @@ async function currentProjectId(page: Page): Promise<string> {
   }
   return match[1]
 }
-
-async function selectModelByLabel(page: Page, label: string, model: string) {
-  const field = page.getByText(label, { exact: true }).locator('xpath=ancestor::*[.//select][1]').first()
-  const select = field.locator('select').first()
-  await expect(select).toBeVisible({ timeout: 180000 })
-  await expect(select).toBeEnabled({ timeout: 180000 })
-  await select.scrollIntoViewIfNeeded()
-  await expect
-    .poll(async () => select.locator(`option[value="${model}"]`).count(), { timeout: 180000 })
-    .toBeGreaterThan(0)
-  await select.selectOption({ value: model })
-}
-
-async function clickAndWait(locator: Locator) {
-  await expect(locator).toBeVisible({ timeout: 60000 })
-  await locator.scrollIntoViewIfNeeded()
-  await locator.click({ timeout: 20000 })
-}
-
-async function logout(page: Page) {
-  e2eLog('Logout and cleanup session')
-  await page.evaluate(() => {
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
-  })
-  await page.context().clearCookies()
-  await page.goto('/login')
-  await expect(page).toHaveURL(/\/login$/)
-}
-
-
-
-
-

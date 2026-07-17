@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onActivated, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useProjectStore } from '@/stores/project'
 import { useToast } from '@/composables/useToast'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
-import Textarea from '@/components/ui/Textarea.vue'
 import Modal from '@/components/ui/Modal.vue'
-import { Plus, FileText, Clock } from 'lucide-vue-next'
+import { Plus, FileText, Clock } from '@lucide/vue'
 
+const route = useRoute()
 const router = useRouter()
+const { t, locale } = useI18n()
 const projectStore = useProjectStore()
 const toast = useToast()
 
@@ -20,9 +22,19 @@ const newTitle = ref('')
 const newDescription = ref('')
 const creating = ref(false)
 
-onMounted(() => {
-  projectStore.fetchProjects()
-})
+function refreshProjects() {
+  void projectStore.fetchProjects()
+}
+
+onMounted(refreshProjects)
+onActivated(refreshProjects)
+
+watch(
+  () => route.name,
+  (name) => {
+    if (name === 'projects') refreshProjects()
+  }
+)
 
 async function handleCreate() {
   if (!newTitle.value.trim()) return
@@ -35,7 +47,7 @@ async function handleCreate() {
     showCreateModal.value = false
     newTitle.value = ''
     newDescription.value = ''
-    toast.success('Project created successfully')
+    toast.success(t('toast.projectCreated'))
     router.push(`/projects/${project.id}`)
   } catch {
     // API interceptor handles the error toast
@@ -45,7 +57,7 @@ async function handleCreate() {
 }
 
 function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleDateString('en-US', {
+  return new Date(dateStr).toLocaleDateString(locale.value === 'zh-CN' ? 'zh-CN' : 'en-US', {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -57,31 +69,29 @@ function formatDate(dateStr: string) {
 
 <template>
   <AppLayout>
-    <div class="muse-page-shell muse-page-shell-standard">
-      <section class="muse-page-header">
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <h1 class="text-2xl font-bold text-stone-900 dark:text-stone-100">Projects</h1>
-            <p class="mt-1 text-sm text-stone-600 dark:text-stone-400">Manage files and chapter-based projects</p>
-          </div>
-          <Button variant="primary" @click="showCreateModal = true">
-            <Plus class="w-4 h-4" />
-            New Project
-          </Button>
+    <div class="muse-page muse-page-shell muse-page-shell-standard">
+      <header class="muse-page-hero">
+        <div class="min-w-0 flex-1">
+          <h1 class="text-2xl muse-text-title">{{ t('projects.title') }}</h1>
+          <p class="mt-2 muse-text-caption">{{ t('projects.subtitle') }}</p>
         </div>
-      </section>
+        <Button variant="primary" class="shrink-0" @click="showCreateModal = true">
+          <Plus class="w-4 h-4" />
+          {{ t('projects.newProject') }}
+        </Button>
+      </header>
 
       <Card v-if="projectStore.loading" class="flex items-center justify-center py-20">
-        <div class="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent" />
+        <div class="muse-spinner" />
       </Card>
 
       <Card v-else-if="projectStore.projects.length === 0" class="py-20 text-center">
         <FileText class="w-12 h-12 mx-auto text-stone-500 dark:text-zinc-500 mb-4" />
-        <h2 class="text-lg font-medium text-stone-800 dark:text-stone-200 mb-2">No projects yet</h2>
-        <p class="text-sm text-stone-600 dark:text-zinc-400 mb-6">Create your first project to get started with AI-powered writing.</p>
+        <h2 class="text-lg font-medium muse-text-body mb-2">{{ t('projects.empty.title') }}</h2>
+        <p class="text-sm muse-text-muted mb-6">{{ t('projects.empty.hint') }}</p>
         <Button variant="primary" @click="showCreateModal = true">
           <Plus class="w-4 h-4" />
-          Create Project
+          {{ t('projects.createProject') }}
         </Button>
       </Card>
 
@@ -90,23 +100,24 @@ function formatDate(dateStr: string) {
           <Card
             v-for="project in projectStore.projects"
             :key="project.id"
-            class="cursor-pointer hover:border-amber-400/70 transition-colors group"
+            variant="interactive"
+            class="group flex flex-col"
             @click="router.push(`/projects/${project.id}`)"
           >
-            <div class="flex flex-col h-full">
-              <h3 class="text-base font-semibold text-stone-900 dark:text-stone-100 group-hover:text-amber-700 dark:group-hover:text-amber-300 transition-colors truncate">
+            <div class="flex min-h-0 flex-1 flex-col">
+              <h3 class="truncate text-base font-semibold muse-text-body transition-colors group-hover:muse-text-accent">
                 {{ project.title }}
               </h3>
-              <p v-if="project.description" class="text-sm text-stone-700 dark:text-zinc-300 mt-1 line-clamp-2">
+              <p v-if="project.description" class="text-sm muse-text-muted mt-1 line-clamp-2">
                 {{ project.description }}
               </p>
               <p
                 v-if="project.chapters?.length && (project.chapters[0]?.content || '').trim()"
-                class="text-xs text-stone-600 dark:text-zinc-400 mt-2 line-clamp-2"
+                class="text-xs muse-text-faint mt-2 line-clamp-2"
               >
                 {{ (project.chapters[0]?.content || '').substring(0, 120) }}{{ (project.chapters[0]?.content || '').length > 120 ? '...' : '' }}
               </p>
-              <div class="flex items-center gap-1.5 mt-auto pt-3 text-xs text-stone-600 dark:text-zinc-400">
+              <div class="flex items-center gap-1.5 mt-auto pt-3 text-xs muse-text-muted">
                 <Clock class="w-3.5 h-3.5" />
                 {{ formatDate(project.updated_at) }}
               </div>
@@ -116,25 +127,22 @@ function formatDate(dateStr: string) {
       </Card>
     </div>
 
-    <Modal :show="showCreateModal" title="New Project" @close="showCreateModal = false">
+    <Modal :show="showCreateModal" :title="t('projects.modal.title')" @close="showCreateModal = false">
       <form class="space-y-4" @submit.prevent="handleCreate">
         <Input
           v-model="newTitle"
-          label="Title"
-          placeholder="Project title"
+          :label="t('projects.modal.titleLabel')"
+          :placeholder="t('projects.modal.titlePlaceholder')"
         />
-        <div class="space-y-1.5">
-          <label class="block text-sm font-medium text-stone-700 dark:text-zinc-300">Description (optional)</label>
-          <Textarea
-            v-model="newDescription"
-            placeholder="Brief description of your project"
-            :rows="3"
-          />
-        </div>
+        <Input
+          v-model="newDescription"
+          :label="t('projects.modal.descriptionLabel')"
+          :placeholder="t('projects.modal.descriptionPlaceholder')"
+        />
         <div class="flex justify-end gap-3 pt-2">
-          <Button variant="ghost" @click="showCreateModal = false">Cancel</Button>
+          <Button variant="ghost" @click="showCreateModal = false">{{ t('common.cancel') }}</Button>
           <Button type="submit" variant="primary" :loading="creating" :disabled="!newTitle.trim()">
-            Create
+            {{ t('common.create') }}
           </Button>
         </div>
       </form>

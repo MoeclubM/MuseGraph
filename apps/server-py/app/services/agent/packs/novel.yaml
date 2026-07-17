@@ -1,0 +1,23 @@
+text_type: novel
+display_name: "长篇小说"
+default_skills:
+  analyzer: analyzer
+  outliner: outliner
+  writer: continuation
+  auditor: critic
+auditor_dimensions:
+  - continuity
+  - evidence_grounding
+  - structure
+  - language_quality
+  - intent_alignment
+  - foreshadowing
+  - character_voice
+unit:
+  name: chapter
+  default_word_count: 3500
+control_docs:
+  intent: "templates/novel_intent.md"
+  focus: "templates/novel_focus.md"
+  rules: "templates/novel_rules.md"
+  bible: "templates/novel_bible.md"

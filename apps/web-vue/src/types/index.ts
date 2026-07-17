@@ -24,58 +24,7 @@ export interface ProjectOntology {
   }
 }
 
-export interface ContinuationGuidance {
-  must_follow: string[]
-  next_steps: string[]
-  avoid: string[]
-}
-
-export interface OasisAgentProfile {
-  name: string
-  role: string
-  persona: string
-  stance: string
-  likely_actions: string[]
-}
-
-export interface OasisTimeConfig {
-  total_hours: number
-  minutes_per_round: number
-  peak_hours: number[]
-  off_peak_hours: number[]
-}
-
-export interface OasisSimulationEvent {
-  title: string
-  trigger_hour: number
-  description: string
-}
-
-export interface OasisAgentActivity {
-  name: string
-  activity_level: number
-  actions_per_hour: number
-  response_delay_minutes: number
-  stance: string
-}
-
-export interface OasisSimulationConfig {
-  time_config: OasisTimeConfig
-  events: OasisSimulationEvent[]
-  agent_activity: OasisAgentActivity[]
-}
-
-export interface ProjectOasisAnalysis {
-  scenario_summary: string
-  continuation_guidance?: ContinuationGuidance
-  agent_profiles: OasisAgentProfile[]
-  simulation_config?: OasisSimulationConfig
-  latest_package?: Record<string, any>
-  latest_run?: Record<string, any>
-  latest_report?: Record<string, any>
-}
-
-export interface OasisTask {
+export interface AsyncTaskInfo {
   task_id: string
   task_type: string
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
@@ -89,7 +38,7 @@ export interface OasisTask {
   metadata?: Record<string, any> | null
 }
 
-export interface AdminTask extends OasisTask {}
+export interface AdminTask extends AsyncTaskInfo {}
 
 export interface AdminTaskListResponse {
   tasks: AdminTask[]
@@ -109,6 +58,39 @@ export interface User {
   is_admin: boolean
   status: 'ACTIVE' | 'SUSPENDED' | 'DELETED'
   created_at: string
+}
+
+export interface UsageRecordItem {
+  id: string
+  user_id: string
+  user_email?: string | null
+  user_nickname?: string | null
+  project_id?: string | null
+  project_title?: string | null
+  operation_id?: string | null
+  model?: string | null
+  provider?: string | null
+  input_tokens: number
+  output_tokens: number
+  cost: number
+  billing_mode?: string | null
+  request_id?: string | null
+  status: string
+  source: string
+  metadata?: Record<string, unknown> | null
+  created_at?: string | null
+}
+
+export interface UsageRecordListResponse {
+  records: UsageRecordItem[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface UsageRetentionConfig {
+  retention_days: number | null
+  max_records: number | null
 }
 
 export interface UserUsage {
@@ -170,86 +152,139 @@ export interface ProjectChapter {
   updated_at: string
 }
 
-export interface ProjectCharacter {
-  id: string
-  project_id: string
-  name: string
-  role: string | null
-  profile: string | null
-  notes: string | null
-  order_index: number
-  created_at: string
-  updated_at: string
-}
-
-export interface ProjectGlossaryTerm {
-  id: string
-  project_id: string
-  term: string
-  definition: string
-  aliases: string[] | null
-  notes: string | null
-  order_index: number
-  created_at: string
-  updated_at: string
-}
-
-export interface ProjectWorldbookEntry {
-  id: string
-  project_id: string
-  title: string
-  category: string | null
-  content: string
-  tags: string[] | null
-  notes: string | null
-  order_index: number
-  created_at: string
-  updated_at: string
-}
+export type ProjectVisibility = 'private' | 'public'
 
 export interface Project {
   id: string
   user_id: string
   title: string
   description: string | null
-  simulation_requirement?: string | null
+  visibility?: ProjectVisibility
+  current_user_role?: string | null
+  current_user_permissions?: string[]
   component_models?: ComponentModelConfig | null
   operation_prompts?: OperationPromptConfig | null
   ontology_schema?: ProjectOntology | null
-  oasis_analysis?: ProjectOasisAnalysis | null
-  graph_id: string | null
+  creative_state?: ProjectCreativeState | null
   chapters?: ProjectChapter[]
   created_at: string
   updated_at: string
 }
 
-export interface ProjectSearchResult {
-  item_type: 'chapter' | 'character' | 'glossary_term' | 'worldbook_entry'
-  item_id: string
+export interface PublicProject {
+  id: string
   title: string
-  matched_field: string
-  snippet: string
-  order_index: number
+  description: string | null
+  visibility: 'public'
+  author_nickname?: string | null
+  current_user_role?: string | null
+  current_user_permissions?: string[]
+  created_at: string
+  updated_at: string
 }
 
-export interface Operation {
-  id: string
+// ---- Pi Agent workspace types ----
+
+export type AgentSessionStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'partial'
+  | string
+
+export interface AgentMessage {
+  id?: string
+  role: string
+  content: string
+  created_at?: string
+  [key: string]: any
+}
+
+export interface AgentStep {
+  id?: string
+  step_id?: string
+  step?: number
+  total_steps?: number
+  step_type?: string
+  title?: string
+  message?: string
+  tool?: string
+  status?: string
+  output?: string
+  tool_result_preview?: string
+  child_session_id?: string
+  agent_role?: string
+  model?: string
+  created_at?: string
+  [key: string]: any
+}
+
+export interface AgentWorkspaceGraph {
+  nodes?: Record<string, any>[]
+  edges?: Record<string, any>[]
+  [key: string]: any
+}
+
+export interface AgentWorkspace {
+  structured_memory?: Record<string, any>
+  graph?: AgentWorkspaceGraph
+  writing_plan?: Record<string, any> | string | null
+  last_task?: Record<string, any> | string | null
+  [key: string]: any
+}
+
+export interface ProjectCreativeState {
+  agent_workspace?: AgentWorkspace | null
+  [key: string]: any
+}
+
+export interface AgentSessionSummary {
+  session_id: string
   project_id: string
-  type: 'CREATE' | 'CONTINUE' | 'ANALYZE' | 'REWRITE' | 'SUMMARIZE'
-  input: string | null
-  output: string | null
-  model: string | null
-  input_tokens: number
-  output_tokens: number
-  cost: number
-  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'
-  error: string | null
-  progress: number
-  message: string | null
-  metadata: Record<string, any> | null
+  role: string
+  parent_session_id?: string | null
+  root_session_id?: string | null
+  parent_step_id?: string | null
+  title: string | null
+  status: AgentSessionStatus
+  message_count: number
+  archived_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentSessionSnapshot {
+  session_id: string
+  project_id: string
+  role: string
+  parent_session_id?: string | null
+  root_session_id?: string | null
+  parent_step_id?: string | null
+  title: string | null
+  status: AgentSessionStatus
+  model: string
+  messages: AgentMessage[]
+  steps: AgentStep[]
+  children: Record<string, any>[]
+  agent_workspace: AgentWorkspace | null
+  plan?: Record<string, any> | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentChatAccepted {
+  session_id: string
+  message_id: string
+  status: string
   created_at: string
 }
 
+export interface AgentSuggestResult {
+  suggestions: Record<string, any>[]
+  memory_queries: string[]
+  raw: string
+}
 export interface GraphNode {
   id: string
   label: string
@@ -267,25 +302,6 @@ export interface GraphEdge {
 export interface GraphData {
   nodes: GraphNode[]
   edges: GraphEdge[]
-}
-
-export interface GraphStatus {
-  graph_id?: string | null
-  status: string
-  ontology_status?: string | null
-  oasis_status?: string | null
-  graph_freshness?: 'no_ontology' | 'empty' | 'syncing' | 'stale' | 'fresh' | null
-  graph_reason?: string | null
-  graph_changed_count?: number | null
-  graph_added_count?: number | null
-  graph_modified_count?: number | null
-  graph_removed_count?: number | null
-  graph_last_build_at?: string | null
-  graph_mode?: string | null
-  graph_syncing_task_id?: string | null
-  graph_resume_available?: boolean | null
-  graph_resume_failed_chunks?: number | null
-  graph_resume_mode?: string | null
 }
 
 export interface AuthResponse {
@@ -391,42 +407,32 @@ export interface Provider {
   priority: number
 }
 
-export interface OasisConfig {
-  analysis_prompt_prefix: string
-  simulation_prompt_prefix: string
-  report_prompt_prefix: string
-  max_agent_profiles: number
-  max_events: number
-  max_agent_activity: number
-  min_total_hours: number
-  max_total_hours: number
-  min_minutes_per_round: number
-  max_minutes_per_round: number
-  max_actions_per_hour: number
-  max_response_delay_minutes: number
+export interface LlmRuntimeConfig {
   llm_request_timeout_seconds: number
   llm_retry_count: number
   llm_retry_interval_seconds: number
   llm_prefer_stream: boolean
   llm_stream_fallback_nonstream: boolean
+  llm_fallback_model: string
   llm_openai_api_style: string
   llm_reasoning_effort: string
   llm_task_concurrency: number
   llm_model_default_concurrency: number
   llm_model_concurrency_overrides: Record<string, number>
-  graphiti_chunk_size: number
-  graphiti_chunk_overlap: number
-  graphiti_llm_max_tokens: number
 }
 
 export interface PaymentOrder {
   id?: string
   order_no: string
   user_id?: string
+  user_email?: string | null
+  user_nickname?: string | null
   type?: string
   amount: number
   status: string
   payment_method: string | null
+  payment_adapter_id?: string | null
+  payment_adapter_name?: string | null
   created_at: string
   paid_at: string | null
 }
@@ -438,15 +444,51 @@ export interface PaymentOrderListResponse {
   page_size: number
 }
 
-export interface PaymentConfig {
-  enabled: boolean
+export interface EpayAdapterConfig {
   url: string
   pid: string
   key: string
   has_key: boolean
-  payment_type: string
+  payment_types: string[]
   notify_url: string
   return_url: string
+  enabled_fields_ok?: boolean
+}
+
+export interface PaymentAdapterAdmin {
+  id: string
+  adapter_type: string
+  adapter_type_label: string
+  display_name: string
+  enabled: boolean
+  sort_order: number
+  valid: boolean
+  config: EpayAdapterConfig
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface PaymentAdapterTypeMeta {
+  id: string
+  label: string
+  description: string
+}
+
+export interface PaymentChannelOption {
+  id: string
+  label: string
+}
+
+export interface PublicPaymentAdapter {
+  id: string
+  type: string
+  display_name: string
+  sort_order: number
+  channels: PaymentChannelOption[]
+}
+
+export interface PaymentMethodsResponse {
+  adapters: PublicPaymentAdapter[]
 }
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info'
@@ -456,54 +498,3 @@ export interface ToastMessage {
   message: string
   type: ToastType
 }
-
-export interface SimulationRuntime {
-  simulation_id: string
-  project_id: string
-  status: string
-  simulation_config: Record<string, any>
-  profiles: Record<string, any>[]
-  run_state: Record<string, any>
-  env_status: Record<string, any>
-  metadata?: {
-    source_chapter_ids?: string[]
-    content_hash?: string
-    generated_at?: string
-    [key: string]: any
-  }
-  created_at?: string | null
-  updated_at?: string | null
-}
-
-export interface ReportRuntime {
-  report_id: string
-  simulation_id: string
-  status: string
-  title: string
-  executive_summary: string
-  markdown: string
-  key_findings?: string[]
-  next_actions?: string[]
-  generated_at?: string | null
-}
-
-// Simulation UI Types
-export interface LogEntry {
-  id: string
-  timestamp: string
-  level: 'info' | 'warning' | 'error' | 'success'
-  message: string
-  source?: string
-}
-
-export interface SimulationAction {
-  action_id: string
-  round_num: number
-  agent: string
-  action_kind: 'seed' | 'response' | 'signal' | 'amplification' | 'update'
-  action_label: string
-  summary: string
-  created_at: string
-}
-
-export type ViewMode = 'graph' | 'split' | 'workbench'

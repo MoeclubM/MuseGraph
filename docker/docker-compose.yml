@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.2-pg16-bookworm
     container_name: musegraph-postgres
     command:
       - postgres
@@ -46,15 +46,21 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://musegraph:musegraph123@postgres:5432/musegraph
       REDIS_URL: redis://redis:6379
-      GRAPHITI_DB_PATH: /app/.musegraph/graphiti/graphiti.kuzu
-      GRAPHITI_EMBEDDING_DIM: ${GRAPHITI_EMBEDDING_DIM:-1024}
-      TASK_STATE_SQLITE_PATH: ""
+      COGNEE_DATA_DIR: /app/.musegraph/cognee
+      COGNEE_INGEST_TIMEOUT_SECONDS: ${COGNEE_INGEST_TIMEOUT_SECONDS:-300}
+      COGNEE_LLM_MAX_TOKENS: ${COGNEE_LLM_MAX_TOKENS:-8192}
+      TASK_STATE_SQLITE_PATH: /app/.musegraph/task_state.sqlite3
       SESSION_EXPIRES_HOURS: 168
       FILE_STORAGE_ROOT: /app/.musegraph/storage
       ENABLE_BACKEND_ACCESS_CONTROL: "false"
       APP_URL: http://localhost:3010
       TELEMETRY_DISABLED: "true"
-      GRAPH_BACKEND: ${GRAPH_BACKEND:-graphiti}
+      DISABLE_AIOHTTP_TRANSPORT: "true"
+      AGENT_FLOW_TIMEOUT_SECONDS: ${AGENT_FLOW_TIMEOUT_SECONDS:-1800}
+      AGENT_PI_TOOL_LOOP_MAX_ITERATIONS: ${AGENT_PI_TOOL_LOOP_MAX_ITERATIONS:-40}
+      AGENT_PI_TOOL_LOOP_MAX_TOKENS: ${AGENT_PI_TOOL_LOOP_MAX_TOKENS:-16384}
+      WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-true}
+      WEB_SEARCH_MAX_RESULTS: ${WEB_SEARCH_MAX_RESULTS:-8}
       AUTO_SEED_DATA: ${AUTO_SEED_DATA:-true}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@example.com}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-Admin123!Pass}

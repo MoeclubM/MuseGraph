@@ -7,7 +7,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import Base, engine
 from app.storage import ensure_bucket
 import app.models  # noqa: F401 — register all models with Base.metadata
 
@@ -16,21 +15,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
     # Ensure local storage root
     ensure_bucket()
-
-    # Initialize graph runtime
-    try:
-        from app.services.graph_service import setup_graph_runtime
-
-        await setup_graph_runtime()
-    except Exception as exc:
-        logger.exception("Graph runtime initialization failed")
-        raise RuntimeError("Graph runtime initialization failed") from exc
 
     # Run seed only when explicitly enabled
     if settings.AUTO_SEED_DATA:
@@ -40,8 +26,31 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Seed failed: {e}")
 
-    yield
-    # Shutdown
+    try:
+        from app.database import async_session
+        from app.services.usage_retention import enforce_usage_retention
+
+        try:
+            async with async_session() as session:
+                await enforce_usage_retention(session)
+                await session.commit()
+        except Exception as e:
+            logger.warning("Usage retention cleanup on startup failed: %s", e)
+
+        try:
+            from app.routers.agent import reconcile_stale_agent_sessions
+
+            n = await reconcile_stale_agent_sessions()
+            if n:
+                logger.warning("Reconciled %s stale agent session(s) on startup", n)
+        except Exception as e:
+            logger.warning("Agent stale-session reconcile on startup failed: %s", e)
+
+        yield
+    finally:
+        from app.services.memory_backend import close_runtime
+
+        await close_runtime()
 
 
 app = FastAPI(title="MuseGraph API", version="0.1.0", lifespan=lifespan)
@@ -65,29 +74,35 @@ app.add_middleware(
 
 from app.routers import (  # noqa: E402
     admin,
+    agent,
     ai,
     auth,
     billing,
     export,
-    graph,
+    facts,
+    memory,
     payment,
+    project_files,
+    project_versions,
     projects,
-    report,
-    simulation,
+    skills,
     users,
 )
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
+app.include_router(project_files.router, prefix="/api/projects/{project_id}/files", tags=["project-files"])
+app.include_router(project_versions.router, prefix="/api/projects/{project_id}/versions", tags=["project-versions"])
+app.include_router(facts.router, prefix="/api/projects/{project_id}/facts", tags=["facts"])
 app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
 app.include_router(billing.router, prefix="/api/billing", tags=["billing"])
 app.include_router(payment.router, prefix="/api/payment", tags=["payment"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
-app.include_router(graph.router, prefix="/api/projects/{project_id}/graphs", tags=["graphs"])
+app.include_router(agent.router, prefix="/api/projects/{project_id}/agent", tags=["agent"])
+app.include_router(skills.router, prefix="/api/projects/{project_id}/skills", tags=["skills"])
+app.include_router(memory.router, prefix="/api/projects/{project_id}/memory", tags=["memory"])
 app.include_router(export.router, prefix="/api/projects/{project_id}/export", tags=["export"])
-app.include_router(simulation.router, prefix="/api/simulation", tags=["simulation"])
-app.include_router(report.router, prefix="/api/report", tags=["report"])
 
 
 @app.get("/api/health")

@@ -1,5 +1,6 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, ref, watch, type Component } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   BarChart3,
   BrainCircuit,
@@ -8,11 +9,12 @@ import {
   PlugZap,
   SlidersHorizontal,
   Users,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import AdminLayout from '@/components/layout/AdminLayout.vue'
 import AdminTasksTab from '@/components/admin/AdminTasksTab.vue'
 import AdminOverviewTab from '@/components/admin/AdminOverviewTab.vue'
 import AdminUsersTab from '@/components/admin/AdminUsersTab.vue'
+import AdminUserSettingsModal from '@/components/admin/AdminUserSettingsModal.vue'
 import AdminProvidersTab from '@/components/admin/AdminProvidersTab.vue'
 import AdminModelsTab from '@/components/admin/AdminModelsTab.vue'
 import AdminAdvancedTab from '@/components/admin/AdminAdvancedTab.vue'
@@ -21,29 +23,31 @@ import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
-  getStats, getUsers, createUser, updateUser, deleteUser, addUserBalance,
+  getStats, getUsers, createUser, deleteUser,
   getProviders, createProvider, updateProvider, deleteProvider,
   discoverProviderModels, discoverProviderEmbeddingModels, discoverProviderRerankerModels,
   addProviderModel, removeProviderModel,
   addProviderEmbeddingModel, removeProviderEmbeddingModel,
   addProviderRerankerModel, removeProviderRerankerModel,
   getPricing, createPricing, updatePricing,
-  getPaymentConfig, updatePaymentConfig,
-  getOasisConfig, updateOasisConfig,
-  getUserOrders,
+  getPaymentAdapters, getPaymentAdapterTypes,
+  createPaymentAdapter, updatePaymentAdapter, deletePaymentAdapter,
+  getLlmRuntimeConfig, updateLlmRuntimeConfig,
+  getUsageRetentionConfig, updateUsageRetentionConfig, runUsageRetentionCleanup,
   getAdminTasks,
   cancelAdminTask,
 } from '@/api/admin'
 import type {
   AdminTask,
   AdminUser,
-  OasisConfig,
-  PaymentConfig,
-  PaymentOrderListResponse,
+  LlmRuntimeConfig,
+  PaymentAdapterAdmin,
+  PaymentAdapterTypeMeta,
   PricingRule,
   Provider,
   StatsResponse,
   UserListResponse,
+  UsageRetentionConfig,
 } from '@/types'
 
 type Tab = 'overview' | 'users' | 'providers' | 'models' | 'advanced' | 'payments' | 'tasks'
@@ -65,23 +69,17 @@ type AdminTaskFilters = {
   limit: number
 }
 
+const { t } = useI18n()
+
 const tab = ref<Tab>('overview')
 const loading = ref(true)
 const stats = ref<StatsResponse | null>(null)
 const usersData = ref<UserListResponse | null>(null)
 const providers = ref<Provider[]>([])
 const pricingRules = ref<PricingRule[]>([])
-const paymentConfig = ref<PaymentConfig>({
-  enabled: false,
-  url: '',
-  pid: '',
-  key: '',
-  has_key: false,
-  payment_type: 'alipay',
-  notify_url: '',
-  return_url: '',
-})
-const paymentKeyInput = ref('')
+const paymentAdapters = ref<PaymentAdapterAdmin[]>([])
+const paymentAdapterTypes = ref<PaymentAdapterTypeMeta[]>([])
+const paymentAdaptersLoading = ref(false)
 const page = ref(1)
 const pageSize = 20
 const userFilters = ref<{ search: string; is_admin: UserAdminFilter; status: UserStatus }>({
@@ -89,10 +87,10 @@ const userFilters = ref<{ search: string; is_admin: UserAdminFilter; status: Use
   is_admin: '',
   status: '',
 })
-const rowBalanceInput = ref<Record<string, string>>({})
-
 const userForm = ref({ email: '', password: '', nickname: '', is_admin: false, balance: 0 })
 const showUserForm = ref(false)
+const userSettingsOpen = ref(false)
+const userSettingsTarget = ref<AdminUser | null>(null)
 
 const providerForm = ref<{ id: string; name: string; provider: string; api_key: string; base_url: string; is_active: boolean; priority: number }>({
   id: '',
@@ -104,10 +102,10 @@ const providerForm = ref<{ id: string; name: string; provider: string; api_key: 
   priority: 0,
 })
 const showProviderForm = ref(false)
-const providerTypeOptions = [
-  { value: 'openai_compatible', label: 'OpenAI Compatible' },
-  { value: 'anthropic_compatible', label: 'Anthropic Compatible' },
-]
+const providerTypeOptions = computed(() => [
+  { value: 'openai_compatible', label: t('admin.providers.types.openaiCompatible') },
+  { value: 'anthropic_compatible', label: t('admin.providers.types.anthropicCompatible') },
+])
 
 const providerModelProviderId = ref('')
 const providerModelFormKind = ref<'chat' | 'embedding' | 'reranker'>('chat')
@@ -126,43 +124,27 @@ const providerRerankerMessage = ref('')
 const providerRerankerError = ref('')
 const showModelForm = ref(false)
 
-const oasisConfig = ref<OasisConfig>({
-  analysis_prompt_prefix: '',
-  simulation_prompt_prefix: '',
-  report_prompt_prefix: '',
-  max_agent_profiles: 16,
-  max_events: 16,
-  max_agent_activity: 48,
-  min_total_hours: 6,
-  max_total_hours: 336,
-  min_minutes_per_round: 10,
-  max_minutes_per_round: 240,
-  max_actions_per_hour: 20,
-  max_response_delay_minutes: 720,
+const llmRuntimeConfig = ref<LlmRuntimeConfig>({
   llm_request_timeout_seconds: 180,
   llm_retry_count: 4,
   llm_retry_interval_seconds: 2,
   llm_prefer_stream: true,
   llm_stream_fallback_nonstream: true,
+  llm_fallback_model: '',
   llm_openai_api_style: 'responses',
   llm_reasoning_effort: 'model_default',
   llm_task_concurrency: 4,
   llm_model_default_concurrency: 8,
   llm_model_concurrency_overrides: {},
-  graphiti_chunk_size: 4000,
-  graphiti_chunk_overlap: 160,
-  graphiti_llm_max_tokens: 16384,
 })
 const llmModelConcurrencyOverridesInput = ref('{}')
 const llmRequestConfigMessage = ref('')
 const llmRequestConfigError = ref('')
-const oasisAdvancedConfigMessage = ref('')
-const oasisAdvancedConfigError = ref('')
+const usageRetention = ref<UsageRetentionConfig>({ retention_days: null, max_records: null })
+const usageRetentionMessage = ref('')
+const usageRetentionError = ref('')
+const usageCleanupMessage = ref('')
 
-const expandedUserOrdersId = ref<string | null>(null)
-const userOrdersLoading = ref(false)
-const userOrdersError = ref('')
-const userOrdersData = ref<PaymentOrderListResponse | null>(null)
 const adminTasks = ref<AdminTask[]>([])
 const adminTasksTotal = ref(0)
 const adminTasksLoading = ref(false)
@@ -199,15 +181,17 @@ const pricingForm = ref<{
 const pricingFormError = ref('')
 
 
-const tabItems: Array<{ value: Tab; label: string; icon: Component; hint: string }> = [
-  { value: 'overview', label: 'Overview', icon: BarChart3, hint: 'System stats' },
-  { value: 'users', label: 'Users', icon: Users, hint: 'User management' },
-  { value: 'providers', label: 'Providers', icon: PlugZap, hint: 'Provider setup' },
-  { value: 'models', label: 'Models', icon: BrainCircuit, hint: 'Models and pricing' },
-  { value: 'advanced', label: 'Advanced', icon: SlidersHorizontal, hint: 'Runtime settings' },
-  { value: 'payments', label: 'Payments', icon: CreditCard, hint: 'Payment gateway' },
-  { value: 'tasks', label: 'Tasks', icon: ListChecks, hint: 'Task monitoring' },
-]
+const tabItems = computed<Array<{ value: Tab; label: string; icon: Component; hint: string }>>(() => [
+  { value: 'overview', label: t('admin.tabs.overview'), icon: BarChart3, hint: t('admin.tabs.overviewHint') },
+  { value: 'users', label: t('admin.tabs.users'), icon: Users, hint: t('admin.tabs.usersHint') },
+  { value: 'providers', label: t('admin.tabs.providers'), icon: PlugZap, hint: t('admin.tabs.providersHint') },
+  { value: 'models', label: t('admin.tabs.models'), icon: BrainCircuit, hint: t('admin.tabs.modelsHint') },
+  { value: 'advanced', label: t('admin.tabs.advanced'), icon: SlidersHorizontal, hint: t('admin.tabs.advancedHint') },
+  { value: 'payments', label: t('admin.tabs.payments'), icon: CreditCard, hint: t('admin.tabs.paymentsHint') },
+  { value: 'tasks', label: t('admin.tabs.tasks'), icon: ListChecks, hint: t('admin.tabs.tasksHint') },
+])
+
+const activeTabHint = computed(() => tabItems.value.find((item) => item.value === tab.value)?.hint ?? '')
 
 const discoveredModelsForCurrentKind = computed(() => {
   if (providerModelFormKind.value === 'reranker') return discoveredProviderRerankerModels.value
@@ -294,10 +278,10 @@ function parseModelConcurrencyOverrides(raw: string): Record<string, number> {
   try {
     payload = JSON.parse(text)
   } catch (error: unknown) {
-    throw new Error('llm_model_concurrency_overrides must be valid JSON')
+    throw new Error(t('admin.advanced.messages.jsonInvalid'))
   }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error('llm_model_concurrency_overrides must be a JSON object, for example {"your-model-id": 4}')
+    throw new Error(t('admin.advanced.messages.jsonObject'))
   }
   const normalized: Record<string, number> = {}
   for (const [rawKey, rawValue] of Object.entries(payload as Record<string, unknown>)) {
@@ -446,13 +430,18 @@ async function loadAll() {
     loadUsers().catch(() => {}),
     getProviders().then((d) => (providers.value = d)).catch(() => {}),
     getPricing().then((d) => (pricingRules.value = d)).catch(() => {}),
-    getPaymentConfig().then((d) => (paymentConfig.value = d)).catch(() => {}),
-    getOasisConfig()
+    loadPaymentAdapters().catch(() => {}),
+    getLlmRuntimeConfig()
       .then((d) => {
-        oasisConfig.value = d
+        llmRuntimeConfig.value = d
         llmModelConcurrencyOverridesInput.value = formatModelConcurrencyOverrides(
           d.llm_model_concurrency_overrides || {}
         )
+      })
+      .catch(() => {}),
+    getUsageRetentionConfig()
+      .then((d) => {
+        usageRetention.value = d
       })
       .catch(() => {}),
     getAdminTasks({ limit: adminTaskFilters.value.limit })
@@ -496,16 +485,17 @@ async function removeUser(id: string) {
   await loadUsers()
 }
 
-async function toggleAdmin(id: string, v: boolean) {
-  await updateUser(id, { is_admin: v })
-  await loadUsers()
+function openUserSettings(user: AdminUser) {
+  userSettingsTarget.value = user
+  userSettingsOpen.value = true
 }
 
-async function addBalanceForUser(id: string) {
-  const amount = Number(rowBalanceInput.value[id] || 0)
-  if (!amount) return
-  await addUserBalance(id, amount)
-  rowBalanceInput.value[id] = ''
+function closeUserSettings() {
+  userSettingsOpen.value = false
+  userSettingsTarget.value = null
+}
+
+async function onUserSettingsSaved() {
   await loadUsers()
 }
 
@@ -748,38 +738,21 @@ watch(providerModelFormKind, () => {
   clearProviderModelFeedback('reranker')
 })
 
-function applyLlmRequestFields(next: OasisConfig) {
-  oasisConfig.value.llm_request_timeout_seconds = next.llm_request_timeout_seconds
-  oasisConfig.value.llm_retry_count = next.llm_retry_count
-  oasisConfig.value.llm_retry_interval_seconds = next.llm_retry_interval_seconds
-  oasisConfig.value.llm_prefer_stream = next.llm_prefer_stream
-  oasisConfig.value.llm_stream_fallback_nonstream = next.llm_stream_fallback_nonstream
-  oasisConfig.value.llm_openai_api_style = next.llm_openai_api_style
-  oasisConfig.value.llm_reasoning_effort = next.llm_reasoning_effort
-  oasisConfig.value.llm_task_concurrency = next.llm_task_concurrency
-  oasisConfig.value.llm_model_default_concurrency = next.llm_model_default_concurrency
-  oasisConfig.value.llm_model_concurrency_overrides = { ...next.llm_model_concurrency_overrides }
-  oasisConfig.value.graphiti_chunk_size = next.graphiti_chunk_size
-  oasisConfig.value.graphiti_chunk_overlap = next.graphiti_chunk_overlap
-  oasisConfig.value.graphiti_llm_max_tokens = next.graphiti_llm_max_tokens
+function applyLlmRequestFields(next: LlmRuntimeConfig) {
+  llmRuntimeConfig.value.llm_request_timeout_seconds = next.llm_request_timeout_seconds
+  llmRuntimeConfig.value.llm_retry_count = next.llm_retry_count
+  llmRuntimeConfig.value.llm_retry_interval_seconds = next.llm_retry_interval_seconds
+  llmRuntimeConfig.value.llm_prefer_stream = next.llm_prefer_stream
+  llmRuntimeConfig.value.llm_stream_fallback_nonstream = next.llm_stream_fallback_nonstream
+  llmRuntimeConfig.value.llm_fallback_model = next.llm_fallback_model
+  llmRuntimeConfig.value.llm_openai_api_style = next.llm_openai_api_style
+  llmRuntimeConfig.value.llm_reasoning_effort = next.llm_reasoning_effort
+  llmRuntimeConfig.value.llm_task_concurrency = next.llm_task_concurrency
+  llmRuntimeConfig.value.llm_model_default_concurrency = next.llm_model_default_concurrency
+  llmRuntimeConfig.value.llm_model_concurrency_overrides = { ...next.llm_model_concurrency_overrides }
   llmModelConcurrencyOverridesInput.value = formatModelConcurrencyOverrides(
     next.llm_model_concurrency_overrides || {}
   )
-}
-
-function applyOasisAdvancedFields(next: OasisConfig) {
-  oasisConfig.value.analysis_prompt_prefix = next.analysis_prompt_prefix
-  oasisConfig.value.simulation_prompt_prefix = next.simulation_prompt_prefix
-  oasisConfig.value.report_prompt_prefix = next.report_prompt_prefix
-  oasisConfig.value.max_agent_profiles = next.max_agent_profiles
-  oasisConfig.value.max_events = next.max_events
-  oasisConfig.value.max_agent_activity = next.max_agent_activity
-  oasisConfig.value.min_total_hours = next.min_total_hours
-  oasisConfig.value.max_total_hours = next.max_total_hours
-  oasisConfig.value.min_minutes_per_round = next.min_minutes_per_round
-  oasisConfig.value.max_minutes_per_round = next.max_minutes_per_round
-  oasisConfig.value.max_actions_per_hour = next.max_actions_per_hour
-  oasisConfig.value.max_response_delay_minutes = next.max_response_delay_minutes
 }
 
 async function saveLlmRequestConfig() {
@@ -787,25 +760,23 @@ async function saveLlmRequestConfig() {
   llmRequestConfigMessage.value = ''
   try {
     const modelOverrides = parseModelConcurrencyOverrides(llmModelConcurrencyOverridesInput.value)
-    const updated = await updateOasisConfig({
-      llm_request_timeout_seconds: Number(oasisConfig.value.llm_request_timeout_seconds || 0),
-      llm_retry_count: Number(oasisConfig.value.llm_retry_count || 0),
-      llm_retry_interval_seconds: Number(oasisConfig.value.llm_retry_interval_seconds || 0),
-      llm_prefer_stream: Boolean(oasisConfig.value.llm_prefer_stream),
-      llm_stream_fallback_nonstream: Boolean(oasisConfig.value.llm_stream_fallback_nonstream),
-      llm_openai_api_style: String(oasisConfig.value.llm_openai_api_style || 'responses'),
-      llm_reasoning_effort: String(oasisConfig.value.llm_reasoning_effort || 'model_default'),
-      llm_task_concurrency: Number(oasisConfig.value.llm_task_concurrency || 0),
-      llm_model_default_concurrency: Number(oasisConfig.value.llm_model_default_concurrency || 0),
+    const updated = await updateLlmRuntimeConfig({
+      llm_request_timeout_seconds: Number(llmRuntimeConfig.value.llm_request_timeout_seconds || 0),
+      llm_retry_count: Number(llmRuntimeConfig.value.llm_retry_count || 0),
+      llm_retry_interval_seconds: Number(llmRuntimeConfig.value.llm_retry_interval_seconds || 0),
+      llm_prefer_stream: Boolean(llmRuntimeConfig.value.llm_prefer_stream),
+      llm_stream_fallback_nonstream: Boolean(llmRuntimeConfig.value.llm_stream_fallback_nonstream),
+      llm_fallback_model: String(llmRuntimeConfig.value.llm_fallback_model || ''),
+      llm_openai_api_style: String(llmRuntimeConfig.value.llm_openai_api_style || 'responses'),
+      llm_reasoning_effort: String(llmRuntimeConfig.value.llm_reasoning_effort || 'model_default'),
+      llm_task_concurrency: Number(llmRuntimeConfig.value.llm_task_concurrency || 0),
+      llm_model_default_concurrency: Number(llmRuntimeConfig.value.llm_model_default_concurrency || 0),
       llm_model_concurrency_overrides: modelOverrides,
-      graphiti_chunk_size: Number(oasisConfig.value.graphiti_chunk_size || 0),
-      graphiti_chunk_overlap: Number(oasisConfig.value.graphiti_chunk_overlap || 0),
-      graphiti_llm_max_tokens: Number(oasisConfig.value.graphiti_llm_max_tokens || 0),
     })
     applyLlmRequestFields(updated)
-    llmRequestConfigMessage.value = 'LLM request config updated'
+    llmRequestConfigMessage.value = t('admin.advanced.messages.llmUpdated')
   } catch (error: unknown) {
-    llmRequestConfigError.value = getErrorMessage(error, 'Save LLM request config failed')
+    llmRequestConfigError.value = getErrorMessage(error, t('admin.advanced.messages.llmSaveFailed'))
   }
 }
 
@@ -813,72 +784,47 @@ async function reloadLlmRequestConfig() {
   llmRequestConfigError.value = ''
   llmRequestConfigMessage.value = ''
   try {
-    const latest = await getOasisConfig()
+    const latest = await getLlmRuntimeConfig()
     applyLlmRequestFields(latest)
-    llmRequestConfigMessage.value = 'LLM request config refreshed'
+    llmRequestConfigMessage.value = t('admin.advanced.messages.llmRefreshed')
   } catch (error: unknown) {
-    llmRequestConfigError.value = getErrorMessage(error, 'Load LLM request config failed')
+    llmRequestConfigError.value = getErrorMessage(error, t('admin.advanced.messages.llmLoadFailed'))
   }
 }
 
-async function saveOasisAdvancedConfig() {
-  oasisAdvancedConfigError.value = ''
-  oasisAdvancedConfigMessage.value = ''
+async function reloadUsageRetentionConfig() {
+  usageRetentionError.value = ''
+  usageRetentionMessage.value = ''
   try {
-    const updated = await updateOasisConfig({
-      analysis_prompt_prefix: oasisConfig.value.analysis_prompt_prefix,
-      simulation_prompt_prefix: oasisConfig.value.simulation_prompt_prefix,
-      report_prompt_prefix: oasisConfig.value.report_prompt_prefix,
-      max_agent_profiles: Number(oasisConfig.value.max_agent_profiles || 0),
-      max_events: Number(oasisConfig.value.max_events || 0),
-      max_agent_activity: Number(oasisConfig.value.max_agent_activity || 0),
-      min_total_hours: Number(oasisConfig.value.min_total_hours || 0),
-      max_total_hours: Number(oasisConfig.value.max_total_hours || 0),
-      min_minutes_per_round: Number(oasisConfig.value.min_minutes_per_round || 0),
-      max_minutes_per_round: Number(oasisConfig.value.max_minutes_per_round || 0),
-      max_actions_per_hour: Number(oasisConfig.value.max_actions_per_hour || 0),
-      max_response_delay_minutes: Number(oasisConfig.value.max_response_delay_minutes || 0),
+    usageRetention.value = await getUsageRetentionConfig()
+    usageRetentionMessage.value = t('admin.advanced.usageRetention.messages.refreshed')
+  } catch (error) {
+    usageRetentionError.value = getErrorMessage(error, t('admin.advanced.usageRetention.messages.loadFailed'))
+  }
+}
+
+async function saveUsageRetentionConfig() {
+  usageRetentionError.value = ''
+  usageRetentionMessage.value = ''
+  try {
+    usageRetention.value = await updateUsageRetentionConfig(usageRetention.value)
+    usageRetentionMessage.value = t('admin.advanced.usageRetention.messages.saved')
+  } catch (error) {
+    usageRetentionError.value = getErrorMessage(error, t('admin.advanced.usageRetention.messages.saveFailed'))
+  }
+}
+
+async function runUsageCleanupNow() {
+  usageCleanupMessage.value = ''
+  usageRetentionError.value = ''
+  try {
+    const stats = await runUsageRetentionCleanup()
+    usageCleanupMessage.value = t('admin.advanced.usageRetention.messages.cleanupDone', {
+      age: stats.deleted_by_age,
+      count: stats.deleted_by_count,
     })
-    applyOasisAdvancedFields(updated)
-    oasisAdvancedConfigMessage.value = 'Scenario reasoning config updated'
-  } catch (error: unknown) {
-    oasisAdvancedConfigError.value = getErrorMessage(error, 'Save scenario reasoning config failed')
-  }
-}
-
-async function reloadOasisAdvancedConfig() {
-  oasisAdvancedConfigError.value = ''
-  oasisAdvancedConfigMessage.value = ''
-  try {
-    const latest = await getOasisConfig()
-    applyOasisAdvancedFields(latest)
-    oasisAdvancedConfigMessage.value = 'Scenario reasoning config refreshed'
-  } catch (error: unknown) {
-    oasisAdvancedConfigError.value = getErrorMessage(error, 'Load scenario reasoning config failed')
-  }
-}
-
-async function toggleUserOrders(user: AdminUser) {
-  if (expandedUserOrdersId.value === user.id) {
-    expandedUserOrdersId.value = null
-    userOrdersData.value = null
-    userOrdersError.value = ''
-    return
-  }
-  expandedUserOrdersId.value = user.id
-  await loadUserOrders(user.id)
-}
-
-async function loadUserOrders(userId: string) {
-  userOrdersLoading.value = true
-  userOrdersError.value = ''
-  try {
-    userOrdersData.value = await getUserOrders(userId, 1, 20)
-  } catch (error: unknown) {
-    userOrdersError.value = getErrorMessage(error, 'Load user orders failed')
-    userOrdersData.value = null
-  } finally {
-    userOrdersLoading.value = false
+  } catch (error) {
+    usageRetentionError.value = getErrorMessage(error, t('admin.advanced.usageRetention.messages.cleanupFailed'))
   }
 }
 
@@ -896,9 +842,9 @@ async function loadAdminTasks() {
     })
     adminTasks.value = response.tasks || []
     adminTasksTotal.value = Number(response.total || 0)
-    adminTasksMessage.value = 'Task list refreshed'
+    adminTasksMessage.value = t('admin.tasks.messages.refreshed')
   } catch (error: unknown) {
-    adminTasksError.value = getErrorMessage(error, 'Load tasks failed')
+    adminTasksError.value = getErrorMessage(error, t('admin.tasks.messages.loadFailed'))
   } finally {
     adminTasksLoading.value = false
   }
@@ -914,9 +860,9 @@ async function cancelTaskByAdmin(task: AdminTask) {
   try {
     const latest = await cancelAdminTask(task.task_id)
     adminTasks.value = adminTasks.value.map((item) => (item.task_id === latest.task_id ? latest : item))
-    adminTasksMessage.value = `Task ${task.task_id} cancelled`
+    adminTasksMessage.value = t('admin.tasks.messages.cancelled', { id: task.task_id })
   } catch (error: unknown) {
-    adminTasksError.value = getErrorMessage(error, 'Cancel task failed')
+    adminTasksError.value = getErrorMessage(error, t('admin.tasks.messages.cancelFailed'))
   } finally {
     adminCancellingTaskIds.value = adminCancellingTaskIds.value.filter((id) => id !== task.task_id)
   }
@@ -993,18 +939,40 @@ async function savePricing() {
   showPricingForm.value = false
 }
 
-async function savePayment() {
-  const payload = {
-    enabled: paymentConfig.value.enabled,
-    url: paymentConfig.value.url,
-    pid: paymentConfig.value.pid,
-    key: paymentKeyInput.value.trim(),
-    payment_type: paymentConfig.value.payment_type,
-    notify_url: paymentConfig.value.notify_url,
-    return_url: paymentConfig.value.return_url,
+async function loadPaymentAdapters() {
+  paymentAdaptersLoading.value = true
+  try {
+    const [adapters, types] = await Promise.all([getPaymentAdapters(), getPaymentAdapterTypes()])
+    paymentAdapters.value = adapters
+    paymentAdapterTypes.value = types
+  } finally {
+    paymentAdaptersLoading.value = false
   }
-  paymentConfig.value = await updatePaymentConfig(payload)
-  paymentKeyInput.value = ''
+}
+
+async function handleCreatePaymentAdapter(payload: { adapter_type: string; display_name: string }) {
+  await createPaymentAdapter({
+    adapter_type: payload.adapter_type,
+    display_name: payload.display_name,
+    enabled: false,
+    config: { payment_types: ['alipay'] },
+  })
+  await loadPaymentAdapters()
+}
+
+async function handleSavePaymentAdapter(adapterId: string, payload: Record<string, unknown>) {
+  await updatePaymentAdapter(adapterId, payload)
+  await loadPaymentAdapters()
+}
+
+async function handleTogglePaymentAdapter(adapterId: string, enabled: boolean) {
+  await updatePaymentAdapter(adapterId, { enabled })
+  await loadPaymentAdapters()
+}
+
+async function handleDeletePaymentAdapter(adapterId: string) {
+  await deletePaymentAdapter(adapterId)
+  await loadPaymentAdapters()
 }
 
 function nextPage() {
@@ -1030,45 +998,32 @@ onMounted(loadAll)
       <section class="muse-page-header">
         <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-end">
           <div class="space-y-1">
-            <p class="text-xs font-medium uppercase tracking-[0.18em] text-amber-700 dark:text-amber-300">System Administration</p>
-            <h1 class="text-2xl font-semibold text-stone-800 dark:text-zinc-100">Admin Panel</h1>
-            <p class="max-w-3xl text-sm text-stone-500 dark:text-zinc-400">Manage users, providers, model pricing, payment settings, runtime controls, and background tasks.</p>
+            <p class="text-xs font-medium uppercase tracking-[0.18em] text-amber-700 dark:text-amber-300">{{ t('admin.panel.overline') }}</p>
+            <h1 class="text-2xl font-semibold muse-text-heading">{{ t('admin.panel.title') }}</h1>
+            <p v-if="activeTabHint" class="max-w-3xl text-sm muse-text-muted">{{ activeTabHint }}</p>
           </div>
-          <div class="grid min-w-0 grid-cols-1 gap-2 text-xs sm:grid-cols-3 xl:min-w-[420px]">
-            <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-4 py-3 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
-              <p class="text-[11px] uppercase tracking-wide text-stone-500 dark:text-zinc-500">Providers</p>
-              <p class="mt-1 text-lg font-semibold text-stone-700 dark:text-zinc-100">{{ providers.length }}</p>
-            </div>
-            <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-4 py-3 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
-              <p class="text-[11px] uppercase tracking-wide text-stone-500 dark:text-zinc-500">Models</p>
-              <p class="mt-1 text-lg font-semibold text-stone-700 dark:text-zinc-100">{{ totalKnownModels }}</p>
-            </div>
-            <div class="rounded-md border border-stone-300/70 bg-stone-100/80 px-4 py-3 text-stone-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
-              <p class="text-[11px] uppercase tracking-wide text-stone-500 dark:text-zinc-500">Pricing Rules</p>
-              <p class="mt-1 text-lg font-semibold text-stone-700 dark:text-zinc-100">{{ pricingRules.length }}</p>
-            </div>
-          </div>
+
         </div>
       </section>
 
       <Tabs v-model="tab" class="space-y-4">
-        <div class="muse-surface rounded-md p-1.5">
-          <TabsList class="grid h-auto w-full grid-cols-2 gap-1 bg-transparent p-0 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7">
+        <div class="muse-admin-tab-bar border-b border-[color:var(--muse-border)] pb-2">
+          <TabsList class="muse-segmented inline-flex h-auto w-max min-w-0 flex-nowrap gap-0 border-0 bg-[color:var(--muse-field)] p-0.5 shadow-none">
             <TabsTrigger
               v-for="item in tabItems"
               :key="item.value"
               :value="item.value"
-              class="h-auto min-h-14 justify-start rounded-md px-3 py-2 text-left 2xl:justify-center"
+              :title="item.hint"
+              class="inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-transparent px-3 py-1.5 text-xs font-medium text-[color:var(--muse-text-muted)] transition-colors data-[state=active]:bg-[color:var(--muse-accent-soft)] data-[state=active]:text-[color:var(--muse-accent)]"
             >
-              <component :is="item.icon" class="h-3.5 w-3.5" />
-              <span class="min-w-0 truncate">{{ item.label }}</span>
-              <span class="hidden min-w-0 truncate text-[10px] text-stone-500 dark:text-zinc-400 xl:inline">{{ item.hint }}</span>
+              <component :is="item.icon" class="h-3.5 w-3.5 shrink-0" />
+              {{ item.label }}
             </TabsTrigger>
           </TabsList>
         </div>
 
         <Card v-if="loading">
-          <p class="text-sm text-stone-600 dark:text-zinc-300">Loading admin data...</p>
+          <p class="text-sm muse-text-muted">{{ t('admin.panel.loading') }}</p>
         </Card>
 
         <template v-else>
@@ -1086,18 +1041,11 @@ onMounted(loadAll)
               :show-user-form="showUserForm"
               :user-filters="userFilters"
               :user-form="userForm"
-              :row-balance-input="rowBalanceInput"
               :page="page"
               :page-size="pageSize"
-              :expanded-user-orders-id="expandedUserOrdersId"
-              :user-orders-loading="userOrdersLoading"
-              :user-orders-error="userOrdersError"
-              :user-orders-data="userOrdersData"
               :status-chip-class="statusChipClass"
-              :order-status-chip-class="orderStatusChipClass"
               :format-tokens="formatTokens"
               :format-currency="formatCurrency"
-              :format-date-time="formatDateTime"
               :get-user-token-usage="getUserTokenUsage"
               :get-user-recharge-summary="getUserRechargeSummary"
               @open-user-form="showUserForm = true"
@@ -1105,13 +1053,16 @@ onMounted(loadAll)
               @save-user="saveUser"
               @apply-user-filters="applyUserFilters"
               @reset-user-filters="resetUserFilters"
-              @toggle-admin="toggleAdmin"
-              @add-balance-for-user="addBalanceForUser"
-              @toggle-user-orders="toggleUserOrders"
-              @load-user-orders="loadUserOrders"
+              @open-user-settings="openUserSettings"
               @remove-user="removeUser"
               @prev-page="prevPage"
               @next-page="nextPage"
+            />
+            <AdminUserSettingsModal
+              :show="userSettingsOpen"
+              :user="userSettingsTarget"
+              @close="closeUserSettings"
+              @saved="onUserSettingsSaved"
             />
           </TabsContent>
 
@@ -1166,26 +1117,33 @@ onMounted(loadAll)
 
           <TabsContent value="advanced" class="space-y-4">
             <AdminAdvancedTab
-              :oasis-config="oasisConfig"
+              :llm-runtime-config="llmRuntimeConfig"
               :llm-model-concurrency-overrides-input="llmModelConcurrencyOverridesInput"
               :llm-request-config-error="llmRequestConfigError"
               :llm-request-config-message="llmRequestConfigMessage"
-              :oasis-advanced-config-error="oasisAdvancedConfigError"
-              :oasis-advanced-config-message="oasisAdvancedConfigMessage"
+              :usage-retention="usageRetention"
+              :usage-retention-error="usageRetentionError"
+              :usage-retention-message="usageRetentionMessage"
+              :usage-cleanup-message="usageCleanupMessage"
               @reload-llm-request-config="reloadLlmRequestConfig"
               @save-llm-request-config="saveLlmRequestConfig"
-              @reload-oasis-advanced-config="reloadOasisAdvancedConfig"
-              @save-oasis-advanced-config="saveOasisAdvancedConfig"
+              @reload-usage-retention="reloadUsageRetentionConfig"
+              @save-usage-retention="saveUsageRetentionConfig"
+              @run-usage-cleanup="runUsageCleanupNow"
+              @update:usage-retention="usageRetention = $event"
               @update:llm-model-concurrency-overrides-input="llmModelConcurrencyOverridesInput = $event"
             />
           </TabsContent>
 
           <TabsContent value="payments" class="space-y-4">
             <AdminPaymentsTab
-              :payment-config="paymentConfig"
-              :payment-key-input="paymentKeyInput"
-              @update:payment-key-input="paymentKeyInput = $event"
-              @save-payment="savePayment"
+              :adapters="paymentAdapters"
+              :adapter-types="paymentAdapterTypes"
+              :loading="paymentAdaptersLoading"
+              @create="handleCreatePaymentAdapter"
+              @save="handleSavePaymentAdapter"
+              @toggle-enabled="handleTogglePaymentAdapter"
+              @delete="handleDeletePaymentAdapter"
             />
           </TabsContent>
 

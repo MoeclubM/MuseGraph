@@ -1,76 +1,60 @@
-# Dependencies
-node_modules
-.pnpm-store
+# Dependencies and package-manager caches
+node_modules/
+.pnpm-store/
+.uv-cache/
 
 # Build outputs
-dist
-build
-.next
-.turbo
+dist/
+build/
+.next/
+.turbo/
 *.tsbuildinfo
+/apps/web-vue/vite.config.d.ts
 
-# Environment
+# Environment and local application data
 .env
 .env.local
 .env.*.local
-
-# IDE
-.idea
-.vscode
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-npm-debug.log*
-pnpm-debug.log*
-
-# Local debug artifacts
-/.playwright-mcp/
-/tmp_*.json
-/UsersQwQDocumentsGitHubMuseGraphtmp_ops.json
-/nul
-
-# Root-level screenshot artifacts
-/admin-*.png
-/dashboard-*.png
-/final-*.png
-/full-graph-view.png
-/graph-*.png
-/modal-*.png
-/new-project-*.png
-/pricing-*.png
-/project-page*.png
-
-# Test
-coverage
-playwright-report
-test-results
-
-# Prisma
-apps/server/prisma/*.db
-apps/server/prisma/*.db-journal
+.musegraph/
 
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
+.venv/
+venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.venv/
-.musegraph/
 .coverage
+coverage.xml
 htmlcov/
 
-# Local audit/tool artifacts
-.codex-secret-scan/
-.golutra/
-apps/server-py/coverage.xml
+# JavaScript and browser tests
+coverage/
+playwright-report/
+test-results/
 
-# Local docker scratch
-.docker_tmp/
+# Logs and temporary files
+*.log
+npm-debug.log*
+pnpm-debug.log*
+*.tmp
+*.bak
 
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local development tools and scratch space
+/.codex-secret-scan/
+/.golutra/
+/.playwright-mcp/
+/.docker_tmp/
+/output/
+/terminals/
+/nul

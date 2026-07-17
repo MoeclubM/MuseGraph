@@ -11,12 +11,31 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
-from tests.conftest import FakeUser, TEST_USER_ID
+from app.config import settings
+from app.services import project_git as project_git_service
+from tests.conftest import FakeUser, TEST_USER_ID, patch_app_route_globals
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _patch_projects_route_git_globals(monkeypatch: pytest.MonkeyPatch):
+    patch_app_route_globals(
+        monkeypatch,
+        "app.routers.projects",
+        {
+            "commit_project_git": project_git_service.commit_project_git,
+            "delete_project_git_storage": project_git_service.delete_project_git_storage,
+            "initialize_project_git_repo": project_git_service.initialize_project_git_repo,
+            "push_project_git_branch": project_git_service.push_project_git_branch,
+            "stage_project_git_paths": project_git_service.stage_project_git_paths,
+            "write_project_workspace_version_snapshot": MagicMock(return_value={}),
+        },
+    )
+
 
 def _make_fake_project(
     *,
@@ -25,7 +44,7 @@ def _make_fake_project(
     title: str = "Test Project",
     description: str | None = "A test project",
     chapter_content: str | None = "Some content",
-    graph_id: str | None = None,
+    memory_id: str | None = None,
 ):
     """Return a lightweight object that behaves like a ``TextProject`` row."""
     return SimpleNamespace(
@@ -33,22 +52,30 @@ def _make_fake_project(
         user_id=user_id,
         title=title,
         description=description,
+        visibility="private",
+        members=[],
         chapters=[
             SimpleNamespace(
                 id=str(uuid.uuid4()),
                 project_id=project_id or "proj-1",
                 title="Main Draft",
                 content=chapter_content or "",
+                status="draft",
+                blueprint=None,
+                plan=None,
+                summary=None,
+                continuity_notes=None,
                 order_index=0,
                 created_at=datetime.now(timezone.utc),
                 updated_at=datetime.now(timezone.utc),
             )
         ],
-        simulation_requirement=None,
+        facts=[],
         component_models=None,
+        operation_prompts=None,
         ontology_schema=None,
-        oasis_analysis=None,
-        graph_id=graph_id,
+        creative_state=None,
+        memory_id=memory_id,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
@@ -69,6 +96,10 @@ def _scalar_one_or_none(value):
     return result
 
 
+def _fake_member(*, user_id: str = TEST_USER_ID, role: str = "viewer"):
+    return SimpleNamespace(user_id=user_id, role=role)
+
+
 # ---------------------------------------------------------------------------
 # POST /api/projects
 # ---------------------------------------------------------------------------
@@ -77,7 +108,8 @@ def _scalar_one_or_none(value):
 class TestCreateProject:
 
     @pytest.mark.asyncio
-    async def test_create_project(self, client: AsyncClient, mock_db: AsyncMock):
+    async def test_create_project(self, client: AsyncClient, mock_db: AsyncMock, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "FILE_STORAGE_ROOT", str(tmp_path))
         now = datetime.now(timezone.utc)
 
         # When db.add() is called, stamp the object with an id and timestamps
@@ -86,7 +118,7 @@ class TestCreateProject:
             obj.user_id = TEST_USER_ID
             obj.created_at = now
             obj.updated_at = now
-            obj.graph_id = None
+            obj.memory_id = None
 
         mock_db.add.side_effect = _side_effect_add
 
@@ -102,6 +134,14 @@ class TestCreateProject:
         assert body["user_id"] == TEST_USER_ID
         assert "content" not in body
         assert isinstance(body.get("chapters"), list)
+        workspace = tmp_path / "projects" / body["id"] / "workspace"
+        assert (workspace / ".git").is_dir()
+        assert (tmp_path / "git-server" / "projects" / f"{body['id']}.git").is_dir()
+        assert (workspace / ".musegraph" / "project.json").is_file()
+        assert list((workspace / "documents").glob("*.md"))
+        snapshot = project_git_service.get_project_git_snapshot(body["id"])
+        assert snapshot["files"] == []
+        assert snapshot["commits"][0]["subject"] == "Initialize project workspace"
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +166,34 @@ class TestListProjects:
         assert len(body) == 2
         assert body[0]["title"] == "Project A"
         assert body[1]["title"] == "Project B"
+
+
+class TestListPublicProjects:
+
+    @pytest.mark.asyncio
+    async def test_list_public_projects(self, client: AsyncClient, mock_db: AsyncMock):
+        public_project = _make_fake_project(
+            user_id=str(uuid.uuid4()),
+            title="Open Novel",
+            description="Shared for reading",
+        )
+        public_project.visibility = "public"
+        public_project.user = SimpleNamespace(nickname="Ada Lovelace", email="ada@example.com")
+        mock_db.execute.return_value = _scalars_all([public_project])
+
+        resp = await client.get("/api/projects/public")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body[0]["title"] == "Open Novel"
+        assert body[0]["visibility"] == "public"
+        assert body[0]["author_nickname"] == "Ada Lovelace"
+        assert body[0]["current_user_role"] == "viewer"
+        assert body[0]["current_user_permissions"] == ["view"]
+        assert "user_id" not in body[0]
+        assert "chapters" not in body[0]
+        assert "component_models" not in body[0]
+        assert "creative_state" not in body[0]
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +236,20 @@ class TestGetProject:
 
         assert resp.status_code == 403
 
+    @pytest.mark.asyncio
+    async def test_get_public_project(self, client: AsyncClient, mock_db: AsyncMock):
+        public_project = _make_fake_project(
+            user_id=str(uuid.uuid4()),
+            title="Public Project",
+        )
+        public_project.visibility = "public"
+        mock_db.execute.return_value = _scalar_one_or_none(public_project)
+
+        resp = await client.get(f"/api/projects/{public_project.id}")
+
+        assert resp.status_code == 200
+        assert resp.json()["current_user_role"] == "viewer"
+
 
 # ---------------------------------------------------------------------------
 # PUT /api/projects/:id
@@ -199,6 +281,27 @@ class TestUpdateProject:
 
         assert resp.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_editor_can_update_project(self, client: AsyncClient, mock_db: AsyncMock):
+        project = _make_fake_project(user_id=str(uuid.uuid4()), title="Shared Project")
+        project.members = [_fake_member(role="editor")]
+        mock_db.execute.return_value = _scalar_one_or_none(project)
+
+        resp = await client.put(f"/api/projects/{project.id}", json={"title": "Edited"})
+
+        assert resp.status_code == 200
+        assert project.title == "Edited"
+
+    @pytest.mark.asyncio
+    async def test_viewer_cannot_update_project(self, client: AsyncClient, mock_db: AsyncMock):
+        project = _make_fake_project(user_id=str(uuid.uuid4()), title="Shared Project")
+        project.members = [_fake_member(role="viewer")]
+        mock_db.execute.return_value = _scalar_one_or_none(project)
+
+        resp = await client.put(f"/api/projects/{project.id}", json={"title": "Edited"})
+
+        assert resp.status_code == 403
+
 
 # ---------------------------------------------------------------------------
 # DELETE /api/projects/:id
@@ -208,14 +311,21 @@ class TestUpdateProject:
 class TestDeleteProject:
 
     @pytest.mark.asyncio
-    async def test_delete_project(self, client: AsyncClient, mock_db: AsyncMock):
+    async def test_delete_project(self, client: AsyncClient, mock_db: AsyncMock, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "FILE_STORAGE_ROOT", str(tmp_path))
         project = _make_fake_project()
+        workspace = tmp_path / "projects" / project.id / "workspace"
+        server_repo = tmp_path / "git-server" / "projects" / f"{project.id}.git"
+        workspace.mkdir(parents=True)
+        server_repo.mkdir(parents=True)
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
         resp = await client.delete(f"/api/projects/{project.id}")
 
         assert resp.status_code == 204
         mock_db.delete.assert_awaited_once_with(project)
+        assert not workspace.exists()
+        assert not server_repo.exists()
 
     @pytest.mark.asyncio
     async def test_delete_project_not_found(self, client: AsyncClient, mock_db: AsyncMock):
@@ -234,3 +344,47 @@ class TestDeleteProject:
 
         assert resp.status_code == 403
 
+
+class TestProjectAcl:
+
+    @pytest.mark.asyncio
+    async def test_owner_can_add_editor_member(self, client: AsyncClient, mock_db: AsyncMock):
+        project = _make_fake_project()
+        target_user = SimpleNamespace(id=str(uuid.uuid4()), email="editor@example.com")
+        mock_db.execute.side_effect = [
+            _scalar_one_or_none(project),
+            _scalar_one_or_none(target_user),
+            _scalar_one_or_none(None),
+        ]
+
+        def _track_add(obj):
+            if obj.__class__.__name__ == "ProjectMember":
+                obj.id = str(uuid.uuid4())
+                obj.created_at = datetime.now(timezone.utc)
+                obj.updated_at = datetime.now(timezone.utc)
+
+        mock_db.add.side_effect = _track_add
+
+        resp = await client.post(
+            f"/api/projects/{project.id}/members",
+            json={"email": "editor@example.com", "role": "editor"},
+        )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["user_id"] == target_user.id
+        assert body["email"] == "editor@example.com"
+        assert body["role"] == "editor"
+
+    @pytest.mark.asyncio
+    async def test_public_project_viewer_cannot_create_chapter(self, client: AsyncClient, mock_db: AsyncMock):
+        project = _make_fake_project(user_id=str(uuid.uuid4()), title="Public Project")
+        project.visibility = "public"
+        mock_db.execute.return_value = _scalar_one_or_none(project)
+
+        resp = await client.post(
+            f"/api/projects/{project.id}/chapters",
+            json={"title": "Read-only edit", "content": "Should be blocked"},
+        )
+
+        assert resp.status_code == 403

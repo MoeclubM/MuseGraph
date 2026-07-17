@@ -59,6 +59,9 @@ export type UpdateProjectInput = z.infer<typeof UpdateProjectSchema>;
 export const OperationTypeSchema = z.enum([
   'CREATE',
   'CONTINUE',
+  'AGENT_TASK',
+  'AGENT_SUGGEST',
+  'CONSISTENCY_CHECK',
   'ANALYZE',
   'REWRITE',
   'SUMMARIZE',
@@ -82,6 +85,39 @@ export const TextOperationSchema = z.object({
 });
 
 export type TextOperation = z.infer<typeof TextOperationSchema>;
+
+// Chapter types
+export const ChapterSchema = z.object({
+  id: z.string(),
+  project_id: z.string(),
+  title: z.string(),
+  content: z.string(),
+  status: z.enum(['draft', 'planned', 'final']),
+  order_index: z.number().int(),
+  summary: z.string().nullable().optional(),
+  blueprint: z.record(z.any()).nullable().optional(),
+  plan: z.string().nullable().optional(),
+  continuity_notes: z.record(z.any()).nullable().optional(),
+  created_at: z.date(),
+  updated_at: z.date(),
+});
+
+export type Chapter = z.infer<typeof ChapterSchema>;
+
+// Agent workspace types
+export const AgentWorkspaceSchema = z.object({
+  last_task: z.record(z.any()).nullable().optional(),
+  text_type: z.string().nullable().optional(),
+  memory_schema: z.record(z.any()).nullable().optional(),
+  structured_memory: z.record(z.any()).nullable().optional(),
+  graph: z.record(z.any()).nullable().optional(),
+  retrieval_queries: z.array(z.any()).nullable().optional(),
+  writing_plan: z.record(z.any()).nullable().optional(),
+  next_actions: z.array(z.any()).nullable().optional(),
+  updated_at: z.string().nullable().optional(),
+});
+
+export type AgentWorkspace = z.infer<typeof AgentWorkspaceSchema>;
 
 // Text operation request
 export const TextOperationRequestSchema = z.object({

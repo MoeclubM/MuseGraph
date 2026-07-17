@@ -1,5 +1,5 @@
 """Tests for small modules needing coverage: ai router, export router,
-auth logout, llm_json fallback, and task_state manager."""
+auth logout, strict llm_json parsing, and task_state manager."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
+from tests.conftest import get_endpoint_globals
+
 
 def _scalar_one_or_none(value):
     result = MagicMock()
@@ -17,16 +19,10 @@ def _scalar_one_or_none(value):
     return result
 
 
-def _get_endpoint_globals(app, endpoint_name: str) -> dict:
-    """Get the __globals__ dict of a named endpoint to patch its imports."""
-    for route in app.routes:
-        if hasattr(route, "endpoint") and getattr(route, "name", "") == endpoint_name:
-            return route.endpoint.__globals__
-        if hasattr(route, "routes"):
-            for sub in route.routes:
-                if hasattr(sub, "endpoint") and getattr(sub, "name", "") == endpoint_name:
-                    return sub.endpoint.__globals__
-    raise RuntimeError(f"Endpoint {endpoint_name!r} not found")
+def _scalars_all(values):
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = values
+    return result
 
 
 class TestAIModelsRouter:
@@ -34,8 +30,7 @@ class TestAIModelsRouter:
 
     @pytest.mark.asyncio
     async def test_list_models(self, client: AsyncClient, mock_db: AsyncMock):
-        from tests.conftest import app
-        g = _get_endpoint_globals(app, "list_models")
+        g = get_endpoint_globals("list_models")
         fake_models = [
             {"id": "gpt-4", "name": "GPT-4", "provider": "openai"},
             {"id": "claude-3", "name": "Claude 3", "provider": "anthropic"},
@@ -53,6 +48,27 @@ class TestAIModelsRouter:
         assert body["models"] == fake_models
         assert len(body["models"]) == 2
 
+    @pytest.mark.asyncio
+    async def test_list_reranker_models(self, client: AsyncClient, mock_db: AsyncMock):
+        g = get_endpoint_globals("list_reranker_models")
+        fake_models = [
+            {
+                "id": "Qwen3-Reranker-0.6B",
+                "name": "Qwen3-Reranker-0.6B",
+                "provider": "telecom-qwen-memory",
+            },
+        ]
+        mock_fn = AsyncMock(return_value=fake_models)
+        orig = g["get_available_reranker_models"]
+        g["get_available_reranker_models"] = mock_fn
+        try:
+            resp = await client.get("/api/ai/reranker-models")
+        finally:
+            g["get_available_reranker_models"] = orig
+
+        assert resp.status_code == 200
+        assert resp.json()["models"] == fake_models
+
 
 class TestExportRouter:
     """Cover app/routers/export.py: project not found and forbidden paths."""
@@ -60,22 +76,52 @@ class TestExportRouter:
     @pytest.mark.asyncio
     async def test_export_project_not_found(self, client: AsyncClient, mock_db: AsyncMock):
         mock_db.execute.return_value = _scalar_one_or_none(None)
-        resp = await client.post("/api/projects/proj-999/export/txt")
+        resp = await client.post("/api/projects/proj-999/export/bundle")
         assert resp.status_code == 404
         assert "Project not found" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_export_forbidden(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
-        project = SimpleNamespace(id="proj-1", user_id="other-user", title="Secret")
+        project = SimpleNamespace(id="proj-1", user_id="other-user", visibility="private", members=[], title="Secret")
         mock_db.execute.return_value = _scalar_one_or_none(project)
-        resp = await client.post("/api/projects/proj-1/export/txt")
+        resp = await client.post("/api/projects/proj-1/export/bundle")
         assert resp.status_code == 403
 
+
+class TestBillingPricingCatalog:
     @pytest.mark.asyncio
-    async def test_export_unsupported_format(self, client: AsyncClient, mock_db: AsyncMock):
-        resp = await client.post("/api/projects/proj-1/export/pdf")
-        assert resp.status_code == 400
-        assert "Unsupported format" in resp.json()["detail"]
+    async def test_pricing_includes_provider_models_without_rules(self, client: AsyncClient, mock_db: AsyncMock):
+        provider = SimpleNamespace(
+            name="telecom-qwen-memory",
+            provider="openai_compatible",
+            is_active=True,
+            models={
+                "models": ["nvidia/nemotron-3-ultra-550b-a55b:free"],
+                "embedding_models": ["Qwen3-Embedding-0.6B"],
+                "reranker_models": ["Qwen3-Reranker-0.6B"],
+            },
+        )
+        priced = SimpleNamespace(
+            id="rule-1",
+            model="gpt-4o-mini",
+            billing_mode="TOKEN",
+            input_price=1,
+            output_price=2,
+            token_unit=1000000,
+            request_price=0,
+            is_active=True,
+        )
+        mock_db.execute = AsyncMock(side_effect=[_scalars_all([provider]), _scalars_all([priced])])
+
+        resp = await client.get("/api/billing/pricing")
+
+        assert resp.status_code == 200
+        rows = {item["model"]: item for item in resp.json()}
+        assert rows["nvidia/nemotron-3-ultra-550b-a55b:free"]["has_pricing"] is False
+        assert rows["nvidia/nemotron-3-ultra-550b-a55b:free"]["model_type"] == "chat"
+        assert rows["Qwen3-Embedding-0.6B"]["model_type"] == "embedding"
+        assert rows["Qwen3-Reranker-0.6B"]["model_type"] == "reranker"
+        assert rows["gpt-4o-mini"]["has_pricing"] is True
 
 
 class TestAuthLogout:
@@ -83,8 +129,7 @@ class TestAuthLogout:
 
     @pytest.mark.asyncio
     async def test_logout_deletes_cookie(self, client: AsyncClient, mock_db: AsyncMock):
-        from tests.conftest import app
-        g = _get_endpoint_globals(app, "logout")
+        g = get_endpoint_globals("logout")
         mock_del = AsyncMock(return_value=None)
         orig = g["delete_session"]
         g["delete_session"] = mock_del
@@ -108,20 +153,20 @@ class TestAuthLogout:
 
 
 class TestLlmJsonExtract:
-    """Cover app/services/llm_json.py strict extraction behavior."""
+    """Cover app/services/llm_json.py strict object parsing behavior."""
 
     def test_extract_plain_json(self):
         from app.services.llm_json import extract_json_object
         result = extract_json_object('{"key": "value"}')
         assert result == {"key": "value"}
 
-    def test_extract_fenced_json(self):
+    def test_reject_fenced_json(self):
         from app.services.llm_json import extract_json_object
         raw = '```json\n{"a": 1}\n```'
-        assert extract_json_object(raw) == {"a": 1}
+        assert extract_json_object(raw) is None
 
-    def test_extract_embedded_braces(self):
-        """Embedded JSON in plain text is rejected."""
+    def test_reject_embedded_braces(self):
+        """Embedded JSON in plain text is not accepted."""
         from app.services.llm_json import extract_json_object
         raw = 'Here is the result: {"name": "test", "count": 42} -- done'
         result = extract_json_object(raw)

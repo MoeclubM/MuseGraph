@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -16,6 +17,7 @@ import redis
 from app.config import settings
 
 _UNSET = object()
+logger = logging.getLogger(__name__)
 
 
 class TaskStatus(str, Enum):
@@ -177,27 +179,32 @@ class _SqliteTaskStore:
             metadata = json.loads(str(row["metadata_json"] or "{}"))
             if not isinstance(metadata, dict):
                 metadata = {}
-        except Exception:
+        except Exception as exc:
+            logger.warning("Invalid task metadata JSON for %s: %s", row["task_id"], exc)
             metadata = {}
         try:
             result = json.loads(str(row["result_json"])) if row["result_json"] else None
             if result is not None and not isinstance(result, dict):
                 result = None
-        except Exception:
+        except Exception as exc:
+            logger.warning("Invalid task result JSON for %s: %s", row["task_id"], exc)
             result = None
         try:
             progress_detail = json.loads(str(row["progress_detail_json"])) if row["progress_detail_json"] else None
             if progress_detail is not None and not isinstance(progress_detail, dict):
                 progress_detail = None
-        except Exception:
+        except Exception as exc:
+            logger.warning("Invalid task progress detail JSON for %s: %s", row["task_id"], exc)
             progress_detail = None
         try:
             created_at = datetime.fromisoformat(str(row["created_at"]))
-        except Exception:
+        except Exception as exc:
+            logger.warning("Invalid task created_at for %s: %s", row["task_id"], exc)
             created_at = datetime.now(timezone.utc)
         try:
             updated_at = datetime.fromisoformat(str(row["updated_at"]))
-        except Exception:
+        except Exception as exc:
+            logger.warning("Invalid task updated_at for %s: %s", row["task_id"], exc)
             updated_at = created_at
         status_raw = str(row["status"] or TaskStatus.PENDING.value).lower()
         status = TaskStatus(status_raw) if status_raw in TaskStatus._value2member_map_ else TaskStatus.PENDING
@@ -342,13 +349,15 @@ class TaskManager:
             client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
             client.ping()
             return client
-        except Exception:
+        except Exception as exc:
+            logger.warning("Redis task state store unavailable: %s", exc)
             return None
 
     def _connect_sqlite(self) -> _SqliteTaskStore | None:
         try:
             return _SqliteTaskStore(settings.TASK_STATE_SQLITE_PATH)
-        except Exception:
+        except Exception as exc:
+            logger.warning("SQLite task state store unavailable: %s", exc)
             return None
 
     def _task_key(self, task_id: str) -> str:
@@ -394,7 +403,8 @@ class TaskManager:
             if not isinstance(payload, dict):
                 return None
             return TaskRecord.from_dict(payload)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Invalid Redis task payload for %s: %s", task_id, exc)
             return None
 
     def _save_to_sqlite(self, task: TaskRecord) -> None:
@@ -435,11 +445,11 @@ class TaskManager:
         try:
             self._save_to_redis(task)
         except Exception:
-            pass
+            logger.exception("Failed to persist task %s to Redis", task.task_id)
         try:
             self._save_to_sqlite(task)
         except Exception:
-            pass
+            logger.exception("Failed to persist task %s to SQLite", task.task_id)
         return task
 
     def get_task(self, task_id: str) -> TaskRecord | None:
@@ -449,11 +459,13 @@ class TaskManager:
         try:
             task = self._load_from_redis(task_id)
         except Exception:
+            logger.exception("Failed to load task %s from Redis", task_id)
             task = None
         if not task:
             try:
                 task = self._load_from_sqlite(task_id)
             except Exception:
+                logger.exception("Failed to load task %s from SQLite", task_id)
                 task = None
         if task:
             self._memory.update_task(task)
@@ -490,11 +502,11 @@ class TaskManager:
         try:
             self._save_to_redis(task)
         except Exception:
-            pass
+            logger.exception("Failed to persist task %s to Redis", task.task_id)
         try:
             self._save_to_sqlite(task)
         except Exception:
-            pass
+            logger.exception("Failed to persist task %s to SQLite", task.task_id)
 
     def complete_task(self, task_id: str, result: dict[str, Any] | None = None, message: str = "Task completed") -> None:
         self.update_task(
@@ -581,7 +593,7 @@ class TaskManager:
                 redis_tasks.append(task)
             _collect(redis_tasks)
         except Exception:
-            pass
+            logger.exception("Failed to list tasks from Redis")
 
         if len(task_map) < max_limit and self._sqlite:
             try:
@@ -593,7 +605,7 @@ class TaskManager:
                     )
                 )
             except Exception:
-                pass
+                logger.exception("Failed to list tasks from SQLite")
 
         if len(task_map) < max_limit:
             _collect(self._memory.list_tasks(task_type=task_type, project_id=project_id, limit=max_limit))
@@ -640,7 +652,7 @@ class TaskManager:
             try:
                 self._sqlite.cleanup_old_tasks(max_age_hours=max_age_hours)
             except Exception:
-                pass
+                logger.exception("Failed to cleanup old tasks from SQLite")
         if not self._redis:
             return
         try:
@@ -667,7 +679,7 @@ class TaskManager:
                     pipe.zrem(self._project_index_key(project_id), task_id)
                 pipe.execute()
         except Exception:
-            pass
+            logger.exception("Failed to cleanup old tasks from Redis")
 
 
 task_manager = TaskManager()

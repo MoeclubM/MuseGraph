@@ -41,7 +41,7 @@ class TestExtractJsonObject:
         assert result is None
 
     def test_extract_json_fenced_json_block(self):
-        """Test extracting JSON from fenced code block."""
+        """Markdown fenced JSON is rejected; structured LLM output must be a direct object."""
         from app.services.llm_json import extract_json_object
 
         raw = '''Here is the JSON:
@@ -51,12 +51,10 @@ class TestExtractJsonObject:
 That's it.'''
         result = extract_json_object(raw)
 
-        assert result is not None
-        assert result["name"] == "fenced"
-        assert result["count"] == 5
+        assert result is None
 
     def test_extract_json_fenced_without_language(self):
-        """Test extracting JSON from fenced block without language."""
+        """Markdown fences without language are rejected."""
         from app.services.llm_json import extract_json_object
 
         raw = '''Result:
@@ -65,11 +63,10 @@ That's it.'''
 ```'''
         result = extract_json_object(raw)
 
-        assert result is not None
-        assert result["status"] == "ok"
+        assert result is None
 
-    def test_extract_json_embedded_in_text_returns_none(self):
-        """Only direct JSON or fenced JSON is accepted."""
+    def test_extract_json_embedded_in_text(self):
+        """Embedded JSON is rejected so model format errors stay visible."""
         from app.services.llm_json import extract_json_object
 
         raw = 'The result is {"embedded": true} and that is it.'
@@ -107,6 +104,15 @@ not valid json
         assert result is not None
         assert result["outer"]["inner"]["deep"] == "value"
 
+    def test_extract_json_truncated_root_does_not_return_nested_object(self):
+        """A truncated top-level JSON response must not be mistaken for a nested object."""
+        from app.services.llm_json import extract_json_object
+
+        raw = '{"core_seed": {"title": "潮汐档案"}, "story_architecture": {"main_conflict": "'
+        result = extract_json_object(raw)
+
+        assert result is None
+
     def test_extract_json_array_not_dict(self):
         """Test that JSON array returns None (only dict accepted)."""
         from app.services.llm_json import extract_json_object
@@ -126,8 +132,8 @@ not valid json
 
         assert result is None
 
-    def test_extract_json_with_surrounding_text_returns_none(self):
-        """Only direct JSON or fenced JSON is accepted."""
+    def test_extract_json_with_surrounding_text(self):
+        """Surrounding text makes the response invalid."""
         from app.services.llm_json import extract_json_object
 
         raw = '''Before text.

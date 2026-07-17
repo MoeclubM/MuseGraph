@@ -1,0 +1,23 @@
+text_type: screenplay
+display_name: "剧本"
+default_skills:
+  analyzer: analyzer
+  outliner: outliner
+  writer: continuation
+  auditor: critic
+auditor_dimensions:
+  - continuity
+  - evidence_grounding
+  - structure
+  - language_quality
+  - intent_alignment
+  - dialogue_authenticity
+  - scene_pacing
+unit:
+  name: scene
+  default_word_count: 600
+control_docs:
+  intent: "templates/screenplay_intent.md"
+  focus: "templates/screenplay_focus.md"
+  rules: "templates/screenplay_rules.md"
+  bible: "templates/screenplay_bible.md"

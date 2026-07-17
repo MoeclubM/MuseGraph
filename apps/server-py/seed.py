@@ -6,6 +6,8 @@ from decimal import Decimal
 from app.config import settings
 from app.database import Base, engine, async_session
 from app.models import *  # noqa: F403 - import all models to register them
+from app.services.agent.skill_catalog import builtin_skill_records
+from app.services.agent.skills import seed_builtin_skills
 from app.services.auth import hash_password
 
 
@@ -113,6 +115,14 @@ async def seed():
             print(f"  Prompt templates synced (created {created_templates}, updated {updated_templates})")
         else:
             print("  Prompt templates already present")
+
+        # 3. Built-in agent skills
+        print("Seeding built-in agent skills…")
+        inserted_skills = await seed_builtin_skills(db)
+        total_builtins = len(builtin_skill_records())
+        print(
+            f"  upserted {inserted_skills} new built-in skills (total {total_builtins})"
+        )
 
         await db.commit()
         print("\nSeeding complete!")

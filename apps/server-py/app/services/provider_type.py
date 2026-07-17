@@ -21,11 +21,6 @@ def normalize_provider_type(value: str, *, supported: Iterable[str] | None = Non
     if not provider:
         raise ValueError("provider is required")
 
-    if provider == "openai":
-        provider = "openai_compatible"
-    elif provider == "anthropic":
-        provider = "anthropic_compatible"
-
     supported_values = set(supported or [])
     if supported_values and provider not in supported_values:
         raise ValueError(

@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import Input from '@/components/ui/Input.vue'
 import Button from '@/components/ui/Button.vue'
-import { Shield } from 'lucide-vue-next'
-import ThemeModeSwitch from '@/components/layout/ThemeModeSwitch.vue'
+import MuseLogo from '@/components/layout/MuseLogo.vue'
+import LocaleSwitch from '@/components/layout/LocaleSwitch.vue'
 
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
 const authStore = useAuthStore()
 const toast = useToast()
 
@@ -19,7 +21,7 @@ const loading = ref(false)
 
 async function handleLogin() {
   if (!email.value.trim() || !password.value.trim()) {
-    toast.warning('Please enter the admin email and password')
+    toast.warning(t('validation.adminCredentialsRequired'))
     return
   }
 
@@ -28,7 +30,7 @@ async function handleLogin() {
     await authStore.login(email.value.trim(), password.value)
     if (!authStore.isAdmin) {
       await authStore.logout()
-      toast.error('This account does not have admin access')
+      toast.error(t('toast.noAdminAccess'))
       return
     }
     const redirect = (route.query.redirect as string) || '/admin'
@@ -42,51 +44,49 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div class="relative flex min-h-screen items-center justify-center bg-[#f7f3e8] px-4 dark:bg-zinc-950">
-    <div class="absolute right-4 top-4">
-      <ThemeModeSwitch />
+  <div class="muse-auth-page">
+    <div class="absolute right-4 top-4 flex items-center gap-2">
+      <LocaleSwitch />
     </div>
-    <div class="muse-surface w-full max-w-sm rounded-md p-5 sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/80">
+    <div class="muse-card muse-auth-card">
       <div class="mb-6 text-center">
-        <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-md bg-amber-600">
-          <Shield class="h-6 w-6 text-white" />
-        </div>
-        <h1 class="text-xl font-semibold text-stone-900 dark:text-stone-100">Admin Sign In</h1>
-        <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Only administrator accounts can access the control panel.</p>
+        <MuseLogo size="md" />
+        <h1 class="mt-3 text-xl font-semibold muse-text-title">{{ t('auth.adminLogin.title') }}</h1>
+        <p class="mt-1 muse-text-caption">{{ t('auth.adminLogin.subtitle') }}</p>
       </div>
 
       <form class="space-y-4" @submit.prevent="handleLogin">
         <Input
           v-model="email"
-          label="Admin Email"
+          :label="t('auth.adminLogin.emailLabel')"
           name="email"
           type="email"
           autocomplete="username"
           autocapitalize="off"
           :spellcheck="false"
-          placeholder="admin@example.com"
+          :placeholder="t('auth.adminLogin.emailPlaceholder')"
         />
         <Input
           v-model="password"
-          label="Password"
+          :label="t('auth.adminLogin.passwordLabel')"
           name="password"
           type="password"
           autocomplete="current-password"
-          placeholder="Enter your password"
+          :placeholder="t('auth.adminLogin.passwordPlaceholder')"
         />
 
         <Button type="submit" variant="primary" class="w-full" :loading="loading">
-          Sign In to Admin
+          {{ t('auth.adminLogin.submit') }}
         </Button>
       </form>
 
       <Button
         variant="ghost"
         size="sm"
-        class="mt-4 h-auto w-full py-1 text-xs text-stone-500 hover:text-stone-700 dark:text-stone-400 dark:hover:text-stone-200"
+        class="mt-4 h-auto w-full py-1 text-xs muse-text-muted hover:muse-text-body"
         @click="router.push('/login')"
       >
-        Switch to regular user sign-in
+        {{ t('auth.adminLogin.switchToUser') }}
       </Button>
     </div>
   </div>

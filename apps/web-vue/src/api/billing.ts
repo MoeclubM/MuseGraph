@@ -1,5 +1,5 @@
 import api from './index'
-import type { PaymentOrderListResponse, PricingRule } from '@/types'
+import type { PaymentMethodsResponse, PaymentOrderListResponse, PricingRule } from '@/types'
 
 export async function getPricing(): Promise<PricingRule[]> {
   const { data } = await api.get<PricingRule[]>('/api/billing/pricing')
@@ -15,8 +15,14 @@ export async function getBalance(): Promise<{
   return data
 }
 
+export async function getPaymentMethods(): Promise<PaymentMethodsResponse> {
+  const { data } = await api.get<PaymentMethodsResponse>('/api/payment/methods')
+  return data
+}
+
 export async function deposit(
   amount: number,
+  paymentAdapterId: string,
   paymentMethod?: string
 ): Promise<{
   order_no: string
@@ -32,7 +38,8 @@ export async function deposit(
   }>('/api/payment/create', {
     type: 'RECHARGE',
     amount,
-    payment_method: paymentMethod || 'alipay',
+    payment_adapter_id: paymentAdapterId,
+    payment_method: paymentMethod || undefined,
   })
   return data
 }

@@ -1,4 +1,4 @@
-from app.routers import admin, ai, auth, billing, export, graph, payment, projects, report, simulation, users
+from app.routers import admin, ai, auth, billing, export, facts, memory, payment, project_files, project_versions, projects, users
 
 __all__ = [
     "admin",
@@ -6,10 +6,11 @@ __all__ = [
     "auth",
     "billing",
     "export",
-    "graph",
+    "facts",
+    "memory",
     "payment",
+    "project_files",
+    "project_versions",
     "projects",
-    "simulation",
-    "report",
     "users",
 ]

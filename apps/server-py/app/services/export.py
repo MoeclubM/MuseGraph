@@ -1,55 +1,59 @@
+from __future__ import annotations
+
+import asyncio
 import io
-import json
+import zipfile
+from pathlib import Path
+from typing import Any
+
+from app.services.project_files import project_workspace_root
+from app.services.project_workspace import write_project_workspace_snapshot
 
 
-def _resolve_export_content(project) -> str:
-    chapters = sorted(getattr(project, "chapters", []) or [], key=lambda c: (getattr(c, "order_index", 0), getattr(c, "created_at", 0)))
-    return "\n\n".join((chapter.content or "") for chapter in chapters if chapter.content is not None)
-
-
-async def export_project(project, format: str) -> tuple[bytes, str, str]:
-    """Export project content in the specified format.
-    Returns (content_bytes, content_type, filename).
-    """
+def _safe_archive_title(project: Any) -> str:
     title = project.title or "untitled"
-    safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip()[:50]
+    safe = "".join(c for c in title if c.isalnum() or c in " -_").strip()[:50]
+    return safe or "untitled"
 
-    if format == "txt":
-        content_text = _resolve_export_content(project)
-        content = content_text.encode("utf-8")
-        return content, "text/plain; charset=utf-8", f"{safe_title}.txt"
 
-    elif format == "json":
-        content_text = _resolve_export_content(project)
-        data = {
-            "title": project.title,
-            "description": project.description,
-            "content": content_text,
-            "created_at": project.created_at.isoformat(),
-            "updated_at": project.updated_at.isoformat(),
-        }
-        content = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-        return content, "application/json; charset=utf-8", f"{safe_title}.json"
+def _zip_workspace_directory(workspace: Path) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(workspace.rglob("*")):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(workspace)
+            if ".git" in relative.parts:
+                continue
+            archive.write(path, arcname=relative.as_posix())
+    return buffer.getvalue()
 
-    elif format == "md":
-        content_text = _resolve_export_content(project)
-        lines = [f"# {project.title}", ""]
-        if project.description:
-            lines.extend([project.description, ""])
-        lines.extend(["---", "", content_text])
-        content = "\n".join(lines).encode("utf-8")
-        return content, "text/markdown; charset=utf-8", f"{safe_title}.md"
 
-    elif format == "html":
-        content_text = _resolve_export_content(project)
-        html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>{project.title}</title></head>
-<body><h1>{project.title}</h1>
-{f'<p><em>{project.description}</em></p>' if project.description else ''}
-<div>{content_text.replace(chr(10), '<br>')}</div>
-</body></html>"""
-        content = html.encode("utf-8")
-        return content, "text/html; charset=utf-8", f"{safe_title}.html"
+def export_project_bundle_sync(
+    project: Any,
+    chapters: list[Any],
+    facts: list[Any],
+) -> tuple[bytes, str, str]:
+    """Build a ZIP of the project workspace snapshot (documents, metadata, uploads)."""
+    write_project_workspace_snapshot(
+        project,
+        chapters,
+        facts,
+    )
+    workspace = project_workspace_root(project.id)
+    content = _zip_workspace_directory(workspace)
+    filename = f"{_safe_archive_title(project)}.zip"
+    return content, "application/zip", filename
 
-    else:
-        raise ValueError(f"Unsupported format: {format}")
+
+async def export_project_bundle(
+    project: Any,
+    chapters: list[Any],
+    facts: list[Any],
+) -> tuple[bytes, str, str]:
+    return await asyncio.to_thread(
+        export_project_bundle_sync,
+        project,
+        chapters,
+        facts,
+    )

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Loader2 } from 'lucide-vue-next'
+import { Loader2 } from '@lucide/vue'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
+import { controlSizeClasses } from '@/lib/control-sizes'
 
 const buttonVariants = cva(
   'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md border text-sm font-medium shadow-none transition-[background-color,border-color,color] duration-150 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--muse-ring)] disabled:pointer-events-none disabled:opacity-50',
@@ -15,9 +16,9 @@ const buttonVariants = cva(
         ghost: 'border-transparent bg-transparent text-[color:var(--muse-text-muted)] hover:bg-[color:var(--muse-panel-strong)] hover:text-[color:var(--muse-text)]',
       },
       size: {
-        sm: 'h-8 px-3 text-xs',
-        md: 'h-10 px-4',
-        lg: 'h-11 px-6 text-[0.95rem]',
+        sm: controlSizeClasses.sm,
+        md: controlSizeClasses.md,
+        lg: controlSizeClasses.lg,
       },
     },
     defaultVariants: {

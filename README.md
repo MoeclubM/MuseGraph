@@ -1,130 +1,120 @@
 # MuseGraph
 
-AI 文本创作/分析系统，当前默认使用本地 Graphiti + Kuzu 图谱后端构建实体关系。
+MuseGraph 是一个面向长文本创作、分析和协作写作的 AI 工作区。生产运行时由 Pi Agent 工具循环驱动，项目语义记忆与关系图谱由 Cognee 构建，模型调用统一经 LiteLLM 路由。
 
 ## 技术栈
 
-- **后端**: Python / FastAPI
-- **前端**: Vue 3 + Vite + Tailwind
-- **知识图谱**: Graphiti (local) + Kuzu
-- **数据库**: PostgreSQL (pgvector) + Redis + Kuzu
-- **存储**: 本地持久化文件存储（Docker 卷）
-- **包管理**: uv (Python), pnpm (前端)
+- 前端：Vue 3、Vite 8、Tailwind CSS 4、Pinia
+- 后端：Python 3.12、FastAPI、SQLAlchemy
+- Agent：Pi Agent、多角色子代理、项目级 Skills
+- 记忆：Cognee
+- 数据：PostgreSQL、Redis、本地项目工作区
+- 包管理：uv、pnpm
 
-## 快速开始
+## Docker 启动
 
-### 前置要求
-
-- Docker 20.10+
-- Docker Compose 2.0+
-
-### 1. 克隆仓库
+项目统一在 WSL Debian 中构建和测试。重新构建前必须清理旧镜像和构建缓存，但不删除数据卷：
 
 ```bash
-git clone <repository-url>
-cd MuseGraph
+cd /mnt/c/Users/QwQ/Documents/GitHub/MuseGraph/docker
+docker compose down --remove-orphans
+docker system prune -a -f
+docker system df
+docker compose build
+docker compose up -d
 ```
 
-### 2. 配置环境变量
-
-在项目根目录创建 `.env` 文件（可选）：
-
-```env
-GRAPH_BACKEND=graphiti
-GRAPHITI_DB_PATH=.musegraph/graphiti/graphiti.kuzu
-```
-
-Provider API keys and model lists are configured in `Admin -> Providers`.
-
-### 3. 启动所有服务
-
-```bash
-cd docker
-docker compose up -d --build
-```
-
-服务启动后：
+服务地址：
 
 | 服务 | 地址 |
-|------|------|
-| 前端 | http://localhost:3000 |
-| 后端 API | http://localhost:4080 |
-| 图谱后端 | Local Graphiti |
+|---|---|
+| Web | http://127.0.0.1:3010 |
+| API | http://127.0.0.1:4080 |
+| API 健康检查 | http://127.0.0.1:4080/api/health |
 
-说明：任务系统状态与上传文件会持久化到 Docker 卷 `task_state_data`
-（`/app/.musegraph/task_state.sqlite3` 与 `/app/.musegraph/storage`），
-用户离线后返回仍可查询任务进度与结果。
-
-### 4. 初始化数据库
+首次启动后执行：
 
 ```bash
-# 进入 server 容器
-docker exec -it musegraph-server bash
-
-# 运行迁移
-alembic upgrade head
-# 可选：初始化基础配置（不会创建 demo 账号）
-python seed.py
+docker exec musegraph-server alembic upgrade head
+docker exec musegraph-server python seed.py
 ```
 
-如需创建管理员账号，请在环境变量中设置：
-`SEED_ADMIN_EMAIL`、`SEED_ADMIN_PASSWORD`（可选 `SEED_ADMIN_NICKNAME`）。
+管理员启动参数通过 Compose 环境变量设置：
 
-## 本地开发
-
-仅启动基础设施（PostgreSQL, Redis）：
-
-```bash
-cd docker
-docker-compose -f docker-compose.infra.yml up -d
+```env
+SEED_ADMIN_EMAIL=admin@example.com
+SEED_ADMIN_PASSWORD=replace-me
+SEED_ADMIN_NICKNAME=Administrator
 ```
 
-后端：
+模型 Provider、API Key、聊天模型和嵌入模型均通过 Admin → Providers 配置，不写入仓库。
+
+## 关键环境变量
+
+```env
+DATABASE_URL=postgresql+asyncpg://musegraph:musegraph123@postgres:5432/musegraph
+REDIS_URL=redis://redis:6379
+FILE_STORAGE_ROOT=/app/.musegraph/storage
+TASK_STATE_SQLITE_PATH=/app/.musegraph/task_state.sqlite3
+COGNEE_DATA_DIR=/app/.musegraph/cognee
+COGNEE_INGEST_TIMEOUT_SECONDS=300
+COGNEE_LLM_MAX_TOKENS=8192
+APP_URL=http://localhost:3010
+```
+
+## 开发命令
+
+依赖由锁文件固定：
 
 ```bash
 cd apps/server-py
-uv pip install -e "."
-uvicorn app.main:app --reload --port 4000
+uv sync --frozen
+
+cd ../..
+pnpm install --frozen-lockfile
 ```
 
-前端：
+本地调试仅在必要时使用：
 
 ```bash
+cd apps/server-py
+uv run uvicorn app.main:app --reload --port 4000
+
 cd apps/web-vue
-pnpm install
 pnpm dev
 ```
 
-## 测试
+## 验证
 
-前端单元测试：
-
-```bash
-pnpm --filter @musegraph/web test
-```
-
-前端覆盖率（包含最低覆盖率门禁）：
+生产镜像构建、健康检查和 E2E 都在 WSL/Docker 中执行。E2E 必须访问真实服务，不使用接口 mock 或伪造结果：
 
 ```bash
-pnpm --filter @musegraph/web test:coverage
+cd docker
+docker compose build
+docker compose up -d
+
+curl -fsS http://127.0.0.1:4080/api/health
+curl -fsSI http://127.0.0.1:3010/
+
+cd ..
+pnpm install --frozen-lockfile
+pnpm --dir apps/web-vue test:e2e:docker
 ```
 
-## 项目结构
+运行 Playwright 前先确认 `/api/health` 连续可用。
 
-```
-MuseGraph/
-├── apps/
-│   ├── server-py/     # FastAPI 后端
-│   └── web-vue/       # Vue 3 前端
-├── docker/            # Docker 配置
-│   ├── docker-compose.yml
-│   ├── docker-compose.infra.yml
-│   ├── server-py.Dockerfile
-│   ├── web-vue.Dockerfile
-│   └── nginx.conf
-└── packages/          # 共享包
+## 目录
+
+```text
+apps/server-py/   FastAPI、Agent、Cognee、数据库迁移
+apps/web-vue/     Vue 工作区与 Playwright E2E
+packages/         共享 TypeScript 类型与 AI adapters
+docker/           Compose、镜像和 Nginx 配置
+scripts/          管理、导入与真实服务 smoke 脚本
 ```
 
-## 许可证
+更完整的运行时说明见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
-MIT
+## License
+
+Apache-2.0

@@ -26,6 +26,11 @@ class User(Base):
 
     sessions: Mapped[list["Session"]] = relationship("Session", back_populates="user", cascade="all, delete-orphan")
     projects: Mapped[list["TextProject"]] = relationship("TextProject", back_populates="user", cascade="all, delete-orphan")
+    project_members: Mapped[list["ProjectMember"]] = relationship(
+        "ProjectMember",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class Session(Base):

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useProjectStore } from '@/stores/project'
+import type { Project } from '@/types'
 
 vi.mock('@/api/projects', () => ({
   getProjects: vi.fn(),
@@ -8,29 +9,24 @@ vi.mock('@/api/projects', () => ({
   createProject: vi.fn(),
   updateProject: vi.fn(),
   deleteProject: vi.fn(),
-  getOperations: vi.fn(),
 }))
 
 import * as projectsApi from '@/api/projects'
 
-const mockProject = {
+const mockProject: Project = {
   id: 'proj-1',
   user_id: 'user-1',
   title: 'Test Project',
   description: 'A test project',
-  content: 'Some content',
-  graph_id: null,
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
 }
 
-const mockProject2 = {
+const mockProject2: Project = {
   id: 'proj-2',
   user_id: 'user-1',
   title: 'Second Project',
   description: null,
-  content: '',
-  graph_id: null,
   created_at: '2024-01-02T00:00:00Z',
   updated_at: '2024-01-02T00:00:00Z',
 }
@@ -51,12 +47,6 @@ describe('Project Store', () => {
       const store = useProjectStore()
       expect(store.currentProject).toBeNull()
     })
-
-    it('should have empty operations array', () => {
-      const store = useProjectStore()
-      expect(store.operations).toEqual([])
-    })
-
     it('should have loading set to false', () => {
       const store = useProjectStore()
       expect(store.loading).toBe(false)
@@ -98,6 +88,24 @@ describe('Project Store', () => {
       await expect(store.fetchProjects()).rejects.toThrow('Network error')
 
       expect(store.loading).toBe(false)
+    })
+
+    it('should ignore stale fetchProjects responses after deleteProject', async () => {
+      let resolveStale: (value: typeof mockProject[]) => void
+      vi.mocked(projectsApi.getProjects).mockImplementationOnce(
+        () => new Promise((resolve) => { resolveStale = resolve })
+      )
+      vi.mocked(projectsApi.deleteProject).mockResolvedValue(undefined)
+
+      const store = useProjectStore()
+      const staleFetch = store.fetchProjects()
+      await store.deleteProject('proj-1')
+      store.projects = [mockProject2]
+
+      resolveStale!([mockProject, mockProject2])
+      await staleFetch
+
+      expect(store.projects).toEqual([mockProject2])
     })
   })
 

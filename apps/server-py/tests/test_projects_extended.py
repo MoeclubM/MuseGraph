@@ -10,6 +10,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
+from app.config import settings
+from app.services import project_git as project_git_service
+from tests.conftest import patch_app_route_globals
+
+
+@pytest.fixture(autouse=True)
+def _patch_projects_route_git_globals(monkeypatch: pytest.MonkeyPatch):
+    patch_app_route_globals(
+        monkeypatch,
+        "app.routers.projects",
+        {
+            "commit_project_git": project_git_service.commit_project_git,
+            "delete_project_git_storage": project_git_service.delete_project_git_storage,
+            "initialize_project_git_repo": project_git_service.initialize_project_git_repo,
+            "push_project_git_branch": project_git_service.push_project_git_branch,
+            "stage_project_git_paths": project_git_service.stage_project_git_paths,
+            "write_project_workspace_version_snapshot": MagicMock(return_value={}),
+        },
+    )
+
 
 def _scalar_one_or_none(value):
     result = MagicMock()
@@ -49,6 +69,8 @@ class TestProjectList:
             SimpleNamespace(
                 id="proj-1",
                 user_id="user-1",
+                visibility="private",
+                members=[],
                 title="Project 1",
                 description="Desc 1",
                 chapters=[
@@ -64,7 +86,6 @@ class TestProjectList:
                 ],
                 created_at=datetime.now(timezone.utc),
                 updated_at=datetime.now(timezone.utc),
-                simulation_requirement=None,
                 component_models=None,
             ),
         ]
@@ -83,8 +104,9 @@ class TestProjectCreate:
     """Test project creation endpoints."""
 
     @pytest.mark.asyncio
-    async def test_create_project_minimal(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
+    async def test_create_project_minimal(self, client: AsyncClient, mock_db: AsyncMock, fake_user, tmp_path, monkeypatch):
         """Test creating project with minimal data."""
+        monkeypatch.setattr(settings, "FILE_STORAGE_ROOT", str(tmp_path))
         # Track the project that gets added
         added_project = None
 
@@ -138,6 +160,8 @@ class TestProjectGet:
         project = SimpleNamespace(
             id="proj-1",
             user_id="different-user-id",
+            visibility="private",
+            members=[],
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -151,6 +175,8 @@ class TestProjectGet:
         project = SimpleNamespace(
             id="proj-1",
             user_id=fake_user.id,
+            visibility="private",
+            members=[],
             title="Test Project",
             description="Description",
             chapters=[
@@ -166,7 +192,6 @@ class TestProjectGet:
             ],
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
-            simulation_requirement=None,
             component_models=None,
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
@@ -199,6 +224,8 @@ class TestProjectUpdate:
         project = SimpleNamespace(
             id="proj-1",
             user_id="different-user-id",
+            visibility="private",
+            members=[],
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -215,6 +242,8 @@ class TestProjectUpdate:
         project = SimpleNamespace(
             id="proj-1",
             user_id=fake_user.id,
+            visibility="private",
+            members=[],
             title="Old Title",
             description="Description",
             chapters=[
@@ -223,14 +252,22 @@ class TestProjectUpdate:
                     project_id="proj-1",
                     title="Main Draft",
                     content="Content",
+                    status="draft",
+                    blueprint=None,
+                    plan=None,
+                    summary=None,
+                    continuity_notes=None,
                     order_index=0,
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc),
                 )
             ],
-            simulation_requirement=None,
+            facts=[],
             component_models=None,
-            oasis_analysis=None,
+            operation_prompts=None,
+            ontology_schema=None,
+            creative_state=None,
+            memory_id=None,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
@@ -264,6 +301,8 @@ class TestProjectDelete:
         project = SimpleNamespace(
             id="proj-1",
             user_id="different-user-id",
+            visibility="private",
+            members=[],
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -277,6 +316,8 @@ class TestProjectDelete:
         project = SimpleNamespace(
             id="proj-1",
             user_id=fake_user.id,
+            visibility="private",
+            members=[],
         )
         mock_db.execute.return_value = _scalar_one_or_none(project)
 
@@ -285,54 +326,3 @@ class TestProjectDelete:
         assert resp.status_code == 204
 
 
-class TestProjectOperation:
-    """Test project operation endpoints."""
-
-    @pytest.mark.asyncio
-    async def test_create_operation_unauthorized(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
-        """Test operation on another user's project returns 403."""
-        project = SimpleNamespace(
-            id="proj-1",
-            user_id="different-user-id",
-        )
-        mock_db.execute.return_value = _scalar_one_or_none(project)
-
-        resp = await client.post(
-            "/api/projects/proj-1/operation",
-            json={"type": "CREATE", "input": "Test", "model": "gpt-4o-mini"},
-        )
-
-        assert resp.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_create_operation_invalid_type(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
-        """Test operation with invalid type returns 400."""
-        project = SimpleNamespace(
-            id="proj-1",
-            user_id=fake_user.id,
-            component_models=None,
-        )
-        mock_db.execute.return_value = _scalar_one_or_none(project)
-
-        resp = await client.post(
-            "/api/projects/proj-1/operation",
-            json={"type": "INVALID", "input": "Test", "model": "gpt-4o-mini"},
-        )
-
-        assert resp.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_create_operation_missing_input(self, client: AsyncClient, mock_db: AsyncMock, fake_user):
-        """Test operation without input returns 400."""
-        project = SimpleNamespace(
-            id="proj-1",
-            user_id=fake_user.id,
-        )
-        mock_db.execute.return_value = _scalar_one_or_none(project)
-
-        resp = await client.post(
-            "/api/projects/proj-1/operation",
-            json={"type": "CREATE", "model": "gpt-4o-mini"},
-        )
-
-        assert resp.status_code == 400

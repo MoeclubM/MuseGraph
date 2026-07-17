@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import AdminTasksTab from '@/components/admin/AdminTasksTab.vue'
 import type { AdminTask } from '@/types'
+import { createTestI18n } from '@/__tests__/helpers/i18n'
+
+const i18n = createTestI18n('en')
 
 type TaskStatusFilter = '' | 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
 
@@ -22,6 +25,10 @@ const InputStub = defineComponent({
     modelValue: {
       type: [String, Number],
       default: '',
+    },
+    size: {
+      type: String,
+      default: 'md',
     },
   },
   emits: ['update:modelValue'],
@@ -55,7 +62,7 @@ const ButtonStub = defineComponent({
 function makeTask(overrides: Partial<AdminTask>): AdminTask {
   return {
     task_id: 'task-1',
-    task_type: 'graph_build',
+    task_type: 'memory_build',
     status: 'pending',
     created_at: '2026-03-01T00:00:00Z',
     updated_at: '2026-03-01T00:00:00Z',
@@ -95,6 +102,7 @@ describe('AdminTasksTab', () => {
     const wrapper = mount(AdminTasksTab, {
       props: baseProps(),
       global: {
+        plugins: [i18n],
         stubs: {
           Card: CardStub,
           Alert: AlertStub,
@@ -124,6 +132,7 @@ describe('AdminTasksTab', () => {
     const wrapper = mount(AdminTasksTab, {
       props: baseProps(),
       global: {
+        plugins: [i18n],
         stubs: {
           Card: CardStub,
           Alert: AlertStub,
@@ -155,6 +164,7 @@ describe('AdminTasksTab', () => {
         tasks: [pending, processing, done],
       },
       global: {
+        plugins: [i18n],
         stubs: {
           Card: CardStub,
           Alert: AlertStub,

@@ -31,3 +31,13 @@ class UserResponse(BaseModel):
 class AuthResponse(BaseModel):
     user: UserResponse
     token: str
+
+
+class UpdateMeRequest(BaseModel):
+    nickname: Optional[str] = Field(None, min_length=1, max_length=100)
+    email: Optional[EmailStr] = None
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6, max_length=128)
