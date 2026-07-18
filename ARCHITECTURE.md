@@ -57,12 +57,13 @@ queued → running → awaiting_review → accepting → completed
 2. Worker 从固定 Git Commit 建立隔离 Run 工作区。
 3. Planner 生成严格 `CreationPlan`。
 4. Composer 构造带 Git、知识 ID 和来源的 `CreativeContextBundle`。
-5. 每个角色只能调用统一 Tool Registry 中对该角色和 Skill 同时开放的工具。
-6. Writer/Reviser 只修改 Run 工作区；知识角色只写候选 `KnowledgeOperation`。
-7. Auditor 只读检查，确定性校验验证文件声明、知识引用、计划知识和 required 约束。
-8. 成功结果保存为 `ChangeSet` 与 `AgentFinish`，进入 `awaiting_review`。
-9. Accept 在项目写锁内构建新 Cognee Dataset、发布 Git Commit 并更新活动版本指针；任一步失败会撤销候选外部写入。
-10. Reject 删除隔离工作区；基础版本变化则标记 `conflicted`，不自动合并。
+5. Cognee Recall 返回的知识先由项目 Reranker 排序；上下文快照保存模型、知识 ID 和分数。
+6. 每个角色只能调用统一 Tool Registry 中对该角色和 Skill 同时开放的工具。
+7. Writer/Reviser 只修改 Run 工作区；知识角色只写候选 `KnowledgeOperation`。
+8. Auditor 只读检查，确定性校验验证文件声明、知识引用、计划知识和 required 约束。
+9. 成功结果保存为 `ChangeSet` 与 `AgentFinish`，进入 `awaiting_review`。
+10. Accept 在项目写锁内构建新 Cognee Dataset、发布 Git Commit 并更新活动版本指针；任一步失败会撤销候选外部写入。
+11. Reject 删除隔离工作区；基础版本变化则标记 `conflicted`，不自动合并。
 
 SSE 事件持久化在 `agent_events`，客户端通过 `Last-Event-ID` 从数据库续传。不存在 `partial` 成功、进程内 `BackgroundTasks`、SQLite TaskManager 或启发式自动写文件。
 
@@ -136,7 +137,14 @@ Memory Supervisor 使用 Cognee 1.4 正式接口：
 - `forget` 撤销未发布候选 Dataset
 - Dataset API 读取原始 KnowledgeRecord
 
-`CreativeContextBundle` 携带知识 ID 和来源，`AgentFinish.used_knowledge_ids` 必须能被确定性校验证明来自当前上下文。PostgreSQL 不保存重复 facts JSON、Graph 镜像或 `structured_memory` 权威副本。
+项目分别配置 `memory_llm`、`memory_embedding`、`memory_embedding_dimensions` 和
+`memory_reranker`。Embedding 与 Reranker 使用 OpenAI 兼容端点；Cognee LLM 可使用
+OpenAI 兼容端点，也可通过 LiteLLM `custom` 适配器使用 Anthropic 兼容端点。Provider
+优先级决定同名模型的实际路由，运行中不进行静默 fallback。
+
+`CreativeContextBundle` 携带知识 ID 和来源，Recall 证据只保存稳定 ID，Reranker 证据保存
+模型、稳定 ID 和相关性分数。`AgentFinish.used_knowledge_ids` 必须能被确定性校验证明来自
+当前上下文。PostgreSQL 不保存重复 facts JSON、Graph 镜像或 `structured_memory` 权威副本。
 
 ## 7. Git 与版本
 

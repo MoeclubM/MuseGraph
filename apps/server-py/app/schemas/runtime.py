@@ -27,6 +27,13 @@ AgentRole = Literal[
     "memory_builder",
     "graph_extractor",
 ]
+ExecutionAgentRole = Literal[
+    "writer",
+    "evaluator",
+    "updater",
+    "memory_builder",
+    "graph_extractor",
+]
 SkillScope = Literal["write", "analyze", "suggest"]
 KnowledgeKind = Literal["fact", "entity", "relation", "event", "constraint", "source"]
 
@@ -137,9 +144,8 @@ class ChangeSet(StrictModel):
 
 class CreationPlanStep(StrictModel):
     goal: str = Field(min_length=1)
-    role: AgentRole
+    role: ExecutionAgentRole
     target_refs: list[str] = Field(default_factory=list)
-    expected_output: str = Field(min_length=1)
 
 
 class CreationPlan(StrictModel):
@@ -224,6 +230,7 @@ class AgentRunResponse(StrictModel):
     effort: str | None
     target_refs: list[str]
     plan: dict[str, Any] | None
+    context_snapshot: dict[str, Any] | None
     skill_snapshot: dict[str, Any]
     final_output: dict[str, Any] | None
     error: str | None

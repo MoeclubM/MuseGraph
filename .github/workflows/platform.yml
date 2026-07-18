@@ -124,6 +124,7 @@ jobs:
       MUSEGRAPH_PROVIDER_MODEL: ${{ vars.MUSEGRAPH_PROVIDER_MODEL }}
       MUSEGRAPH_EMBEDDING_MODEL: ${{ vars.MUSEGRAPH_EMBEDDING_MODEL }}
       MUSEGRAPH_EMBEDDING_DIMENSIONS: ${{ vars.MUSEGRAPH_EMBEDDING_DIMENSIONS }}
+      MUSEGRAPH_RERANKER_MODEL: ${{ vars.MUSEGRAPH_RERANKER_MODEL }}
     steps:
       - uses: actions/checkout@v6
 
@@ -134,6 +135,7 @@ jobs:
           test -n "$MUSEGRAPH_PROVIDER_MODEL"
           test -n "$MUSEGRAPH_EMBEDDING_MODEL"
           test -n "$MUSEGRAPH_EMBEDDING_DIMENSIONS"
+          test -n "$MUSEGRAPH_RERANKER_MODEL"
           {
             echo "INTERNAL_SERVICE_TOKEN=$(openssl rand -hex 32)"
             echo "SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32 | tr '+/' '-_')"

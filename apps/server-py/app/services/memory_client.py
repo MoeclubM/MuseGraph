@@ -36,7 +36,7 @@ async def remember_knowledge_dataset(
 ) -> dict[str, Any]:
     async with httpx.AsyncClient(
         base_url=settings.MEMORY_SERVICE_URL,
-        timeout=settings.COGNEE_INGEST_TIMEOUT_SECONDS,
+        timeout=None,
     ) as client:
         response = await client.post(
             f"/internal/projects/{project_id}/remember",
@@ -84,7 +84,7 @@ async def recall_knowledge(
 ) -> list[Any]:
     async with httpx.AsyncClient(
         base_url=settings.MEMORY_SERVICE_URL,
-        timeout=settings.COGNEE_INGEST_TIMEOUT_SECONDS,
+        timeout=None,
     ) as client:
         response = await client.post(
             f"/internal/projects/{project_id}/recall",

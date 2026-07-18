@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import multiprocessing
+import os
 import queue
 import shutil
 import uuid
@@ -77,12 +78,17 @@ async def _remember_dataset(
         )
         for record in records
     ]
-    result = await cognee.remember(
+    await cognee.remember(
         items,
         dataset_name=dataset_name,
         run_in_background=False,
     )
-    return _json_value(result)
+    dataset = next(
+        dataset
+        for dataset in await cognee.datasets.list_datasets()
+        if dataset.name == dataset_name
+    )
+    return {"dataset_id": str(dataset.id), "dataset_name": dataset.name}
 
 
 async def _read_dataset_records(dataset_name: str) -> list[dict[str, Any]]:
@@ -114,10 +120,14 @@ async def _handle_command(
     if action == "records":
         return await _read_dataset_records(command["dataset_name"])
     if action == "recall":
+        from cognee.modules.search.types import SearchType
+
         result = await cognee.recall(
             query_text=command["query"],
+            query_type=SearchType.CHUNKS,
             datasets=[command["dataset_name"]],
             top_k=command["top_k"],
+            auto_route=False,
             only_context=True,
             verbose=True,
         )
@@ -137,6 +147,11 @@ def project_memory_process(
     request_queue: multiprocessing.Queue,
     response_queue: multiprocessing.Queue,
 ) -> None:
+    # Cognee's fixed 30-second connection probe is shorter than some real
+    # provider cold starts. The remember operation below still performs the
+    # actual embedding request and exposes any provider failure.
+    os.environ["COGNEE_SKIP_CONNECTION_TEST"] = "true"
+
     async def run() -> None:
         root = Path(root_value)
         await _configure_cognee(root, config)

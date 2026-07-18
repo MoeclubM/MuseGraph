@@ -1,4 +1,5 @@
 import inspect
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -25,8 +26,9 @@ from app.services.agent.skills import (
     validate_skill_definition,
 )
 from app.services.agent.tool_registry import TOOL_REGISTRY
-from app.services.agent_engine import _validate_changes
+from app.services.agent_engine import AgentAction, _agent_action_schema, _validate_changes
 from app.services.agent_workspace import apply_knowledge_operations
+from app.services import ai, memory_client, memory_config
 
 
 def test_tool_registry_schema_handler_and_role_contracts_are_complete():
@@ -103,11 +105,37 @@ def test_public_runtime_models_reject_unknown_fields():
                 CreationPlanStep(
                     goal="Draft",
                     role="writer",
-                    expected_output="chapter.md",
+                    target_refs=["chapter.md"],
                 )
             ],
             legacy_finish=True,
         )
+    with pytest.raises(ValidationError):
+        AgentAction.model_validate(
+            {
+                "action": "tool_call",
+                "role": "writer",
+                "tool": "write_file",
+                "arguments": {"path": "chapter.md", "content": "text"},
+            }
+        )
+    with pytest.raises(ValidationError):
+        AgentAction.model_validate(
+            {
+                "action": "tool_call",
+                "role": "writer",
+                "tool": "write_file1",
+                "arguments": {},
+            }
+        )
+    schema = AgentAction.model_json_schema()
+    assert schema["discriminator"]["propertyName"] == "action"
+    writer_schema = json.dumps(
+        _agent_action_schema({"list_files", "read_file", "write_file"}).model_json_schema()
+    )
+    assert '"write_file"' in writer_schema
+    assert '"knowledge_upsert"' not in writer_schema
+    assert '"role"' not in writer_schema
 
 
 def test_knowledge_union_requires_sources_and_relation_integrity():
@@ -196,3 +224,386 @@ def test_finish_must_prove_planned_knowledge_and_required_constraints_were_used(
     assert validation.passed is False
     failed = {check["name"] for check in validation.checks if not check["passed"]}
     assert failed == {"required_constraints_used"}
+
+
+@pytest.mark.asyncio
+async def test_cognee_uses_native_openai_compatible_embedding_engine(monkeypatch):
+    providers = {
+        False: SimpleNamespace(
+            provider="openai_compatible",
+            base_url="https://provider.example/v1",
+            api_key="encrypted-chat-key",
+        ),
+        True: SimpleNamespace(
+            provider="openai_compatible",
+            base_url="https://provider.example/v1",
+            api_key="encrypted-embedding-key",
+        ),
+    }
+    captured: dict[str, object] = {}
+
+    async def provider_for_model(_db, _model, *, embedding):
+        return providers[embedding]
+
+    async def start_instance(project_id, *, llm, embedding):
+        captured.update(project_id=project_id, llm=llm, embedding=embedding)
+
+    monkeypatch.setattr(memory_config, "_provider_for_model", provider_for_model)
+    monkeypatch.setattr(memory_config, "start_project_memory_instance", start_instance)
+    monkeypatch.setattr(memory_config, "decrypt_secret", lambda value: f"plain:{value}")
+
+    await memory_config.ensure_project_memory_instance(
+        SimpleNamespace(
+            id="project-1",
+            component_models={
+                "memory_llm": "deepseek-v4-flash",
+                "memory_embedding": "Qwen3-Embedding-0.6B",
+                "memory_embedding_dimensions": "1024",
+            },
+        ),
+        SimpleNamespace(),
+        require_models=True,
+    )
+
+    assert captured["llm"] == {
+        "llm_provider": "openai",
+        "llm_model": "openai/deepseek-v4-flash",
+        "llm_endpoint": "https://provider.example/v1",
+        "llm_api_key": "plain:encrypted-chat-key",
+        "llm_max_completion_tokens": memory_config.settings.COGNEE_LLM_MAX_TOKENS,
+    }
+    assert captured["embedding"] == {
+        "embedding_provider": "openai_compatible",
+        "embedding_model": "Qwen3-Embedding-0.6B",
+        "embedding_endpoint": "https://provider.example/v1",
+        "embedding_api_key": "plain:encrypted-embedding-key",
+        "embedding_dimensions": 1024,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cognee_model_resolution_uses_highest_priority_chat_provider():
+    anthropic = SimpleNamespace(
+        provider="anthropic_compatible",
+        models=["deepseek-v4-flash"],
+    )
+    openai = SimpleNamespace(
+        provider="openai_compatible",
+        models=["deepseek-v4-flash"],
+    )
+
+    class Result:
+        def scalars(self):
+            return [anthropic, openai]
+
+    class Database:
+        async def execute(self, _statement):
+            return Result()
+
+    assert (
+        await memory_config._provider_for_model(
+            Database(),
+            "deepseek-v4-flash",
+            embedding=False,
+        )
+        is anthropic
+    )
+
+
+@pytest.mark.asyncio
+async def test_cognee_routes_anthropic_compatible_llm_through_custom_endpoint(monkeypatch):
+    providers = {
+        False: SimpleNamespace(
+            provider="anthropic_compatible",
+            base_url="https://provider.example/v1",
+            api_key="encrypted-chat-key",
+        ),
+        True: SimpleNamespace(
+            provider="openai_compatible",
+            base_url="https://provider.example/v1",
+            api_key="encrypted-embedding-key",
+        ),
+    }
+    captured: dict[str, object] = {}
+
+    async def provider_for_model(_db, _model, *, embedding):
+        return providers[embedding]
+
+    async def start_instance(project_id, *, llm, embedding):
+        captured.update(project_id=project_id, llm=llm, embedding=embedding)
+
+    monkeypatch.setattr(memory_config, "_provider_for_model", provider_for_model)
+    monkeypatch.setattr(memory_config, "start_project_memory_instance", start_instance)
+    monkeypatch.setattr(memory_config, "decrypt_secret", lambda value: f"plain:{value}")
+
+    await memory_config.ensure_project_memory_instance(
+        SimpleNamespace(
+            id="project-1",
+            component_models={
+                "memory_llm": "deepseek-v4-flash",
+                "memory_embedding": "Qwen3-Embedding-0.6B",
+                "memory_embedding_dimensions": "1024",
+            },
+        ),
+        SimpleNamespace(),
+        require_models=True,
+    )
+
+    assert captured["llm"] == {
+        "llm_provider": "custom",
+        "llm_model": "anthropic/deepseek-v4-flash",
+        "llm_endpoint": "https://provider.example",
+        "llm_api_key": "plain:encrypted-chat-key",
+        "llm_max_completion_tokens": memory_config.settings.COGNEE_LLM_MAX_TOKENS,
+        "llm_args": {
+            "thinking": {"type": "disabled"},
+            "allowed_openai_params": ["thinking"],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_reranker_orders_traceable_knowledge_records(monkeypatch):
+    provider = SimpleNamespace(
+        provider="openai_compatible",
+        base_url="https://provider.example/v1/",
+        api_key="encrypted-reranker-key",
+        models={
+            "models": [],
+            "embedding_models": [],
+            "reranker_models": ["Qwen3-Reranker-0.6B"],
+        },
+    )
+
+    class ProviderResult:
+        def scalars(self):
+            return [provider]
+
+    class Database:
+        async def execute(self, _statement):
+            return ProviderResult()
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": [
+                    {"index": 1, "relevance_score": 0.9},
+                    {"index": 0, "relevance_score": 0.4},
+                ]
+            }
+
+    request: dict[str, object] = {}
+
+    class Client:
+        def __init__(self, *, timeout):
+            request["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+        async def post(self, url, *, headers, json):
+            request.update(url=url, headers=headers, json=json)
+            return Response()
+
+    async def runtime_config(_db):
+        return {"llm_request_timeout_seconds": 45}
+
+    monkeypatch.setattr(ai, "_runtime_config", runtime_config)
+    monkeypatch.setattr(ai.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(ai, "decrypt_secret", lambda _value: "private-key")
+
+    records = [
+        {"id": "fact:first", "title": "First", "content": "Less relevant"},
+        {"id": "fact:second", "title": "Second", "content": "Most relevant"},
+    ]
+    ranked = await ai.rerank_knowledge_records(
+        "Qwen3-Reranker-0.6B",
+        "Find the most relevant fact",
+        records,
+        Database(),
+    )
+
+    assert [record["id"] for record, _score in ranked] == [
+        "fact:second",
+        "fact:first",
+    ]
+    assert request["url"] == "https://provider.example/v1/rerank"
+    assert request["json"] == {
+        "model": "Qwen3-Reranker-0.6B",
+        "query": "Find the most relevant fact",
+        "documents": [
+            "fact:first\nFirst\nLess relevant",
+            "fact:second\nSecond\nMost relevant",
+        ],
+        "top_n": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_model_receives_explicit_reasoning_effort(monkeypatch):
+    provider = SimpleNamespace(
+        name="Protected provider",
+        provider="openai_compatible",
+        base_url="https://provider.example/v1",
+        api_key="encrypted-chat-key",
+        models=["deepseek-v4-flash"],
+    )
+
+    class ProviderResult:
+        def scalars(self):
+            return [provider]
+
+    class EmptyResult:
+        def scalar_one_or_none(self):
+            return None
+
+    class Database:
+        def __init__(self):
+            self.results = iter([ProviderResult(), EmptyResult(), EmptyResult()])
+
+        async def execute(self, _statement):
+            return next(self.results)
+
+    request: dict[str, object] = {}
+
+    async def completion(**kwargs):
+        request.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))],
+            usage={},
+        )
+
+    monkeypatch.setattr(ai.litellm, "acompletion", completion)
+    monkeypatch.setattr(ai, "decrypt_secret", lambda _value: "private-key")
+
+    response = await ai.call_llm(
+        "deepseek-v4-flash",
+        "Reply with OK.",
+        Database(),
+        reasoning_effort_override="low",
+    )
+
+    assert response["content"] == "OK"
+    assert request["reasoning_effort"] == "low"
+    assert request["allowed_openai_params"] == ["reasoning_effort"]
+    assert request["extra_headers"] == {"User-Agent": "MuseGraph/1.0"}
+    assert isinstance(request["client"], ai.AsyncOpenAI)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_compatible_base_url_does_not_duplicate_v1(monkeypatch):
+    provider = SimpleNamespace(
+        name="Agent provider",
+        provider="anthropic_compatible",
+        base_url="https://provider.example/v1",
+        api_key="encrypted-chat-key",
+        models=["deepseek-v4-flash"],
+    )
+
+    class ProviderResult:
+        def scalars(self):
+            return [provider]
+
+    class EmptyResult:
+        def scalar_one_or_none(self):
+            return None
+
+    class Database:
+        def __init__(self):
+            self.results = iter([ProviderResult(), EmptyResult(), EmptyResult()])
+
+        async def execute(self, _statement):
+            return next(self.results)
+
+    request: dict[str, object] = {}
+
+    async def completion(**kwargs):
+        request.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))],
+            usage={},
+        )
+
+    monkeypatch.setattr(ai.litellm, "acompletion", completion)
+    monkeypatch.setattr(ai, "decrypt_secret", lambda _value: "private-key")
+
+    response = await ai.call_llm(
+        "deepseek-v4-flash",
+        "Reply with OK.",
+        Database(),
+    )
+
+    assert response["content"] == "OK"
+    assert request["api_base"] == "https://provider.example"
+    assert request["custom_llm_provider"] == "anthropic"
+    assert request["thinking"] == {"type": "disabled"}
+    assert request["allowed_openai_params"] == ["thinking"]
+    assert "client" not in request
+
+
+@pytest.mark.asyncio
+async def test_openai_sdk_telemetry_headers_are_removed_at_provider_boundary():
+    request = ai.httpx.Request(
+        "POST",
+        "https://provider.example/v1/chat/completions",
+        headers={
+            "User-Agent": "AsyncOpenAI/Python 2.46.0",
+            "x-stainless-lang": "python",
+            "x-stainless-runtime": "CPython",
+            "x-stainless-raw-response": "true",
+        },
+    )
+
+    await ai._sanitize_openai_sdk_headers(request)
+
+    assert request.headers["User-Agent"] == "MuseGraph/1.0"
+    assert "x-stainless-lang" not in request.headers
+    assert "x-stainless-runtime" not in request.headers
+    assert request.headers["x-stainless-raw-response"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_long_running_memory_operations_have_no_client_side_cap(monkeypatch):
+    timeouts: list[object] = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": []}
+
+    class Client:
+        def __init__(self, *, base_url, timeout):
+            timeouts.append(timeout)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+        async def post(self, _path, *, headers, json):
+            return Response()
+
+    monkeypatch.setattr(memory_client.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(memory_client, "_headers", lambda: {"Authorization": "internal"})
+
+    await memory_client.remember_knowledge_dataset(
+        "project-1",
+        "dataset-1",
+        [{"id": "fact:one"}],
+    )
+    await memory_client.recall_knowledge(
+        "project-1",
+        "dataset-1",
+        "Find fact one",
+    )
+
+    assert timeouts == [None, None]

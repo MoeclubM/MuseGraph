@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, TypeAdapter
 from sqlalchemy import func, select
 
 from app.config import settings
@@ -23,7 +23,19 @@ from app.schemas.runtime import (
     KnowledgeRecord,
     PackContext,
 )
-from app.services.agent.tool_registry import ToolContext, execute_tool, tool_schemas
+from app.services.agent.tool_registry import (
+    DeleteFileInput,
+    EmptyInput,
+    KnowledgeDeleteInput,
+    KnowledgeGetInput,
+    KnowledgeSearchInput,
+    KnowledgeUpsertInput,
+    ReadFileInput,
+    ToolContext,
+    WriteFileInput,
+    execute_tool,
+    tool_schemas,
+)
 from app.services.agent_workspace import (
     apply_knowledge_operations,
     collect_file_changes,
@@ -32,32 +44,133 @@ from app.services.agent_workspace import (
     list_run_files,
     read_run_file,
 )
-from app.services.ai import call_llm
+from app.services.ai import call_llm, rerank_knowledge_records
 from app.services.memory_client import list_knowledge_records, recall_knowledge
 from app.services.memory_config import ensure_project_memory_instance
 from app.services.agent.pack_core import load_pack
 
 
-class AgentAction(BaseModel):
+AgentRole = Literal[
+    "planner",
+    "composer",
+    "writer",
+    "auditor",
+    "reviser",
+    "evaluator",
+    "updater",
+    "memory_builder",
+    "graph_extractor",
+]
+EXECUTION_ROLES = {
+    "writer",
+    "evaluator",
+    "updater",
+    "memory_builder",
+    "graph_extractor",
+}
+
+
+class ToolCallBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["tool_call", "finish"]
-    role: str | None = None
-    tool: str | None = None
-    arguments: dict[str, Any] = Field(default_factory=dict)
+    action: Literal["tool_call"]
     reason: str = ""
-    output: AgentFinish | None = None
 
-    @model_validator(mode="after")
-    def validate_action(self) -> "AgentAction":
-        if self.action == "tool_call":
-            if not self.role or not self.tool:
-                raise ValueError("tool_call requires role and tool")
-            if self.output is not None:
-                raise ValueError("tool_call cannot contain output")
-        elif self.output is None:
-            raise ValueError("finish requires output")
-        return self
+
+class ListFilesAction(ToolCallBase):
+    tool: Literal["list_files"]
+    arguments: EmptyInput
+
+
+class ReadFileAction(ToolCallBase):
+    tool: Literal["read_file"]
+    arguments: ReadFileInput
+
+
+class WriteFileAction(ToolCallBase):
+    tool: Literal["write_file"]
+    arguments: WriteFileInput
+
+
+class DeleteFileAction(ToolCallBase):
+    tool: Literal["delete_file"]
+    arguments: DeleteFileInput
+
+
+class KnowledgeSearchAction(ToolCallBase):
+    tool: Literal["knowledge_search"]
+    arguments: KnowledgeSearchInput
+
+
+class KnowledgeGetAction(ToolCallBase):
+    tool: Literal["knowledge_get"]
+    arguments: KnowledgeGetInput
+
+
+class KnowledgeUpsertAction(ToolCallBase):
+    tool: Literal["knowledge_upsert"]
+    arguments: KnowledgeUpsertInput
+
+
+class KnowledgeDeleteAction(ToolCallBase):
+    tool: Literal["knowledge_delete"]
+    arguments: KnowledgeDeleteInput
+
+
+ToolCallAction = Annotated[
+    ListFilesAction
+    | ReadFileAction
+    | WriteFileAction
+    | DeleteFileAction
+    | KnowledgeSearchAction
+    | KnowledgeGetAction
+    | KnowledgeUpsertAction
+    | KnowledgeDeleteAction,
+    Field(discriminator="tool"),
+]
+TOOL_ACTION_MODELS = {
+    "list_files": ListFilesAction,
+    "read_file": ReadFileAction,
+    "write_file": WriteFileAction,
+    "delete_file": DeleteFileAction,
+    "knowledge_search": KnowledgeSearchAction,
+    "knowledge_get": KnowledgeGetAction,
+    "knowledge_upsert": KnowledgeUpsertAction,
+    "knowledge_delete": KnowledgeDeleteAction,
+}
+
+
+class FinishAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["finish"]
+    output: AgentFinish
+
+
+class AgentAction(
+    RootModel[
+        Annotated[
+            ToolCallAction | FinishAction,
+            Field(discriminator="action"),
+        ]
+    ]
+):
+    pass
+
+
+def _agent_action_schema(tool_names: set[str]) -> type[RootModel[Any]]:
+    action_types = [TOOL_ACTION_MODELS[name] for name in sorted(tool_names)]
+    tool_action_type: Any = action_types[0]
+    for action_type in action_types[1:]:
+        tool_action_type |= action_type
+    if len(action_types) > 1:
+        tool_action_type = Annotated[tool_action_type, Field(discriminator="tool")]
+    return RootModel[
+        Annotated[
+            tool_action_type | FinishAction,
+            Field(discriminator="action"),
+        ]
+    ]
 
 
 class AuditIssue(BaseModel):
@@ -211,13 +324,62 @@ async def _build_context(
                 raise RuntimeError(
                     "Cognee recall returned context without traceable KnowledgeRecord IDs"
                 )
+            reranker_model = str(
+                (project.component_models or {}).get("memory_reranker") or ""
+            ).strip()
+            if not reranker_model:
+                raise RuntimeError(
+                    "Project model component is not configured: memory_reranker"
+                )
+            async with async_session() as db:
+                ranked = await rerank_knowledge_records(
+                    reranker_model,
+                    run.instruction,
+                    selected_knowledge,
+                    db,
+                )
+            selected_knowledge = [record for record, _score in ranked]
             items.append(
                 ContextItem(
                     id=f"recall:{revision.knowledge_dataset}",
                     kind="retrieval",
-                    content=json.dumps(recalled, ensure_ascii=False),
+                    content=json.dumps(
+                        {
+                            "knowledge_ids": [
+                                str(record["id"]) for record in selected_knowledge
+                            ]
+                        },
+                        ensure_ascii=False,
+                    ),
                     source_refs=[
                         SourceRef(kind="knowledge", ref=str(record["id"]), revision=revision.id)
+                        for record in selected_knowledge
+                    ],
+                )
+            )
+            items.append(
+                ContextItem(
+                    id=f"rerank:{reranker_model}",
+                    kind="retrieval",
+                    content=json.dumps(
+                        {
+                            "model": reranker_model,
+                            "results": [
+                                {
+                                    "knowledge_id": record["id"],
+                                    "relevance_score": score,
+                                }
+                                for record, score in ranked
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    source_refs=[
+                        SourceRef(
+                            kind="knowledge",
+                            ref=str(record["id"]),
+                            revision=revision.id,
+                        )
                         for record in selected_knowledge
                     ],
                 )
@@ -262,7 +424,10 @@ async def _llm_json(
     async with async_session() as db:
         response = await call_llm(
             model,
-            prompt,
+            (
+                f"{prompt}\n\n仅返回符合响应 Schema 的 JSON；"
+                "不得输出分析、Markdown 或任何前后缀。"
+            ),
             db,
             max_tokens=max_tokens,
             billing_user_id=run.user_id,
@@ -282,13 +447,38 @@ async def _create_plan(
     context: CreativeContextBundle,
     skill: dict[str, Any],
 ) -> CreationPlan:
+    manifest = {
+        "target_refs": context.target_refs,
+        "control_documents": [
+            item.id.removeprefix("file:")
+            for item in context.items
+            if item.kind == "control_document"
+        ],
+        "pack_unit": context.pack.unit,
+        "knowledge": [
+            {"id": item.id, "kind": item.kind, "title": item.title}
+            for item in context.knowledge
+        ],
+        "constraints": [
+            {"id": item.id, "title": item.title, "severity": item.severity}
+            for item in context.constraints
+        ],
+    }
+    planner_skill = {
+        "slug": skill["slug"],
+        "roles": skill["roles"],
+        "allowed_tools": skill["allowed_tools"],
+    }
     prompt = (
         "你是 MuseGraph Planner。根据用户目标、项目上下文和当前 Skill 生成严格可执行计划。"
-        "计划步骤只能使用当前 Skill.roles 中列出的角色。需要修改文本时必须包含 writer；"
-        "需要修改结构化知识时必须包含 updater、memory_builder 或 graph_extractor。"
+        "每个计划步骤必须且只能对应一次实际工具调用。步骤只能使用当前 Skill.roles 中的"
+        " writer、evaluator、updater、memory_builder、graph_extractor；planner、composer、"
+        "auditor、reviser 已由引擎独立执行，禁止写入步骤。每个待写文件必须分别安排一个"
+        " writer 步骤；结构化知识变更使用 updater、memory_builder 或 graph_extractor。"
+        "计划只描述动作、目标文件和验收意图，禁止在计划中创作正文、大纲或知识内容。"
         "\n\n用户目标：\n"
-        f"{run.instruction}\n\nSkill：\n{json.dumps(skill, ensure_ascii=False)}"
-        f"\n\n上下文：\n{context.model_dump_json()}"
+        f"{run.instruction}\n\nSkill：\n{json.dumps(planner_skill, ensure_ascii=False)}"
+        f"\n\n项目清单：\n{json.dumps(manifest, ensure_ascii=False)}"
     )
     return await _llm_json(
         run=run,
@@ -310,7 +500,7 @@ def _role_context(
         targeted = [
             item.model_dump()
             for item in context.items
-            if item.kind in {"control_document", "target_file", "knowledge", "retrieval"}
+            if item.kind in {"control_document", "target_file"}
         ]
         return {
             "instruction": instruction,
@@ -348,9 +538,12 @@ async def _run_tool_loop(
                 skill["roles"][0],
             )
         schemas = tool_schemas(allowed_tools, role)
+        response_schema = _agent_action_schema(
+            {schema["name"] for schema in schemas}
+        )
         prompt = (
             "你是 MuseGraph 文本创作 Agent。一次只返回一个严格 JSON action。"
-            "tool_call 时填写 role/tool/arguments/reason；完成时 action=finish 并填写 output。"
+            "tool_call 时填写 tool/arguments/reason；完成时 action=finish 并填写 output。"
             "所有写作必须实际调用 write_file，所有结构化知识必须调用 knowledge_upsert/delete。"
             "不得声称未执行的修改。输出语言与用户一致。"
             f"\n\n用户目标：{run.instruction}"
@@ -359,31 +552,31 @@ async def _run_tool_loop(
             f"\n\n计划：{plan.model_dump_json()}"
             f"\n\n当前角色上下文：{json.dumps(_role_context(context, role, run.instruction), ensure_ascii=False)}"
             f"\n\n当前角色：{role}"
-            f"\n\n可用工具：{json.dumps(schemas, ensure_ascii=False)}"
+            f"\n\n可用工具：{json.dumps([{'name': schema['name'], 'description': schema['description']} for schema in schemas], ensure_ascii=False)}"
             f"\n\n执行历史：{json.dumps(history, ensure_ascii=False)}"
         )
-        action = await _llm_json(
+        action_envelope = await _llm_json(
             run=run,
             model=model,
             prompt=prompt,
-            response_schema=AgentAction,
+            response_schema=response_schema,
             max_tokens=settings.AGENT_PI_TOOL_LOOP_MAX_TOKENS,
         )
-        assert isinstance(action, AgentAction)
-        if action.action == "finish":
+        action = action_envelope.root
+        if isinstance(action, FinishAction):
             return action.output
-        tool_context.role = str(action.role)
+        tool_context.role = role
         result = await execute_tool(
             tool_context,
-            str(action.tool),
-            action.arguments,
+            action.tool,
+            action.arguments.model_dump(mode="json"),
             allowed_tools,
         )
         await append_agent_event(
             run.id,
             "tool",
             {
-                "role": action.role,
+                "role": role,
                 "tool": action.tool,
                 "reason": action.reason,
                 "result": result,
@@ -391,9 +584,9 @@ async def _run_tool_loop(
         )
         history.append(
             {
-                "role": action.role,
+                "role": role,
                 "tool": action.tool,
-                "arguments": action.arguments,
+                "arguments": action.arguments.model_dump(mode="json"),
                 "result": result,
                 "next_role": _next_role(plan, len(history)),
             }
@@ -508,9 +701,14 @@ async def execute_agent_run(run_id: str, worker_id: str) -> None:
                 await ensure_project_memory_instance(project, memory_db, require_models=True)
         knowledge_records = {str(record["id"]): record for record in base_records}
         context = await _build_context(run, project, revision, base_records)
+        async with async_session() as db:
+            record = (await db.execute(select(AgentRun).where(AgentRun.id == run.id))).scalar_one()
+            record.context_snapshot = context.model_dump(mode="json")
+            await db.commit()
         plan = await _create_plan(run, model, context, run.skill_snapshot)
+        plan_roles = {step.role for step in plan.steps}
         invalid_plan_roles = sorted(
-            {step.role for step in plan.steps} - set(run.skill_snapshot["roles"])
+            plan_roles - (set(run.skill_snapshot["roles"]) & EXECUTION_ROLES)
         )
         if invalid_plan_roles:
             raise ValueError(
@@ -519,7 +717,6 @@ async def execute_agent_run(run_id: str, worker_id: str) -> None:
         async with async_session() as db:
             record = (await db.execute(select(AgentRun).where(AgentRun.id == run.id))).scalar_one()
             record.plan = plan.model_dump(mode="json")
-            record.context_snapshot = context.model_dump(mode="json")
             await db.commit()
         await append_agent_event(run.id, "plan", plan.model_dump(mode="json"))
 

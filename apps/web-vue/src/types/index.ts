@@ -276,6 +276,7 @@ export interface AgentRun {
   effort: string | null
   target_refs: string[]
   plan: Record<string, unknown> | null
+  context_snapshot: Record<string, unknown> | null
   skill_snapshot: Record<string, unknown>
   final_output: {
     summary: string

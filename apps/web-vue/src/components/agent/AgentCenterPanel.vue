@@ -11,7 +11,7 @@ const props = defineProps<{ projectId: string }>()
 const agent = useAgentStore()
 const instruction = ref('')
 const mode = ref<AgentRunMode>('write')
-const effort = ref<'low' | 'medium' | 'high'>('medium')
+const effort = ref<'' | 'low' | 'medium' | 'high'>('')
 const skillSlug = ref('')
 const files = ref<ProjectFile[]>([])
 const skills = ref<SkillItem[]>([])
@@ -33,7 +33,7 @@ async function submit() {
   if (!value) return
   await agent.startRun(props.projectId, value, {
     mode: mode.value,
-    effort: effort.value,
+    effort: effort.value || null,
     skill_slug: skillSlug.value || null,
     target_refs: targetRefs.value,
   })
@@ -168,6 +168,7 @@ watch(mode, () => {
           <label class="text-xs muse-text-muted">
             推理强度
             <select v-model="effort" class="muse-input mt-1 w-full">
+              <option value="">由模型默认决定</option>
               <option value="low">低</option>
               <option value="medium">中</option>
               <option value="high">高</option>

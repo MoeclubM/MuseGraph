@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import secrets
 
@@ -23,12 +24,14 @@ async def test_real_provider_creation_uses_structured_knowledge_and_publishes_on
     model = os.environ.get("MUSEGRAPH_PROVIDER_MODEL")
     embedding_model = os.environ.get("MUSEGRAPH_EMBEDDING_MODEL")
     embedding_dimensions = os.environ.get("MUSEGRAPH_EMBEDDING_DIMENSIONS")
+    reranker_model = os.environ.get("MUSEGRAPH_RERANKER_MODEL")
     assert base_url, "MUSEGRAPH_TEST_BASE_URL is required"
     assert admin_email and admin_password, "Seed administrator credentials are required"
     assert provider_api_key, "MUSEGRAPH_PROVIDER_API_KEY is required"
     assert model, "MUSEGRAPH_PROVIDER_MODEL is required"
     assert embedding_model, "MUSEGRAPH_EMBEDDING_MODEL is required"
     assert embedding_dimensions and embedding_dimensions.isdigit()
+    assert reranker_model, "MUSEGRAPH_RERANKER_MODEL is required"
 
     timeout = httpx.Timeout(1200)
     async with (
@@ -40,32 +43,65 @@ async def test_real_provider_creation_uses_structured_knowledge_and_publishes_on
             json={"email": admin_email, "password": admin_password},
         )
         assert login.status_code == 200, login.text
-        provider = await admin.post(
+        runtime_config = await admin.put(
+            "/api/admin/llm-runtime-config",
+            headers=csrf_headers(admin),
+            json={"llm_request_timeout_seconds": 600},
+        )
+        assert runtime_config.status_code == 200, runtime_config.text
+        assert runtime_config.json()["llm_request_timeout_seconds"] == 600
+        agent_provider = await admin.post(
             "/api/admin/providers",
             headers=csrf_headers(admin),
             json={
-                "name": f"Protected provider {secrets.token_hex(4)}",
-                "provider": "openai_compatible",
+                "name": f"Protected Agent provider {secrets.token_hex(4)}",
+                "provider": "anthropic_compatible",
                 "api_key": provider_api_key,
                 "base_url": provider_base_url or None,
                 "is_active": True,
                 "priority": 1000,
             },
         )
-        assert provider.status_code == 200, provider.text
-        provider_id = provider.json()["id"]
+        assert agent_provider.status_code == 200, agent_provider.text
+        agent_provider_id = agent_provider.json()["id"]
         chat_binding = await admin.post(
-            f"/api/admin/providers/{provider_id}/models",
+            f"/api/admin/providers/{agent_provider_id}/models",
             headers=csrf_headers(admin),
             json={"model": model},
         )
         assert chat_binding.status_code == 200, chat_binding.text
+        memory_provider = await admin.post(
+            "/api/admin/providers",
+            headers=csrf_headers(admin),
+            json={
+                "name": f"Protected Memory provider {secrets.token_hex(4)}",
+                "provider": "openai_compatible",
+                "api_key": provider_api_key,
+                "base_url": provider_base_url or None,
+                "is_active": True,
+                "priority": 900,
+            },
+        )
+        assert memory_provider.status_code == 200, memory_provider.text
+        memory_provider_id = memory_provider.json()["id"]
+        memory_chat_binding = await admin.post(
+            f"/api/admin/providers/{memory_provider_id}/models",
+            headers=csrf_headers(admin),
+            json={"model": model},
+        )
+        assert memory_chat_binding.status_code == 200, memory_chat_binding.text
         embedding_binding = await admin.post(
-            f"/api/admin/providers/{provider_id}/embedding-models",
+            f"/api/admin/providers/{memory_provider_id}/embedding-models",
             headers=csrf_headers(admin),
             json={"model": embedding_model},
         )
         assert embedding_binding.status_code == 200, embedding_binding.text
+        reranker_binding = await admin.post(
+            f"/api/admin/providers/{memory_provider_id}/reranker-models",
+            headers=csrf_headers(admin),
+            json={"model": reranker_model},
+        )
+        assert reranker_binding.status_code == 200, reranker_binding.text
 
         registration = await user.post(
             "/api/auth/register",
@@ -89,6 +125,7 @@ async def test_real_provider_creation_uses_structured_knowledge_and_publishes_on
                     "memory_llm": model,
                     "memory_embedding": embedding_model,
                     "memory_embedding_dimensions": embedding_dimensions,
+                    "memory_reranker": reranker_model,
                 },
             },
         )
@@ -159,7 +196,6 @@ async def test_real_provider_creation_uses_structured_knowledge_and_publishes_on
             json={
                 "mode": "write",
                 "model": model,
-                "effort": "low",
                 "instruction": (
                     "使用 character-lin-lan、event-quantum-beacon 和 constraint-no-corona "
                     "创作一个完整的中文科幻短篇。必须把大纲写入 outline.md，把正文写入 "
@@ -188,6 +224,28 @@ async def test_real_provider_creation_uses_structured_knowledge_and_publishes_on
             assert asyncio.get_running_loop().time() < deadline, f"Run timed out: {run}"
             await asyncio.sleep(3)
         assert run["status"] == "awaiting_review", run
+        context_items = run["context_snapshot"]["items"]
+        recall_item = next(
+            item for item in context_items if item["id"].startswith("recall:")
+        )
+        assert set(json.loads(recall_item["content"])["knowledge_ids"]) == {
+            "character-lin-lan",
+            "event-quantum-beacon",
+            "constraint-no-corona",
+        }
+        rerank_item = next(
+            item
+            for item in context_items
+            if item["id"] == f"rerank:{reranker_model}"
+        )
+        assert {
+            "character-lin-lan",
+            "event-quantum-beacon",
+            "constraint-no-corona",
+        } <= {
+            item["knowledge_id"]
+            for item in json.loads(rerank_item["content"])["results"]
+        }
         assert {
             "character-lin-lan",
             "event-quantum-beacon",

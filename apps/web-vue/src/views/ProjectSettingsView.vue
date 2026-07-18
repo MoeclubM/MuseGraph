@@ -11,6 +11,7 @@ import {
   deleteProjectMember,
   getEmbeddingModels,
   getModels,
+  getRerankerModels,
   listProjectMembers,
   updateProjectMember,
   updateProjectVisibility,
@@ -28,6 +29,7 @@ const loading = ref(false)
 const saving = ref(false)
 const chatModels = ref<ModelInfo[]>([])
 const embeddingModels = ref<ModelInfo[]>([])
+const rerankerModels = ref<ModelInfo[]>([])
 const knowledge = ref<KnowledgeSnapshot | null>(null)
 const members = ref<ProjectMember[]>([])
 const memberUserId = ref('')
@@ -45,15 +47,17 @@ const canDelete = computed(() => projects.currentProject?.current_user_permissio
 async function load() {
   loading.value = true
   try {
-    const [project, chats, embeddings, snapshot, projectMembers] = await Promise.all([
+    const [project, chats, embeddings, rerankers, snapshot, projectMembers] = await Promise.all([
       projects.fetchProject(projectId.value),
       getModels(),
       getEmbeddingModels(),
+      getRerankerModels(),
       listKnowledge(projectId.value),
       listProjectMembers(projectId.value),
     ])
     chatModels.value = chats
     embeddingModels.value = embeddings
+    rerankerModels.value = rerankers
     knowledge.value = snapshot
     members.value = projectMembers
     form.title = project.title
@@ -177,6 +181,13 @@ watch(projectId, load, { immediate: true })
           <label class="grid gap-2 text-xs sm:grid-cols-[180px_1fr] sm:items-center">
             <span>Embedding 维度</span>
             <input :value="form.component_models.memory_embedding_dimensions || ''" type="number" min="1" class="muse-input" :disabled="!canManage" @input="setModel('memory_embedding_dimensions', ($event.target as HTMLInputElement).value)" />
+          </label>
+          <label class="grid gap-2 text-xs sm:grid-cols-[180px_1fr] sm:items-center">
+            <span>知识 Reranker</span>
+            <select :value="form.component_models.memory_reranker || ''" class="muse-input" :disabled="!canManage" @change="setModel('memory_reranker', ($event.target as HTMLSelectElement).value)">
+              <option value="">未配置</option>
+              <option v-for="model in rerankerModels" :key="model.id" :value="model.id">{{ model.id }}</option>
+            </select>
           </label>
           <div class="rounded-lg bg-[color:var(--muse-surface-muted)] p-3 text-xs">
             <p class="font-semibold">{{ knowledge?.dataset_name }}</p>

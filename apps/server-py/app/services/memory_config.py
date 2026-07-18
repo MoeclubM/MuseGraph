@@ -11,6 +11,7 @@ from app.services.provider_models import (
     get_provider_chat_models,
     get_provider_embedding_models,
 )
+from app.services.provider_type import is_anthropic_provider
 from app.services.secret_crypto import decrypt_secret
 
 
@@ -26,6 +27,8 @@ async def _provider_for_model(
         .order_by(AIProviderConfig.priority.desc(), AIProviderConfig.created_at)
     )
     for provider in result.scalars():
+        if embedding and provider.provider != "openai_compatible":
+            continue
         models = (
             get_provider_embedding_models(provider)
             if embedding
@@ -62,26 +65,39 @@ async def ensure_project_memory_instance(
     dimensions_raw = str(component_models.get("memory_embedding_dimensions") or "").strip()
     if not dimensions_raw.isdigit() or int(dimensions_raw) <= 0:
         raise RuntimeError("memory_embedding_dimensions must be a positive integer")
-    if llm_provider.provider != "openai_compatible":
-        raise RuntimeError("Cognee LLM provider must be OpenAI-compatible")
-    if embedding_provider.provider != "openai_compatible":
-        raise RuntimeError("Cognee embedding provider must be OpenAI-compatible")
-    await start_project_memory_instance(
-        project.id,
-        llm={
+    if is_anthropic_provider(llm_provider.provider):
+        llm_endpoint = str(llm_provider.base_url or "").rstrip("/").removesuffix("/v1")
+        llm = {
+            "llm_provider": "custom",
+            "llm_model": (
+                llm_model
+                if llm_model.startswith("anthropic/")
+                else f"anthropic/{llm_model}"
+            ),
+            "llm_endpoint": llm_endpoint,
+            "llm_api_key": decrypt_secret(llm_provider.api_key),
+            "llm_max_completion_tokens": settings.COGNEE_LLM_MAX_TOKENS,
+            "llm_args": {
+                "thinking": {"type": "disabled"},
+                "allowed_openai_params": ["thinking"],
+            },
+        }
+    else:
+        llm = {
             "llm_provider": "openai",
-            "llm_model": llm_model if llm_model.startswith("openai/") else f"openai/{llm_model}",
+            "llm_model": (
+                llm_model if llm_model.startswith("openai/") else f"openai/{llm_model}"
+            ),
             "llm_endpoint": llm_provider.base_url or "",
             "llm_api_key": decrypt_secret(llm_provider.api_key),
             "llm_max_completion_tokens": settings.COGNEE_LLM_MAX_TOKENS,
-        },
+        }
+    await start_project_memory_instance(
+        project.id,
+        llm=llm,
         embedding={
-            "embedding_provider": "openai",
-            "embedding_model": (
-                embedding_model
-                if embedding_model.startswith("openai/")
-                else f"openai/{embedding_model}"
-            ),
+            "embedding_provider": "openai_compatible",
+            "embedding_model": embedding_model,
             "embedding_endpoint": embedding_provider.base_url or "",
             "embedding_api_key": decrypt_secret(embedding_provider.api_key),
             "embedding_dimensions": int(dimensions_raw),

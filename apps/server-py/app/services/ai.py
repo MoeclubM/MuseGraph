@@ -6,7 +6,9 @@ import re
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import litellm
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +27,13 @@ from app.services.secret_crypto import decrypt_secret
 
 MONEY_SCALE = Decimal("0.000001")
 SUPPORTED_LLM_PROVIDERS = {"openai_compatible", "anthropic_compatible"}
+
+
+async def _sanitize_openai_sdk_headers(request: httpx.Request) -> None:
+    for name in list(request.headers):
+        if name.lower().startswith("x-stainless-") and name.lower() != "x-stainless-raw-response":
+            del request.headers[name]
+    request.headers["User-Agent"] = "MuseGraph/1.0"
 
 
 def _money(value: Any) -> Decimal:
@@ -65,6 +74,65 @@ async def get_available_embedding_models(db: AsyncSession) -> list[dict[str, str
 
 async def get_available_reranker_models(db: AsyncSession) -> list[dict[str, str]]:
     return await _collect_available_models(db, "reranker")
+
+
+async def rerank_knowledge_records(
+    model: str,
+    query: str,
+    records: list[dict[str, Any]],
+    db: AsyncSession,
+) -> list[tuple[dict[str, Any], float]]:
+    provider_config = next(
+        (
+            provider
+            for provider in (
+                await db.execute(
+                    select(AIProviderConfig)
+                    .where(AIProviderConfig.is_active.is_(True))
+                    .order_by(AIProviderConfig.priority.desc(), AIProviderConfig.name)
+                )
+            ).scalars()
+            if model in get_provider_reranker_models(provider)
+        ),
+        None,
+    )
+    if provider_config is None:
+        raise ValueError(f'No active provider has registered reranker model "{model}"')
+    if provider_config.provider != "openai_compatible":
+        raise ValueError("Knowledge reranker provider must be OpenAI-compatible")
+
+    runtime = await _runtime_config(db)
+    async with httpx.AsyncClient(timeout=int(runtime["llm_request_timeout_seconds"])) as client:
+        response = await client.post(
+            f"{str(provider_config.base_url or 'https://api.openai.com/v1').rstrip('/')}/rerank",
+            headers={
+                "Authorization": f"Bearer {decrypt_secret(provider_config.api_key)}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "query": query,
+                "documents": [
+                    f"{record['id']}\n{record['title']}\n{record['content']}"
+                    for record in records
+                ],
+                "top_n": len(records),
+            },
+        )
+        response.raise_for_status()
+        results = response.json()["results"]
+
+    ranked: list[tuple[dict[str, Any], float]] = []
+    seen: set[int] = set()
+    for item in results:
+        index = int(item["index"])
+        if index < 0 or index >= len(records) or index in seen:
+            raise RuntimeError("Reranker returned an invalid document index")
+        seen.add(index)
+        ranked.append((records[index], float(item["relevance_score"])))
+    if len(ranked) != len(records):
+        raise RuntimeError("Reranker did not return every knowledge record")
+    return ranked
 
 
 async def _runtime_config(db: AsyncSession) -> dict[str, Any]:
@@ -190,11 +258,28 @@ async def call_llm(
         "max_tokens": max_tokens,
         "api_key": api_key,
         "custom_llm_provider": "anthropic" if is_anthropic_provider(provider) else "openai",
+        "extra_headers": {"User-Agent": "MuseGraph/1.0"},
     }
     if provider_config.base_url:
-        kwargs["api_base"] = provider_config.base_url
+        api_base = provider_config.base_url.rstrip("/")
+        kwargs["api_base"] = (
+            api_base.removesuffix("/v1")
+            if is_anthropic_provider(provider)
+            else api_base
+        )
+    if (
+        is_anthropic_provider(provider)
+        and selected_model.startswith("deepseek-v4-")
+        and not reasoning_effort_override
+    ):
+        kwargs["thinking"] = {"type": "disabled"}
+        kwargs["allowed_openai_params"] = ["thinking"]
     if reasoning_effort_override:
         kwargs["reasoning_effort"] = reasoning_effort_override
+        kwargs["allowed_openai_params"] = [
+            *kwargs.get("allowed_openai_params", []),
+            "reasoning_effort",
+        ]
     if response_schema is not None:
         schema_name = response_schema_name or _schema_name(response_schema)
         schema = _schema_payload(response_schema)
@@ -209,7 +294,20 @@ async def call_llm(
                 "json_schema": {"name": schema_name, "schema": schema, "strict": True},
             }
 
-    response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=timeout)
+    if is_anthropic_provider(provider):
+        response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=timeout)
+    else:
+        async with httpx.AsyncClient(
+            event_hooks={"request": [_sanitize_openai_sdk_headers]}
+        ) as http_client:
+            kwargs["client"] = AsyncOpenAI(
+                api_key=api_key,
+                base_url=provider_config.base_url or "https://api.openai.com/v1",
+                http_client=http_client,
+                timeout=timeout,
+                max_retries=0,
+            )
+            response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=timeout)
     content = _response_content(response)
     if not content.strip():
         raise RuntimeError(f'LLM returned empty content for model "{selected_model}"')

@@ -21,7 +21,6 @@ class Settings(BaseSettings):
 
     # Cognee backend (project memory + vector + graph)
     COGNEE_DATA_DIR: str = ".musegraph/cognee"
-    COGNEE_INGEST_TIMEOUT_SECONDS: int = 300
     COGNEE_LLM_MAX_TOKENS: int = 8192
     MEMORY_SERVICE_URL: str = "http://memory:4010"
     INTERNAL_SERVICE_TOKEN: str = ""
