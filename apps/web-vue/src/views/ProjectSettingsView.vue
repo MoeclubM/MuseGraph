@@ -19,7 +19,7 @@ import {
   type ProjectMember,
 } from '@/api/projects'
 import { listKnowledge, type KnowledgeSnapshot } from '@/api/memory'
-import { downloadBlob, downloadProjectBundle } from '@/api/export'
+import { downloadBlob, downloadProjectBundle, downloadProjectRepository } from '@/api/export'
 
 const route = useRoute()
 const router = useRouter()
@@ -107,6 +107,11 @@ async function removeMember(member: ProjectMember) {
 async function exportBundle() {
   const blob = await downloadProjectBundle(projectId.value)
   downloadBlob(blob, `${form.title.replace(/[^\w.-]+/g, '_') || 'project'}.zip`)
+}
+
+async function exportRepository() {
+  const blob = await downloadProjectRepository(projectId.value)
+  downloadBlob(blob, `${form.title.replace(/[^\w.-]+/g, '_') || 'project'}-repository.zip`)
 }
 
 async function removeProject() {
@@ -213,7 +218,10 @@ watch(projectId, load, { immediate: true })
         </Card>
 
         <div class="flex flex-wrap justify-between gap-3">
-          <Button variant="secondary" @click="exportBundle"><Download class="mr-1 h-4 w-4" />导出</Button>
+          <div class="flex flex-wrap gap-2">
+            <Button variant="secondary" @click="exportBundle"><Download class="mr-1 h-4 w-4" />下载内容包</Button>
+            <Button variant="secondary" @click="exportRepository"><Download class="mr-1 h-4 w-4" />下载 Git 仓库</Button>
+          </div>
           <div class="flex gap-2">
             <Button v-if="canDelete" variant="danger" @click="removeProject"><Trash2 class="mr-1 h-4 w-4" />删除项目</Button>
             <Button v-if="canManage" :loading="saving" @click="save"><Save class="mr-1 h-4 w-4" />保存设置</Button>

@@ -134,6 +134,14 @@ test('cookie session, project Agent, prompt template, Git versions, Skill resolu
 
   await page.getByTestId('agent-nav-settings').click()
   await expect(page.getByRole('heading', { name: '项目设置' })).toBeVisible()
+  const repositoryResponse = page.waitForResponse(
+    (response) => response.url().endsWith(`/api/projects/${projectId}/export/repository`)
+      && response.request().method() === 'POST',
+  )
+  const repositoryDownload = page.waitForEvent('download')
+  await page.getByRole('button', { name: '下载 Git 仓库' }).click()
+  expect((await repositoryResponse).status()).toBe(200)
+  expect((await repositoryDownload).suggestedFilename()).toContain('-repository.zip')
   await page.getByRole('button', { name: 'Skills' }).click()
   await expect(page.getByRole('heading', { name: '项目 Skills' })).toBeVisible()
   await page.getByPlaceholder('slug').fill('browser-voice')

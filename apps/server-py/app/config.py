@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     AGENT_PI_TOOL_LOOP_MAX_TOKENS: int = 16384
     AGENT_WORKER_ID: str = ""
     AGENT_WORKER_LEASE_SECONDS: int = 60
+    LLM_REQUEST_MAX_RETRIES: int = 4
 
     MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024
     ALLOW_PRIVATE_PROVIDER_URLS: bool = False

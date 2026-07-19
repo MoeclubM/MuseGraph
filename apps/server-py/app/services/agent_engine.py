@@ -4,7 +4,15 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, TypeAdapter, create_model
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    TypeAdapter,
+    ValidationError,
+    create_model,
+)
 from sqlalchemy import func, select
 
 from app.config import settings
@@ -501,24 +509,44 @@ async def _llm_json(
     response_schema: type[BaseModel],
     max_tokens: int,
 ) -> BaseModel:
-    async with async_session() as db:
-        response = await call_llm(
-            model,
-            (
-                f"{prompt}\n\n仅返回符合响应 Schema 的 JSON；"
-                "不得输出分析、Markdown 或任何前后缀。"
-            ),
-            db,
-            max_tokens=max_tokens,
-            billing_user_id=run.user_id,
-            billing_project_id=run.project_id,
-            billing_operation_id=run.id,
-            response_schema=response_schema,
-            reasoning_effort_override=run.effort,
-            prefer_stream_override=False,
-        )
-        await db.commit()
-    return response_schema.model_validate_json(response["content"])
+    request_prompt = prompt
+    while True:
+        await _check_cancelled(run.id)
+        async with async_session() as db:
+            response = await call_llm(
+                model,
+                (
+                    f"{request_prompt}\n\n仅返回符合响应 Schema 的 JSON；"
+                    "不得输出分析、Markdown 或任何前后缀。"
+                ),
+                db,
+                max_tokens=max_tokens,
+                billing_user_id=run.user_id,
+                billing_project_id=run.project_id,
+                billing_operation_id=run.id,
+                response_schema=response_schema,
+                reasoning_effort_override=run.effort,
+                prefer_stream_override=True,
+            )
+            await db.commit()
+        try:
+            return response_schema.model_validate_json(response["content"])
+        except ValidationError as exc:
+            errors = exc.errors(include_input=False, include_url=False)
+            await append_agent_event(
+                run.id,
+                "schema_validation_failed",
+                {
+                    "schema": response_schema.__name__,
+                    "errors": errors,
+                },
+            )
+            request_prompt = (
+                f"{prompt}\n\n上一次响应未通过严格 Schema 校验，因此没有执行任何工具或"
+                "写入。请根据校验错误重新生成完整响应，不要解释，也不要复用截断内容。"
+                f"\n\n上一次响应：\n{response['content']}"
+                f"\n\n校验错误：\n{json.dumps(errors, ensure_ascii=False)}"
+            )
 
 
 async def _create_plan(
@@ -557,6 +585,8 @@ async def _create_plan(
         "CreativeBlueprint 是已经批准给本次 Run 的创作蓝图；你只负责将每个蓝图单元"
         "映射为执行步骤，不得改写、合并、遗漏或另造蓝图单元。每个步骤的 plan_unit_ids"
         "必须填写该步骤落实的蓝图单元 ID；所有蓝图单元必须被覆盖。"
+        "步骤必须严格按 CreativeBlueprint.depends_on_ids 的拓扑顺序排列：一个单元"
+        "依赖的全部单元必须出现在它之前，禁止先安排依赖方再安排被依赖方。"
         "每个计划步骤必须且只能对应一次实际工具调用。执行角色由引擎根据 Tool Registry"
         "和当前 Skill 权限确定，计划不得选择或输出 role。每个待写文件必须分别安排一个"
         " tool=write_file 的 writer 步骤；结构化知识变更使用 updater、memory_builder 或"
@@ -708,42 +738,53 @@ async def _create_blueprint(
             project=project,
         )
     )
-    blueprint = await _llm_json(
-        run=run,
-        model=model,
-        prompt=prompt,
-        response_schema=CreativeBlueprint,
-        max_tokens=8192,
-    )
-    resolved = CreativeBlueprint.model_validate(blueprint.model_dump())
     context_ids = {item.id for item in context.knowledge} | {
         item.id for item in context.constraints
     }
-    unit_knowledge_ids = {
-        knowledge_id
-        for unit in resolved.units
-        for knowledge_id in unit.knowledge_ids
-    }
-    if not unit_knowledge_ids <= set(resolved.required_knowledge_ids):
-        raise ValueError(
-            "CreativeBlueprint.required_knowledge_ids must include every unit knowledge ID: "
-            f"{sorted(unit_knowledge_ids - set(resolved.required_knowledge_ids))}"
+    request_prompt = prompt
+    while True:
+        blueprint = await _llm_json(
+            run=run,
+            model=model,
+            prompt=request_prompt,
+            response_schema=CreativeBlueprint,
+            max_tokens=8192,
         )
-    if run.mode == "write":
-        target_refs = [unit.target_ref for unit in resolved.units]
-        if len(target_refs) != len(set(target_refs)):
-            raise ValueError("Write CreativeBlueprint target_refs must be unique")
-    referenced_ids = set(resolved.required_knowledge_ids) | {
-        knowledge_id
-        for unit in resolved.units
-        for knowledge_id in unit.knowledge_ids
-    }
-    if not referenced_ids <= context_ids:
-        raise ValueError(
-            "CreativeBlueprint references KnowledgeRecord IDs outside CreativeContextBundle: "
-            f"{sorted(referenced_ids - context_ids)}"
-        )
-    return resolved
+        resolved = CreativeBlueprint.model_validate(blueprint.model_dump())
+        try:
+            unit_knowledge_ids = {
+                knowledge_id
+                for unit in resolved.units
+                for knowledge_id in unit.knowledge_ids
+            }
+            if not unit_knowledge_ids <= set(resolved.required_knowledge_ids):
+                raise ValueError(
+                    "CreativeBlueprint.required_knowledge_ids must include every unit "
+                    f"knowledge ID: {sorted(unit_knowledge_ids - set(resolved.required_knowledge_ids))}"
+                )
+            if run.mode == "write":
+                target_refs = [unit.target_ref for unit in resolved.units]
+                if len(target_refs) != len(set(target_refs)):
+                    raise ValueError("Write CreativeBlueprint target_refs must be unique")
+            referenced_ids = set(resolved.required_knowledge_ids) | unit_knowledge_ids
+            if not referenced_ids <= context_ids:
+                raise ValueError(
+                    "CreativeBlueprint references KnowledgeRecord IDs outside "
+                    f"CreativeContextBundle: {sorted(referenced_ids - context_ids)}"
+                )
+            return resolved
+        except ValueError as exc:
+            await append_agent_event(
+                run.id,
+                "semantic_validation_failed",
+                {"schema": "CreativeBlueprint", "error": str(exc)},
+            )
+            request_prompt = (
+                f"{prompt}\n\n上一次 CreativeBlueprint 虽符合 JSON Schema，但违反运行时"
+                "语义约束，因此未执行。请修正后重新提交完整蓝图。"
+                f"\n\n上一次蓝图：\n{resolved.model_dump_json()}"
+                f"\n\n语义错误：\n{exc}"
+            )
 
 
 def _role_context(
@@ -812,16 +853,20 @@ async def _run_tool_loop(
                 include_finish=False,
             )
             if current_step
-            else RootModel[FinishAction]
+            else AgentFinish
         )
         protocol_instruction = (
             "当前 write_file 步骤使用正文内容通道，直接创作计划指定的完整文件。"
             if current_step and current_step.tool == "write_file"
             else (
                 "一次只返回一个严格 JSON action。调用工具时 action 直接填写工具名，"
-                "并填写 arguments/reason；完成时 action=finish，并直接填写 AgentFinish"
-                " 的 summary、changed_files、knowledge_operations、"
-                "used_knowledge_ids、used_plan_unit_ids 和 unresolved_issues 字段。"
+                "并填写 arguments/reason。"
+                if current_step
+                else (
+                    "所有计划步骤均已执行。直接返回严格 AgentFinish JSON，填写"
+                    " summary、changed_files、knowledge_operations、used_knowledge_ids、"
+                    "used_plan_unit_ids 和 unresolved_issues；不要添加 action 外层。"
+                )
             )
         )
         grounding_instruction = (
@@ -891,7 +936,7 @@ async def _run_tool_loop(
                     billing_project_id=run.project_id,
                     billing_operation_id=run.id,
                     reasoning_effort_override=run.effort,
-                    prefer_stream_override=False,
+                    prefer_stream_override=True,
                 )
                 await db.commit()
             if response["content"].lstrip().startswith("```"):
@@ -912,6 +957,8 @@ async def _run_tool_loop(
                 response_schema=response_schema,
                 max_tokens=settings.AGENT_PI_TOOL_LOOP_MAX_TOKENS,
             )
+            if isinstance(action_envelope, AgentFinish):
+                return action_envelope
             action = action_envelope.root
         if isinstance(action, FinishAction):
             return AgentFinish.model_validate(action.model_dump(exclude={"action"}))

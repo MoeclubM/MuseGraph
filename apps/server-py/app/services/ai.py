@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.config import AIProviderConfig, PaymentConfig, PricingRule
 from app.models.user import User
 from app.services.llm_runtime import default_llm_runtime_config, normalize_llm_runtime_config
@@ -229,7 +230,7 @@ async def call_llm(
     thinking_stream_callback: Any = None,
     reasoning_effort_override: str | None = None,
 ) -> dict[str, Any]:
-    del prefer_stream_override, stream_callback, thinking_stream_callback
+    del stream_callback, thinking_stream_callback
     selected_model = model.strip()
     if not selected_model:
         raise ValueError("A model must be selected for this Agent run")
@@ -332,9 +333,18 @@ async def call_llm(
                 "type": "function",
                 "function": {"name": structured_tool_name},
             }
+    if prefer_stream_override:
+        kwargs["stream"] = True
+        kwargs["stream_options"] = {"include_usage": True}
 
     if is_anthropic_provider(provider):
         response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=timeout)
+        if prefer_stream_override:
+            chunks = []
+            async with asyncio.timeout(timeout):
+                async for chunk in response:
+                    chunks.append(chunk)
+            response = litellm.stream_chunk_builder(chunks, messages=kwargs["messages"])
     else:
         async with httpx.AsyncClient(
             event_hooks={"request": [_sanitize_openai_sdk_headers]}
@@ -344,9 +354,18 @@ async def call_llm(
                 base_url=provider_config.base_url or "https://api.openai.com/v1",
                 http_client=http_client,
                 timeout=timeout,
-                max_retries=0,
+                max_retries=settings.LLM_REQUEST_MAX_RETRIES,
             )
             response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=timeout)
+            if prefer_stream_override:
+                chunks = []
+                async with asyncio.timeout(timeout):
+                    async for chunk in response:
+                        chunks.append(chunk)
+                response = litellm.stream_chunk_builder(chunks, messages=kwargs["messages"])
+    if prefer_stream_override:
+        if response is None:
+            raise RuntimeError(f'LLM returned no stream chunks for model "{selected_model}"')
     content = (
         _tool_call_arguments(response, structured_tool_name)
         if structured_tool_name

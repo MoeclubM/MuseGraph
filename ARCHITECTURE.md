@@ -60,11 +60,14 @@ queued → running → awaiting_review → accepting → completed
 5. Planner 只把蓝图映射为严格 `CreationPlan`；每个步骤声明 `plan_unit_ids`、唯一 `tool`、输入 `target_refs` 和文件变更的唯一 `output_ref`，不能改写或遗漏蓝图；执行角色由 Tool Registry 和 Skill 权限确定性分配，不交给模型选择。
 6. Cognee Recall 返回的知识先由项目 Reranker 排序；上下文快照保存模型、知识 ID 和分数。
 7. 每个角色只能调用统一 Tool Registry 中对该角色和 Skill 同时开放的工具。
-8. Writer/Reviser 的长文本通过正文内容通道生成，并按蓝图依赖读取已完成的前序单元，再以计划锁定的 `output_ref` 调用 Tool Registry；知识角色只写候选 `KnowledgeOperation`。
-9. Auditor 只读检查，确定性校验验证文件声明、知识引用、计划知识、required 约束、蓝图单元完整覆盖和 `AgentFinish.used_plan_unit_ids`。
-10. 成功结果保存为 `CreativeBlueprint`、`ChangeSet` 与 `AgentFinish`，进入 `awaiting_review`。
-11. Accept 在项目写锁内构建新 Cognee Dataset、发布 Git Commit 并更新活动版本指针；任一步失败会撤销候选外部写入。
-12. Reject 删除隔离工作区；基础版本变化则标记 `conflicted`，不自动合并。
+8. Writer/Reviser 的长文本通过流式正文内容通道生成，并按蓝图依赖读取已完成的前序单元，再以计划锁定的 `output_ref` 调用 Tool Registry；知识角色只写候选 `KnowledgeOperation`。
+9. 结构化阶段保持严格 Schema；模型返回不合法时记录 `schema_validation_failed` 事件，把精确校验错误作为下一轮反馈重新生成，不补字段、不修补残缺 JSON，也不执行候选动作。Provider、取消及基础设施错误仍直接失败。
+   Provider 的超时、网络错误和可重试 HTTP 状态由 SDK 以指数退避重试；`LLM_REQUEST_MAX_RETRIES` 默认 4，可显式设为 0 关闭。认证、余额、无效请求和其他确定性 4xx 不重试。
+10. 全部计划步骤完成后直接提交 `AgentFinish`，不再把唯一结束路径包装为虚假的 `finish` 工具 action。
+11. Auditor 只读检查，确定性校验验证文件声明、知识引用、计划知识、required 约束、蓝图单元完整覆盖和 `AgentFinish.used_plan_unit_ids`。
+12. 成功结果保存为 `CreativeBlueprint`、`ChangeSet` 与 `AgentFinish`，进入 `awaiting_review`。
+13. Accept 在项目写锁内构建新 Cognee Dataset、发布 Git Commit 并更新活动版本指针；任一步失败会撤销候选外部写入。
+14. Reject 删除隔离工作区；基础版本变化则标记 `conflicted`，不自动合并。
 
 SSE 事件持久化在 `agent_events`，客户端通过 `Last-Event-ID` 从数据库续传。不存在 `partial` 成功、进程内 `BackgroundTasks`、SQLite TaskManager 或启发式自动写文件。
 

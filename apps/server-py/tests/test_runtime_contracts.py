@@ -34,10 +34,11 @@ from app.services.agent_engine import (
     AgentAction,
     _agent_action_schema,
     _creation_plan_schema,
+    _llm_json,
     _validate_changes,
 )
 from app.services.agent_workspace import apply_knowledge_operations
-from app.services import ai, memory_client, memory_config
+from app.services import agent_engine, ai, memory_client, memory_config
 
 
 def test_tool_registry_schema_handler_and_role_contracts_are_complete():
@@ -184,6 +185,83 @@ def test_public_runtime_models_reject_unknown_fields():
                 },
             }
         )
+
+
+def test_agent_finish_uses_direct_structured_output_contract():
+    schema = AgentFinish.model_json_schema()
+
+    assert "action" not in schema["properties"]
+    assert {
+        "summary",
+        "changed_files",
+        "used_knowledge_ids",
+        "used_plan_unit_ids",
+    }.issubset(schema["properties"])
+    assert schema["required"] == ["summary"]
+
+
+@pytest.mark.asyncio
+async def test_llm_json_returns_schema_error_to_model_until_valid(monkeypatch):
+    class Database:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def commit(self):
+            return None
+
+    prompts = []
+    responses = iter(
+        [
+            {"content": '{"summary":"cut off"'},
+            {
+                "content": AgentFinish(
+                    summary="done",
+                    changed_files=["README.md"],
+                    used_knowledge_ids=["fact-1"],
+                    used_plan_unit_ids=["readme"],
+                ).model_dump_json()
+            },
+        ]
+    )
+    events = []
+
+    async def call_llm(_model, prompt, _db, **_kwargs):
+        prompts.append(prompt)
+        return next(responses)
+
+    async def append_event(run_id, event_type, data):
+        events.append((run_id, event_type, data))
+        return len(events)
+
+    async def check_cancelled(_run_id):
+        return None
+
+    monkeypatch.setattr(agent_engine, "async_session", Database)
+    monkeypatch.setattr(agent_engine, "call_llm", call_llm)
+    monkeypatch.setattr(agent_engine, "append_agent_event", append_event)
+    monkeypatch.setattr(agent_engine, "_check_cancelled", check_cancelled)
+
+    result = await _llm_json(
+        run=SimpleNamespace(
+            id="run-1",
+            user_id="user-1",
+            project_id="project-1",
+            effort="high",
+        ),
+        model="deepseek-v4-flash",
+        prompt="Finish.",
+        response_schema=AgentFinish,
+        max_tokens=1024,
+    )
+
+    assert result.summary == "done"
+    assert len(prompts) == 2
+    assert "上一次响应未通过严格 Schema 校验" in prompts[1]
+    assert events[0][1] == "schema_validation_failed"
+    assert events[0][2]["schema"] == "AgentFinish"
 
 
 def test_planner_schema_only_accepts_resolved_tools_and_engine_owned_roles():
@@ -883,6 +961,72 @@ async def test_openai_compatible_structured_output_uses_forced_tool(monkeypatch)
         "function": {"name": "submit_AgentFinish"},
     }
     assert "response_format" not in request
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_writer_stream_is_aggregated(monkeypatch):
+    provider = SimpleNamespace(
+        name="Agent provider",
+        provider="openai_compatible",
+        base_url="https://provider.example/v1",
+        api_key="encrypted-chat-key",
+        models=["deepseek-v4-flash"],
+    )
+
+    class ProviderResult:
+        def scalars(self):
+            return [provider]
+
+    class EmptyResult:
+        def scalar_one_or_none(self):
+            return None
+
+    class Database:
+        def __init__(self):
+            self.results = iter([ProviderResult(), EmptyResult(), EmptyResult()])
+
+        async def execute(self, _statement):
+            return next(self.results)
+
+    class Stream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if getattr(self, "sent", False):
+                raise StopAsyncIteration
+            self.sent = True
+            return SimpleNamespace()
+
+    request = {}
+    final_response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="# Document"))],
+        usage={},
+    )
+
+    async def completion(**kwargs):
+        request.update(kwargs)
+        return Stream()
+
+    monkeypatch.setattr(ai.litellm, "acompletion", completion)
+    monkeypatch.setattr(
+        ai.litellm,
+        "stream_chunk_builder",
+        lambda _chunks, messages: final_response,
+    )
+    monkeypatch.setattr(ai, "decrypt_secret", lambda _value: "private-key")
+    monkeypatch.setattr(ai, "AsyncOpenAI", lambda **_kwargs: object())
+
+    response = await ai.call_llm(
+        "deepseek-v4-flash",
+        "Write the document.",
+        Database(),
+        prefer_stream_override=True,
+    )
+
+    assert response["content"] == "# Document"
+    assert request["stream"] is True
+    assert request["stream_options"] == {"include_usage": True}
 
 
 @pytest.mark.asyncio
