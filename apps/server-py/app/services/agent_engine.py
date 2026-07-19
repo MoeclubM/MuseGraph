@@ -692,6 +692,9 @@ async def _create_blueprint(
         "内容摘要、依赖、使用的 KnowledgeRecord ID 和验收条件；threads 必须追踪"
         "主题、人物弧、论证、谜团、伏笔或约束在单元间的发展。required_knowledge_ids"
         "只能引用上下文中真实存在的知识 ID，并汇总所有单元实际需要的知识。"
+        "所有 unit.id 与 thread.id 必须只使用小写 ASCII 字母、数字、下划线或连字符，"
+        "必须以小写字母或数字开头，例如 outline、chapter_01、troubleshooting；"
+        "禁止把文件名原样作为 ID，禁止大写字母、点、斜杠与中文。"
         "write 模式下，每个内容单元必须给出唯一 target_ref，路径和命名遵循 Pack.unit；"
         "分析或建议模式 target_ref 可以为空。不得在蓝图里创作完整正文。"
         f"\n\n运行模式：{run.mode}"
@@ -821,6 +824,13 @@ async def _run_tool_loop(
                 "used_knowledge_ids、used_plan_unit_ids 和 unresolved_issues 字段。"
             )
         )
+        grounding_instruction = (
+            "当前 Text Pack 是事实型内容。任何具体数字、版本、命令、路径、硬件参数、"
+            "前置条件、行为或兼容性结论都必须由角色上下文中的文件或 KnowledgeRecord"
+            "直接支持；即使常识上合理，只要上下文没有依据就不得写入。"
+            if context.pack_slug in {"product_doc", "paper", "article"}
+            else ""
+        )
         prompt = (
             f"你是 MuseGraph 文本创作 Agent。{protocol_instruction}"
             "当前计划步骤存在时必须执行且只能执行一次工具调用，不得提前 finish；"
@@ -832,6 +842,7 @@ async def _run_tool_loop(
             " knowledge_upsert 和 knowledge_delete，读取与检索不计入。"
             "所有写作必须实际调用 write_file，所有结构化知识必须调用 knowledge_upsert/delete。"
             "不得声称未执行的修改。输出语言与用户一致。"
+            f"{grounding_instruction}"
             f"\n\n用户目标：{run.instruction}"
             f"\n\n修订要求：{correction or '无'}"
             f"\n\nSkill：{json.dumps(skill, ensure_ascii=False)}"
@@ -949,7 +960,9 @@ async def _audit(
     prompt = (
         "你是只读 MuseGraph Auditor。检查用户目标是否完成、文本是否与结构化知识和约束一致、"
         "是否有明显矛盾。只把必须修复才能满足用户目标的问题标为 blocker；风格优化标为 suggestion。"
-        "不得要求额外功能，不得修改文件。"
+        "不得要求额外功能，不得修改文件。对于事实型内容，审核前必须逐项盘点变更中的具体数字、"
+        "版本、命令、路径、硬件参数、前置条件、产品行为与兼容性结论，并在上下文文件或"
+        " KnowledgeRecord 中找到直接依据；没有直接依据的具体断言即使看似合理也必须标为 blocker。"
         f"\n\n用户目标：{run.instruction}"
         f"\n\nCreativeBlueprint：{blueprint.model_dump_json()}"
         f"\n\n上下文：{context.model_dump_json()}"

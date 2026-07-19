@@ -324,6 +324,7 @@ async def call_llm(
                         "name": structured_tool_name,
                         "description": "Submit the response matching the required schema.",
                         "parameters": parameters,
+                        "strict": True,
                     },
                 }
             ]

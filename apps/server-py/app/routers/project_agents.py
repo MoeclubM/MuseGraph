@@ -69,6 +69,7 @@ async def create_project_agent(
             status_code=status.HTTP_409_CONFLICT,
             detail="Project Agent name already exists",
         ) from exc
+    await db.refresh(agent)
     return ProjectAgentResponse.model_validate(agent)
 
 
@@ -120,6 +121,7 @@ async def update_project_agent(
             status_code=status.HTTP_409_CONFLICT,
             detail="Project Agent name already exists",
         ) from exc
+    await db.refresh(agent)
     return ProjectAgentResponse.model_validate(agent)
 
 

@@ -876,6 +876,7 @@ async def test_openai_compatible_structured_output_uses_forced_tool(monkeypatch)
 
     assert response["content"] == arguments
     assert request["tools"][0]["function"]["parameters"] == AgentFinish.model_json_schema()
+    assert request["tools"][0]["function"]["strict"] is True
     assert request["extra_body"] == {"thinking": {"type": "disabled"}}
     assert request["tool_choice"] == {
         "type": "function",

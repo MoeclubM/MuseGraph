@@ -44,6 +44,7 @@ async def create_prompt_template(
             status_code=status.HTTP_409_CONFLICT,
             detail="Prompt template name already exists",
         ) from exc
+    await db.refresh(template)
     return PromptTemplateResponse.model_validate(template)
 
 
@@ -81,6 +82,7 @@ async def update_prompt_template(
             status_code=status.HTTP_409_CONFLICT,
             detail="Prompt template name already exists",
         ) from exc
+    await db.refresh(template)
     return PromptTemplateResponse.model_validate(template)
 
 

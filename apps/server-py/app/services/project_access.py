@@ -89,19 +89,16 @@ def permitted_project_ids_query(user: User, permission: str):
 def accessible_projects_query(user: User):
     if user.is_admin:
         return select(TextProject)
-    return (
-        select(TextProject)
-        .outerjoin(
-            ProjectMember,
-            and_(ProjectMember.project_id == TextProject.id, ProjectMember.user_id == user.id),
-        )
-        .where(
-            or_(
-                TextProject.user_id == user.id,
+    return select(TextProject).where(
+        or_(
+            TextProject.user_id == user.id,
+            select(ProjectMember.id)
+            .where(
+                ProjectMember.project_id == TextProject.id,
                 ProjectMember.user_id == user.id,
             )
+            .exists(),
         )
-        .distinct()
     )
 
 

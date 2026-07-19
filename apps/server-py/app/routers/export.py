@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,5 +29,10 @@ async def export_bundle(
     return Response(
         content=content,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": (
+                "attachment; filename=\"musegraph-project.zip\"; "
+                f"filename*=UTF-8''{quote(filename)}"
+            )
+        },
     )
