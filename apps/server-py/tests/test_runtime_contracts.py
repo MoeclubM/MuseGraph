@@ -6,6 +6,7 @@ from typing import get_args
 import pytest
 from pydantic import ValidationError
 
+from app.schemas.agent_configuration import ProjectAgentUpdate, PromptTemplateUpdate
 from app.schemas.runtime import (
     AgentFinish,
     AgentRunRequest,
@@ -14,6 +15,7 @@ from app.schemas.runtime import (
     ConstraintRecord,
     CreationPlan,
     CreationPlanStep,
+    CreativeBlueprint,
     EntityRecord,
     FactRecord,
     KnowledgeUpsert,
@@ -114,6 +116,7 @@ def test_public_runtime_models_reject_unknown_fields():
                     goal="Draft",
                     role="writer",
                     tool="write_file",
+                    plan_unit_ids=["outline"],
                     target_refs=["chapter.md"],
                     output_ref="chapter.md",
                 )
@@ -183,7 +186,7 @@ def test_public_runtime_models_reject_unknown_fields():
         )
 
 
-def test_creation_plan_schema_only_accepts_resolved_skill_roles_and_tools():
+def test_planner_schema_only_accepts_resolved_tools_and_engine_owned_roles():
     schema = _creation_plan_schema({"writer"}, {"write_file"})
     plan = schema.model_validate(
         {
@@ -191,8 +194,8 @@ def test_creation_plan_schema_only_accepts_resolved_skill_roles_and_tools():
             "steps": [
                 {
                     "goal": "Draft",
-                    "role": "writer",
                     "tool": "write_file",
+                    "plan_unit_ids": ["outline"],
                     "target_refs": ["outline.md"],
                     "output_ref": "outline.md",
                 }
@@ -200,7 +203,7 @@ def test_creation_plan_schema_only_accepts_resolved_skill_roles_and_tools():
             "required_knowledge_ids": [],
         }
     )
-    assert plan.steps[0].role == "writer"
+    assert plan.steps[0].tool == "write_file"
     with pytest.raises(ValidationError):
         schema.model_validate(
             {
@@ -208,8 +211,45 @@ def test_creation_plan_schema_only_accepts_resolved_skill_roles_and_tools():
                 "steps": [
                     {
                         "goal": "Store knowledge",
-                        "role": "memory_builder",
                         "tool": "knowledge_upsert",
+                        "plan_unit_ids": ["memory"],
+                        "target_refs": [],
+                        "output_ref": None,
+                    }
+                ],
+                "required_knowledge_ids": [],
+            }
+        )
+    with pytest.raises(ValidationError, match="output_ref"):
+        schema.model_validate(
+            {
+                "objective": "Write the outline",
+                "steps": [
+                    {
+                        "goal": "Draft",
+                        "tool": "write_file",
+                        "plan_unit_ids": ["outline"],
+                        "target_refs": [],
+                        "output_ref": None,
+                    }
+                ],
+                "required_knowledge_ids": [],
+            }
+        )
+    role_tool_schema = _creation_plan_schema(
+        {"writer", "memory_builder"},
+        {"write_file", "knowledge_upsert"},
+    )
+    with pytest.raises(ValidationError):
+        role_tool_schema.model_validate(
+            {
+                "objective": "Invalid role/tool pairing",
+                "steps": [
+                    {
+                        "goal": "Store knowledge",
+                        "role": "writer",
+                        "tool": "knowledge_upsert",
+                        "plan_unit_ids": ["knowledge"],
                         "target_refs": [],
                         "output_ref": None,
                     }
@@ -283,6 +323,7 @@ def test_finish_must_prove_planned_knowledge_and_required_constraints_were_used(
         changed_files=["chapter.md"],
         knowledge_operations=0,
         used_knowledge_ids=["fact:weather"],
+        used_plan_unit_ids=["chapter-1"],
     )
     validation = _validate_changes(
         SimpleNamespace(mode="write"),
@@ -301,10 +342,87 @@ def test_finish_must_prove_planned_knowledge_and_required_constraints_were_used(
         {"fact:weather", "constraint:voice"},
         {"constraint:voice"},
         {"fact:weather"},
+        {"chapter-1"},
     )
     assert validation.passed is False
     failed = {check["name"] for check in validation.checks if not check["passed"]}
     assert failed == {"required_constraints_used"}
+
+
+def test_creative_blueprint_requires_resolvable_dependencies_and_threads():
+    blueprint = CreativeBlueprint.model_validate(
+        {
+            "objective": "Write two connected chapters",
+            "scope": "Opening arc",
+            "strategy": "Set up and reverse the conflict",
+            "units": [
+                {
+                    "id": "chapter_1",
+                    "title": "Setup",
+                    "purpose": "Introduce the conflict",
+                    "summary": "The protagonist discovers the problem.",
+                    "target_ref": "chapters/01.md",
+                    "depends_on_ids": [],
+                    "knowledge_ids": ["entity:hero"],
+                    "acceptance_criteria": ["Conflict is explicit"],
+                },
+                {
+                    "id": "chapter_2",
+                    "title": "Reversal",
+                    "purpose": "Escalate the conflict",
+                    "summary": "The first solution creates a larger problem.",
+                    "target_ref": "chapters/02.md",
+                    "depends_on_ids": ["chapter_1"],
+                    "knowledge_ids": ["entity:hero"],
+                    "acceptance_criteria": ["Uses the result of chapter 1"],
+                },
+            ],
+            "threads": [
+                {
+                    "id": "main_arc",
+                    "kind": "character_arc",
+                    "description": "The hero becomes proactive.",
+                    "introduced_in": ["chapter_1"],
+                    "developed_in": ["chapter_2"],
+                    "resolved_in": [],
+                }
+            ],
+            "global_constraints": ["Keep point of view consistent"],
+            "required_knowledge_ids": ["entity:hero"],
+        }
+    )
+    assert blueprint.units[1].depends_on_ids == ["chapter_1"]
+    with pytest.raises(ValidationError, match="unknown dependencies"):
+        CreativeBlueprint.model_validate(
+            {
+                **blueprint.model_dump(),
+                "units": [
+                    {
+                        **blueprint.units[0].model_dump(),
+                        "depends_on_ids": ["missing"],
+                    }
+                ],
+                "threads": [],
+            }
+        )
+    with pytest.raises(ValidationError, match="thread IDs must be unique"):
+        CreativeBlueprint.model_validate(
+            {
+                **blueprint.model_dump(),
+                "threads": [
+                    blueprint.threads[0].model_dump(),
+                    blueprint.threads[0].model_dump(),
+                ],
+            }
+        )
+
+
+def test_configuration_updates_reject_null_database_fields():
+    with pytest.raises(ValidationError, match="Prompt template field cannot be null"):
+        PromptTemplateUpdate(name=None)
+    with pytest.raises(ValidationError, match="Project Agent field cannot be null"):
+        ProjectAgentUpdate(enabled=None)
+    assert ProjectAgentUpdate(model=None).model_dump(exclude_unset=True) == {"model": None}
 
 
 @pytest.mark.asyncio

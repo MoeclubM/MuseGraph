@@ -16,7 +16,9 @@ from app.models.runtime import (
     AuditLog,
     DocumentIndex,
     ProjectRevision,
+    ProjectAgent,
     ProjectSkill,
+    PromptTemplate,
 )
 
 __all__ = [
@@ -32,9 +34,11 @@ __all__ = [
     "PaymentConfig",
     "PaymentAdapter",
     "ProjectRevision",
+    "ProjectAgent",
     "AgentRun",
     "AgentEvent",
     "ProjectSkill",
+    "PromptTemplate",
     "DocumentIndex",
     "AuditLog",
 ]

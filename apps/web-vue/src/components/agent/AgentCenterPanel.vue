@@ -4,28 +4,45 @@ import { Check, Loader2, SendHorizontal, Square, X } from '@lucide/vue'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import { listProjectFiles, type ProjectFile } from '@/api/projectFiles'
 import { listSkills, type SkillItem } from '@/api/skills'
+import { listProjectAgents } from '@/api/agentConfiguration'
 import { useAgentStore } from '@/stores/agent'
-import type { AgentRunMode } from '@/types'
+import { useProjectStore } from '@/stores/project'
+import type { AgentRunMode, ProjectAgent } from '@/types'
 
 const props = defineProps<{ projectId: string }>()
 const agent = useAgentStore()
+const projects = useProjectStore()
 const instruction = ref('')
 const mode = ref<AgentRunMode>('write')
-const effort = ref<'' | 'low' | 'medium' | 'high'>('')
 const skillSlug = ref('')
+const selectedAgentId = ref('')
 const files = ref<ProjectFile[]>([])
 const skills = ref<SkillItem[]>([])
+const projectAgents = ref<ProjectAgent[]>([])
 const targetRefs = ref<string[]>([])
 
 const availableSkills = computed(() => skills.value.filter((skill) => skill.scopes.includes(mode.value)))
 const finalSummary = computed(() => String(agent.currentRun?.final_output?.summary || ''))
 const usedKnowledgeIds = computed(() => agent.currentRun?.final_output?.used_knowledge_ids || [])
+const usedPlanUnitIds = computed(() => agent.currentRun?.final_output?.used_plan_unit_ids || [])
+const creativeUnits = computed(() => {
+  const plan = agent.currentRun?.creative_plan as { units?: Record<string, unknown>[] } | null
+  return plan?.units || []
+})
 
 async function loadSelectors() {
-  [files.value, skills.value] = await Promise.all([
+  const [projectFiles, projectSkills, agents, project] = await Promise.all([
     listProjectFiles(props.projectId),
     listSkills(props.projectId),
+    listProjectAgents(props.projectId),
+    projects.fetchProject(props.projectId),
   ])
+  files.value = projectFiles
+  skills.value = projectSkills
+  projectAgents.value = agents
+  selectedAgentId.value = project.active_agent_id
+    || agents.find((item) => item.enabled)?.id
+    || ''
 }
 
 async function submit() {
@@ -33,7 +50,7 @@ async function submit() {
   if (!value) return
   await agent.startRun(props.projectId, value, {
     mode: mode.value,
-    effort: effort.value || null,
+    agent_id: selectedAgentId.value,
     skill_slug: skillSlug.value || null,
     target_refs: targetRefs.value,
   })
@@ -61,6 +78,7 @@ watch(mode, () => {
           <p class="truncate text-sm font-semibold muse-text-heading">{{ agent.currentRun.instruction }}</p>
           <p class="text-xs muse-text-faint">
             {{ agent.currentRun.mode }} · {{ agent.currentRun.status }} ·
+            {{ String(agent.currentRun.agent_snapshot?.name || 'Agent') }} ·
             {{ String(agent.currentRun.skill_snapshot?.slug || 'general') }}
           </p>
         </div>
@@ -103,6 +121,24 @@ watch(mode, () => {
               <code v-for="id in usedKnowledgeIds" :key="id" class="rounded bg-[color:var(--muse-surface-muted)] px-2 py-1 text-xs">{{ id }}</code>
             </div>
           </div>
+          <div v-if="usedPlanUnitIds.length" class="mt-4">
+            <p class="mb-2 text-xs font-semibold muse-text-faint">已落实的蓝图单元</p>
+            <div class="flex flex-wrap gap-2">
+              <code v-for="id in usedPlanUnitIds" :key="id" class="rounded bg-[color:var(--muse-surface-muted)] px-2 py-1 text-xs">{{ id }}</code>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="creativeUnits.length" class="muse-panel p-5">
+          <h3 class="mb-3 text-sm font-semibold muse-text-heading">创作蓝图</h3>
+          <ol class="space-y-3">
+            <li v-for="unit in creativeUnits" :key="String(unit.id)" class="rounded border border-[color:var(--muse-border)] p-3 text-xs">
+              <p class="font-semibold muse-text-heading">{{ unit.id }} · {{ unit.title }}</p>
+              <p class="mt-1 muse-text-body">{{ unit.purpose }}</p>
+              <p class="mt-1 muse-text-muted">{{ unit.summary }}</p>
+              <p class="mt-2 muse-text-faint">依赖：{{ (unit.depends_on_ids as string[])?.join(', ') || '无' }} · 输出：{{ unit.target_ref || '无' }}</p>
+            </li>
+          </ol>
         </div>
 
         <div v-if="agent.changeSet" class="space-y-4">
@@ -166,12 +202,11 @@ watch(mode, () => {
             </select>
           </label>
           <label class="text-xs muse-text-muted">
-            推理强度
-            <select v-model="effort" class="muse-input mt-1 w-full">
-              <option value="">由模型默认决定</option>
-              <option value="low">低</option>
-              <option value="medium">中</option>
-              <option value="high">高</option>
+            项目 Agent
+            <select v-model="selectedAgentId" class="muse-input mt-1 w-full">
+              <option v-for="item in projectAgents.filter((value) => value.enabled)" :key="item.id" :value="item.id">
+                {{ item.name }} · {{ item.model || '继承项目模型' }}
+              </option>
             </select>
           </label>
         </div>
@@ -186,14 +221,8 @@ watch(mode, () => {
           </div>
         </div>
 
-        <div class="flex items-center justify-between gap-4">
-          <label class="min-w-0 flex-1 text-xs muse-text-muted">
-            模型
-            <select v-model="agent.selectedModel" class="muse-input mt-1 w-full">
-              <option v-for="model in agent.models" :key="model.id" :value="model.id">{{ model.id }}</option>
-            </select>
-          </label>
-          <button class="muse-btn muse-btn-primary mt-5" type="button" :disabled="agent.submitting || !instruction.trim()" @click="submit">
+        <div class="flex justify-end">
+          <button class="muse-btn muse-btn-primary" type="button" :disabled="agent.submitting || !instruction.trim() || !selectedAgentId" @click="submit">
             <Loader2 v-if="agent.submitting" class="h-4 w-4 animate-spin" />
             <SendHorizontal v-else class="h-4 w-4" />
             开始运行

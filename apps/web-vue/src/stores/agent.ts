@@ -5,10 +5,8 @@ import type {
   AgentRunEvent,
   AgentRunMode,
   ChangeSet,
-  Project,
 } from '@/types'
 import * as agentApi from '@/api/agent'
-import { getModels, type ModelInfo } from '@/api/projects'
 
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'accepting'])
 
@@ -19,10 +17,6 @@ export const useAgentStore = defineStore('agent', () => {
   const changeSet = ref<ChangeSet | null>(null)
   const loading = ref(false)
   const submitting = ref(false)
-  const models = ref<ModelInfo[]>([])
-  const modelsLoading = ref(false)
-  const selectedModel = ref('')
-  const modelTouched = ref(false)
   let stopStream: (() => void) | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -44,27 +38,6 @@ export const useAgentStore = defineStore('agent', () => {
     } finally {
       loading.value = false
     }
-  }
-
-  function applyDefaultModel(project?: Project | null) {
-    if (modelTouched.value && selectedModel.value) return
-    const configured = String(project?.component_models?.operation_agent_task || '').trim()
-    selectedModel.value = configured || models.value[0]?.id || ''
-  }
-
-  async function loadModels(project?: Project | null) {
-    modelsLoading.value = true
-    try {
-      models.value = await getModels()
-      applyDefaultModel(project)
-    } finally {
-      modelsLoading.value = false
-    }
-  }
-
-  function setSelectedModel(modelId: string) {
-    selectedModel.value = modelId
-    modelTouched.value = true
   }
 
   async function refreshCurrent(projectId: string) {
@@ -124,7 +97,7 @@ export const useAgentStore = defineStore('agent', () => {
       mode: AgentRunMode
       target_refs: string[]
       skill_slug?: string | null
-      effort?: string | null
+      agent_id?: string | null
     },
   ) {
     submitting.value = true
@@ -134,8 +107,7 @@ export const useAgentStore = defineStore('agent', () => {
         mode: options.mode,
         target_refs: options.target_refs,
         skill_slug: options.skill_slug,
-        effort: options.effort,
-        model: selectedModel.value || null,
+        agent_id: options.agent_id,
       })
       runs.value.unshift(run)
       currentRun.value = run
@@ -173,8 +145,6 @@ export const useAgentStore = defineStore('agent', () => {
     currentRun.value = null
     events.value = []
     changeSet.value = null
-    modelTouched.value = false
-    selectedModel.value = ''
   }
 
   return {
@@ -185,15 +155,9 @@ export const useAgentStore = defineStore('agent', () => {
     changeSet,
     loading,
     submitting,
-    models,
-    modelsLoading,
-    selectedModel,
     isRunActive,
     isAwaitingReview,
     loadRuns,
-    loadModels,
-    applyDefaultModel,
-    setSelectedModel,
     selectRun,
     startNewRun,
     startRun,

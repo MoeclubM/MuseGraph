@@ -17,6 +17,7 @@ from app.schemas.runtime import (
     ContextItem,
     CreationPlan,
     CreationPlanStep,
+    CreativeBlueprint,
     CreativeContextBundle,
     SelfReview,
     SourceRef,
@@ -25,6 +26,7 @@ from app.schemas.runtime import (
     PackContext,
 )
 from app.services.agent.tool_registry import (
+    TOOL_REGISTRY,
     DeleteFileInput,
     EmptyInput,
     KnowledgeDeleteInput,
@@ -49,9 +51,11 @@ from app.services.ai import call_llm, rerank_knowledge_records
 from app.services.memory_client import list_knowledge_records, recall_knowledge
 from app.services.memory_config import ensure_project_memory_instance
 from app.services.agent.pack_core import load_pack
+from app.services.agent.configuration import phase_prompt
 
 
 AgentRole = Literal[
+    "architect",
     "planner",
     "composer",
     "writer",
@@ -70,6 +74,13 @@ PLANNING_ROLES = {
     "graph_extractor",
 }
 EXECUTION_ROLES = PLANNING_ROLES | {"reviser"}
+EXECUTION_ROLE_ORDER = (
+    "writer",
+    "evaluator",
+    "updater",
+    "memory_builder",
+    "graph_extractor",
+)
 
 
 class ToolActionBase(BaseModel):
@@ -164,6 +175,24 @@ class AgentAction(
     pass
 
 
+class PlannerStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    goal: str = Field(min_length=1)
+    tool: AgentToolName
+    plan_unit_ids: list[str] = Field(min_length=1)
+    target_refs: list[str] = Field(default_factory=list)
+    output_ref: str | None
+
+
+class PlannerResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    objective: str = Field(min_length=1)
+    steps: list[PlannerStep] = Field(min_length=1)
+    required_knowledge_ids: list[str] = Field(default_factory=list)
+
+
 def _agent_action_schema(
     tool_names: set[str],
     *,
@@ -194,19 +223,33 @@ def _creation_plan_schema(
     roles: set[str],
     tool_names: set[str],
 ) -> type[BaseModel]:
-    role_type = Literal.__getitem__(tuple(sorted(roles)))
-    tool_type = Literal.__getitem__(tuple(sorted(tool_names)))
-    step_model = create_model(
-        "ResolvedCreationPlanStep",
-        __base__=CreationPlanStep,
-        role=(role_type, ...),
-        tool=(tool_type, ...),
-        output_ref=(str | None, ...),
-    )
+    step_models = []
+    for tool_name in sorted(tool_names):
+        tool_roles = roles & TOOL_REGISTRY[tool_name].roles
+        if not tool_roles:
+            continue
+        step_models.append(
+            create_model(
+                f"ResolvedPlannerStep_{tool_name}",
+                __base__=PlannerStep,
+                tool=(Literal.__getitem__((tool_name,)), ...),
+                output_ref=(
+                    str if tool_name in {"write_file", "delete_file"} else Literal[None],
+                    ...,
+                ),
+            )
+        )
+    if not step_models:
+        raise ValueError("Resolved Skill has no executable role/tool combinations")
+    step_type: Any = step_models[0]
+    for step_model in step_models[1:]:
+        step_type |= step_model
+    if len(step_models) > 1:
+        step_type = Annotated[step_type, Field(discriminator="tool")]
     return create_model(
-        "ResolvedCreationPlan",
-        __base__=CreationPlan,
-        steps=(list[step_model], Field(min_length=1)),
+        "ResolvedPlannerResponse",
+        __base__=PlannerResponse,
+        steps=(list[step_type], Field(min_length=1)),
     )
 
 
@@ -480,8 +523,10 @@ async def _llm_json(
 
 async def _create_plan(
     run: AgentRun,
+    project: TextProject,
     model: str,
     context: CreativeContextBundle,
+    blueprint: CreativeBlueprint,
     skill: dict[str, Any],
 ) -> CreationPlan:
     manifest = {
@@ -500,6 +545,7 @@ async def _create_plan(
             {"id": item.id, "title": item.title, "severity": item.severity}
             for item in context.constraints
         ],
+        "creative_blueprint": blueprint.model_dump(mode="json"),
     }
     planner_skill = {
         "slug": skill["slug"],
@@ -508,9 +554,11 @@ async def _create_plan(
     }
     prompt = (
         "你是 MuseGraph Planner。根据用户目标、项目上下文和当前 Skill 生成严格可执行计划。"
-        "每个计划步骤必须且只能对应一次实际工具调用。步骤只能使用当前 Skill.roles 中的"
-        " writer、evaluator、updater、memory_builder、graph_extractor；planner、composer、"
-        "auditor、reviser 已由引擎独立执行，禁止写入步骤。每个待写文件必须分别安排一个"
+        "CreativeBlueprint 是已经批准给本次 Run 的创作蓝图；你只负责将每个蓝图单元"
+        "映射为执行步骤，不得改写、合并、遗漏或另造蓝图单元。每个步骤的 plan_unit_ids"
+        "必须填写该步骤落实的蓝图单元 ID；所有蓝图单元必须被覆盖。"
+        "每个计划步骤必须且只能对应一次实际工具调用。执行角色由引擎根据 Tool Registry"
+        "和当前 Skill 权限确定，计划不得选择或输出 role。每个待写文件必须分别安排一个"
         " tool=write_file 的 writer 步骤；结构化知识变更使用 updater、memory_builder 或"
         " graph_extractor，并在 tool 字段填写该步骤唯一调用的工具。Composer 已将目标"
         "文件、控制文档和知识载入上下文，禁止安排重复的读取或检索步骤。target_refs"
@@ -520,6 +568,12 @@ async def _create_plan(
         "\n\n用户目标：\n"
         f"{run.instruction}\n\nSkill：\n{json.dumps(planner_skill, ensure_ascii=False)}"
         f"\n\n项目清单：\n{json.dumps(manifest, ensure_ascii=False)}"
+        + phase_prompt(
+            run.agent_snapshot,
+            "planner",
+            instruction=run.instruction,
+            project=project,
+        )
     )
     response = await _llm_json(
         run=run,
@@ -546,7 +600,147 @@ async def _create_plan(
         ),
         max_tokens=4096,
     )
-    return CreationPlan.model_validate(response.model_dump())
+    allowed_roles = set(skill["roles"]) & PLANNING_ROLES
+    plan = CreationPlan(
+        objective=response.objective,
+        steps=[
+            CreationPlanStep(
+                **step.model_dump(),
+                role=next(
+                    role
+                    for role in EXECUTION_ROLE_ORDER
+                    if role in allowed_roles and role in TOOL_REGISTRY[step.tool].roles
+                ),
+            )
+            for step in response.steps
+        ],
+        required_knowledge_ids=response.required_knowledge_ids,
+    )
+    blueprint_unit_ids = {unit.id for unit in blueprint.units}
+    covered_unit_ids = {
+        unit_id for step in plan.steps for unit_id in step.plan_unit_ids
+    }
+    if covered_unit_ids != blueprint_unit_ids:
+        raise ValueError(
+            "CreationPlan must cover exactly all CreativeBlueprint units: "
+            f"expected={sorted(blueprint_unit_ids)}, actual={sorted(covered_unit_ids)}"
+        )
+    if set(plan.required_knowledge_ids) != set(blueprint.required_knowledge_ids):
+        raise ValueError(
+            "CreationPlan.required_knowledge_ids must equal "
+            "CreativeBlueprint.required_knowledge_ids"
+        )
+    first_step_by_unit = {
+        unit_id: min(
+            index
+            for index, step in enumerate(plan.steps)
+            if unit_id in step.plan_unit_ids
+        )
+        for unit_id in blueprint_unit_ids
+    }
+    for unit in blueprint.units:
+        late_dependencies = [
+            dependency_id
+            for dependency_id in unit.depends_on_ids
+            if first_step_by_unit[dependency_id] >= first_step_by_unit[unit.id]
+        ]
+        if late_dependencies:
+            raise ValueError(
+                f"CreationPlan schedules unit {unit.id} before dependencies: "
+                f"{late_dependencies}"
+            )
+    if run.mode == "write":
+        steps_by_unit = {
+            unit_id: [
+                step
+                for step in plan.steps
+                if unit_id in step.plan_unit_ids
+                and step.tool == "write_file"
+                and step.output_ref
+            ]
+            for unit_id in blueprint_unit_ids
+        }
+        for unit in blueprint.units:
+            if not unit.target_ref:
+                raise ValueError(
+                    f"Write CreativeBlueprint unit {unit.id} must declare target_ref"
+                )
+            matching = [
+                step
+                for step in steps_by_unit[unit.id]
+                if step.output_ref == unit.target_ref
+            ]
+            if len(matching) != 1:
+                raise ValueError(
+                    f"CreativeBlueprint unit {unit.id} must map to exactly one "
+                    f"write_file step for {unit.target_ref}"
+                )
+    return plan
+
+
+async def _create_blueprint(
+    run: AgentRun,
+    project: TextProject,
+    model: str,
+    context: CreativeContextBundle,
+    skill: dict[str, Any],
+) -> CreativeBlueprint:
+    prompt = (
+        "你是 MuseGraph Creative Architect。先完成真正的创作规划，不得调用工具，"
+        "不得把“写一个文件”当成创作规划。根据 Text Pack、控制文档、目标文本和"
+        "结构化知识，把用户目标拆成可独立验收的内容单元。每个单元必须说明作用、"
+        "内容摘要、依赖、使用的 KnowledgeRecord ID 和验收条件；threads 必须追踪"
+        "主题、人物弧、论证、谜团、伏笔或约束在单元间的发展。required_knowledge_ids"
+        "只能引用上下文中真实存在的知识 ID，并汇总所有单元实际需要的知识。"
+        "write 模式下，每个内容单元必须给出唯一 target_ref，路径和命名遵循 Pack.unit；"
+        "分析或建议模式 target_ref 可以为空。不得在蓝图里创作完整正文。"
+        f"\n\n运行模式：{run.mode}"
+        f"\n\n用户目标：{run.instruction}"
+        f"\n\nSkill：{json.dumps(skill, ensure_ascii=False)}"
+        f"\n\n创作上下文：{context.model_dump_json()}"
+        + phase_prompt(
+            run.agent_snapshot,
+            "architect",
+            instruction=run.instruction,
+            project=project,
+        )
+    )
+    blueprint = await _llm_json(
+        run=run,
+        model=model,
+        prompt=prompt,
+        response_schema=CreativeBlueprint,
+        max_tokens=8192,
+    )
+    resolved = CreativeBlueprint.model_validate(blueprint.model_dump())
+    context_ids = {item.id for item in context.knowledge} | {
+        item.id for item in context.constraints
+    }
+    unit_knowledge_ids = {
+        knowledge_id
+        for unit in resolved.units
+        for knowledge_id in unit.knowledge_ids
+    }
+    if not unit_knowledge_ids <= set(resolved.required_knowledge_ids):
+        raise ValueError(
+            "CreativeBlueprint.required_knowledge_ids must include every unit knowledge ID: "
+            f"{sorted(unit_knowledge_ids - set(resolved.required_knowledge_ids))}"
+        )
+    if run.mode == "write":
+        target_refs = [unit.target_ref for unit in resolved.units]
+        if len(target_refs) != len(set(target_refs)):
+            raise ValueError("Write CreativeBlueprint target_refs must be unique")
+    referenced_ids = set(resolved.required_knowledge_ids) | {
+        knowledge_id
+        for unit in resolved.units
+        for knowledge_id in unit.knowledge_ids
+    }
+    if not referenced_ids <= context_ids:
+        raise ValueError(
+            "CreativeBlueprint references KnowledgeRecord IDs outside CreativeContextBundle: "
+            f"{sorted(referenced_ids - context_ids)}"
+        )
+    return resolved
 
 
 def _role_context(
@@ -576,8 +770,10 @@ def _role_context(
 async def _run_tool_loop(
     *,
     run: AgentRun,
+    project: TextProject,
     model: str,
     plan: CreationPlan,
+    blueprint: CreativeBlueprint,
     context: CreativeContextBundle,
     tool_context: ToolContext,
     skill: dict[str, Any],
@@ -585,6 +781,7 @@ async def _run_tool_loop(
     correction: str = "",
 ) -> AgentFinish:
     history: list[dict[str, Any]] = []
+    blueprint_units = {unit.id: unit for unit in blueprint.units}
     allowed_tools = set(skill["allowed_tools"])
     if run.mode != "write":
         allowed_tools -= {"write_file", "delete_file", "knowledge_upsert", "knowledge_delete"}
@@ -593,15 +790,6 @@ async def _run_tool_loop(
         await _heartbeat(run.id, worker_id)
         current_step = plan.steps[len(history)] if len(history) < len(plan.steps) else None
         role = current_step.role if current_step else plan.steps[-1].role
-        if current_step:
-            if current_step.tool in {"write_file", "delete_file"} and not current_step.output_ref:
-                raise ValueError(
-                    f"Each {current_step.tool} plan step must declare output_ref"
-                )
-            if current_step.tool not in {"write_file", "delete_file"} and current_step.output_ref:
-                raise ValueError(
-                    f"Plan step {current_step.tool} cannot declare output_ref"
-                )
         schemas = (
             [
                 schema
@@ -630,7 +818,7 @@ async def _run_tool_loop(
                 "一次只返回一个严格 JSON action。调用工具时 action 直接填写工具名，"
                 "并填写 arguments/reason；完成时 action=finish，并直接填写 AgentFinish"
                 " 的 summary、changed_files、knowledge_operations、"
-                "used_knowledge_ids 和 unresolved_issues 字段。"
+                "used_knowledge_ids、used_plan_unit_ids 和 unresolved_issues 字段。"
             )
         )
         prompt = (
@@ -639,21 +827,43 @@ async def _run_tool_loop(
             "当前计划步骤为空时所有步骤均已完成，只能 finish，不得继续调用工具。"
             "finish.used_knowledge_ids 必须至少完整复制计划中的"
             " required_knowledge_ids，并包含角色上下文中的全部 required constraint ID，"
-            "不得省略。finish.knowledge_operations 只统计实际执行的"
+            "不得省略。finish.used_plan_unit_ids 必须完整复制 CreativeBlueprint 的"
+            "全部单元 ID，证明每个规划单元都已落实。finish.knowledge_operations 只统计实际执行的"
             " knowledge_upsert 和 knowledge_delete，读取与检索不计入。"
             "所有写作必须实际调用 write_file，所有结构化知识必须调用 knowledge_upsert/delete。"
             "不得声称未执行的修改。输出语言与用户一致。"
             f"\n\n用户目标：{run.instruction}"
             f"\n\n修订要求：{correction or '无'}"
             f"\n\nSkill：{json.dumps(skill, ensure_ascii=False)}"
+            f"\n\nCreativeBlueprint：{blueprint.model_dump_json()}"
             f"\n\n计划：{plan.model_dump_json()}"
             f"\n\n当前计划步骤：{current_step.model_dump_json() if current_step else '无'}"
             f"\n\n当前角色上下文：{json.dumps(_role_context(context, role, run.instruction), ensure_ascii=False)}"
             f"\n\n当前角色：{role}"
             f"\n\n可用工具：{json.dumps([{'name': schema['name'], 'description': schema['description']} for schema in schemas], ensure_ascii=False)}"
             f"\n\n执行历史：{json.dumps(history, ensure_ascii=False)}"
+            + (
+                phase_prompt(
+                    run.agent_snapshot,
+                    role,
+                    instruction=run.instruction,
+                    project=project,
+                )
+                if role in {"writer", "reviser"}
+                else ""
+            )
         )
         if current_step and current_step.tool == "write_file":
+            dependency_content: dict[str, str] = {}
+            dependency_ids = {
+                dependency_id
+                for unit_id in current_step.plan_unit_ids
+                for dependency_id in blueprint_units[unit_id].depends_on_ids
+            }
+            for dependency_id in dependency_ids:
+                target_ref = blueprint_units[dependency_id].target_ref
+                if target_ref:
+                    dependency_content[target_ref] = read_run_file(run.id, target_ref)
             async with async_session() as db:
                 response = await call_llm(
                     model,
@@ -661,6 +871,8 @@ async def _run_tool_loop(
                         f"{prompt}\n\n直接返回要写入 {current_step.output_ref} 的完整"
                         " UTF-8 Markdown 文件内容。首行必须是章节或文档标题；不得输出"
                         "分析、JSON、代码围栏、工具说明或任何文件内容之外的前后缀。"
+                        f"\n\n蓝图依赖单元的当前正文："
+                        f"{json.dumps(dependency_content, ensure_ascii=False)}"
                     ),
                     db,
                     max_tokens=settings.AGENT_PI_TOOL_LOOP_MAX_TOKENS,
@@ -727,8 +939,10 @@ async def _run_tool_loop(
 
 async def _audit(
     run: AgentRun,
+    project: TextProject,
     model: str,
     context: CreativeContextBundle,
+    blueprint: CreativeBlueprint,
     finish: AgentFinish,
     changes: ChangeSet,
 ) -> AuditResult:
@@ -737,9 +951,16 @@ async def _audit(
         "是否有明显矛盾。只把必须修复才能满足用户目标的问题标为 blocker；风格优化标为 suggestion。"
         "不得要求额外功能，不得修改文件。"
         f"\n\n用户目标：{run.instruction}"
+        f"\n\nCreativeBlueprint：{blueprint.model_dump_json()}"
         f"\n\n上下文：{context.model_dump_json()}"
         f"\n\nAgent完成结果：{finish.model_dump_json()}"
         f"\n\n变更：{changes.model_dump_json()}"
+        + phase_prompt(
+            run.agent_snapshot,
+            "auditor",
+            instruction=run.instruction,
+            project=project,
+        )
     )
     return await _llm_json(
         run=run,
@@ -757,6 +978,7 @@ def _validate_changes(
     context_knowledge_ids: set[str],
     required_constraint_ids: set[str],
     required_plan_ids: set[str],
+    required_blueprint_unit_ids: set[str],
 ) -> ValidationResult:
     actual_paths = {item.path for item in changes.files}
     declared_paths = set(finish.changed_files)
@@ -788,6 +1010,14 @@ def _validate_changes(
             "name": "required_constraints_used",
             "passed": run.mode != "write" or required_constraint_ids <= set(finish.used_knowledge_ids),
             "detail": {"required_constraint_ids": sorted(required_constraint_ids)},
+        },
+        {
+            "name": "creative_blueprint_units_used",
+            "passed": required_blueprint_unit_ids == set(finish.used_plan_unit_ids),
+            "detail": {
+                "required_plan_unit_ids": sorted(required_blueprint_unit_ids),
+                "used_plan_unit_ids": finish.used_plan_unit_ids,
+            },
         },
         {
             "name": "knowledge_operation_count",
@@ -833,7 +1063,30 @@ async def execute_agent_run(run_id: str, worker_id: str) -> None:
             record = (await db.execute(select(AgentRun).where(AgentRun.id == run.id))).scalar_one()
             record.context_snapshot = context.model_dump(mode="json")
             await db.commit()
-        plan = await _create_plan(run, model, context, run.skill_snapshot)
+        blueprint = await _create_blueprint(
+            run,
+            project,
+            model,
+            context,
+            run.skill_snapshot,
+        )
+        async with async_session() as db:
+            record = (await db.execute(select(AgentRun).where(AgentRun.id == run.id))).scalar_one()
+            record.creative_plan = blueprint.model_dump(mode="json")
+            await db.commit()
+        await append_agent_event(
+            run.id,
+            "creative_plan",
+            blueprint.model_dump(mode="json"),
+        )
+        plan = await _create_plan(
+            run,
+            project,
+            model,
+            context,
+            blueprint,
+            run.skill_snapshot,
+        )
         plan_roles = {step.role for step in plan.steps}
         invalid_plan_roles = sorted(
             plan_roles - (set(run.skill_snapshot["roles"]) & PLANNING_ROLES)
@@ -846,7 +1099,11 @@ async def execute_agent_run(run_id: str, worker_id: str) -> None:
             record = (await db.execute(select(AgentRun).where(AgentRun.id == run.id))).scalar_one()
             record.plan = plan.model_dump(mode="json")
             await db.commit()
-        await append_agent_event(run.id, "plan", plan.model_dump(mode="json"))
+        await append_agent_event(
+            run.id,
+            "execution_plan",
+            plan.model_dump(mode="json"),
+        )
 
         operations: list[Any] = []
         tool_context = ToolContext(
@@ -859,8 +1116,10 @@ async def execute_agent_run(run_id: str, worker_id: str) -> None:
         )
         finish = await _run_tool_loop(
             run=run,
+            project=project,
             model=model,
             plan=plan,
+            blueprint=blueprint,
             context=context,
             tool_context=tool_context,
             skill=run.skill_snapshot,
@@ -883,13 +1142,22 @@ async def execute_agent_run(run_id: str, worker_id: str) -> None:
                         if getattr(item, "severity", None) == "required"
                     },
                     set(plan.required_knowledge_ids),
+                    {unit.id for unit in blueprint.units},
                 )
                 if not validation.passed:
                     raise RuntimeError(
                         "Deterministic Agent validation failed: "
                         + json.dumps(validation.model_dump(mode="json"), ensure_ascii=False)
                     )
-                audit = await _audit(run, model, context, finish, changes)
+                audit = await _audit(
+                    run,
+                    project,
+                    model,
+                    context,
+                    blueprint,
+                    finish,
+                    changes,
+                )
                 blockers = [issue for issue in audit.issues if issue.severity == "blocker"]
                 await append_agent_event(
                     run.id,
@@ -915,6 +1183,7 @@ async def execute_agent_run(run_id: str, worker_id: str) -> None:
                             goal=f"根据 Auditor 阻塞项修订：{step.goal}",
                             role="reviser" if step.role == "writer" else step.role,
                             tool=step.tool,
+                            plan_unit_ids=step.plan_unit_ids,
                             target_refs=step.target_refs,
                             output_ref=step.output_ref,
                         )
@@ -933,8 +1202,10 @@ async def execute_agent_run(run_id: str, worker_id: str) -> None:
                     )
                 finish = await _run_tool_loop(
                     run=run,
+                    project=project,
                     model=model,
                     plan=revision_plan,
+                    blueprint=blueprint,
                     context=context,
                     tool_context=tool_context,
                     skill=run.skill_snapshot,
@@ -971,6 +1242,7 @@ async def execute_agent_run(run_id: str, worker_id: str) -> None:
                 | {item.id for item in context.constraints},
                 set(),
                 set(plan.required_knowledge_ids),
+                {unit.id for unit in blueprint.units},
             )
             if not validation.passed:
                 raise RuntimeError(

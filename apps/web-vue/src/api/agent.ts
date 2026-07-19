@@ -12,8 +12,7 @@ export interface StartAgentRunPayload {
   instruction: string
   mode: AgentRunMode
   target_refs?: string[]
-  model?: string | null
-  effort?: string | null
+  agent_id?: string | null
   skill_slug?: string | null
 }
 

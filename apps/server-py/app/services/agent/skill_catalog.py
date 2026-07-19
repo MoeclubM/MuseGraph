@@ -45,6 +45,7 @@ BUILTIN_SKILLS: tuple[BuiltinSkill, ...] = (
         scopes=frozenset({"write", "analyze", "suggest"}),
         roles=frozenset(
             {
+                "architect",
                 "planner",
                 "composer",
                 "writer",
@@ -64,7 +65,7 @@ BUILTIN_SKILLS: tuple[BuiltinSkill, ...] = (
         description="分析结构、证据、实体、关系和风险。",
         instructions="只基于项目文件与结构化知识分析，所有结论保留来源引用。",
         scopes=frozenset({"analyze"}),
-        roles=frozenset({"planner", "composer", "auditor", "evaluator"}),
+        roles=frozenset({"architect", "planner", "composer", "auditor", "evaluator"}),
         allowed_tools=READ_TOOLS,
         default_model_component="operation_analyze",
     ),
@@ -77,7 +78,7 @@ BUILTIN_SKILLS: tuple[BuiltinSkill, ...] = (
             "禁止发明与 required 约束冲突的内容。"
         ),
         scopes=frozenset({"write", "suggest"}),
-        roles=frozenset({"planner", "composer", "writer", "auditor", "reviser"}),
+        roles=frozenset({"architect", "planner", "composer", "writer", "auditor", "reviser"}),
         allowed_tools=ALL_AGENT_TOOLS,
         default_model_component="operation_continue",
     ),
@@ -97,7 +98,7 @@ BUILTIN_SKILLS: tuple[BuiltinSkill, ...] = (
         description="建立与文本类型匹配的可执行大纲。",
         instructions="为每个结构单元给出目标、所需知识和预期产出，并将大纲写入项目文件。",
         scopes=frozenset({"write", "analyze"}),
-        roles=frozenset({"planner", "composer", "writer", "auditor"}),
+        roles=frozenset({"architect", "planner", "composer", "writer", "auditor"}),
         allowed_tools=READ_TOOLS | frozenset({"write_file"}),
         default_model_component="operation_agent_task",
     ),
@@ -120,7 +121,7 @@ BUILTIN_SKILLS: tuple[BuiltinSkill, ...] = (
             "不得把推测写成 fact。"
         ),
         scopes=frozenset({"write", "analyze"}),
-        roles=frozenset({"planner", "composer", "updater", "memory_builder", "graph_extractor"}),
+        roles=frozenset({"architect", "planner", "composer", "updater", "memory_builder", "graph_extractor"}),
         allowed_tools=READ_TOOLS | frozenset({"knowledge_upsert", "knowledge_delete"}),
         default_model_component="operation_agent_task",
     ),

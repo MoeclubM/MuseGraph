@@ -55,7 +55,7 @@ async def test_real_provider_creation_uses_structured_knowledge_and_publishes_on
             headers=csrf_headers(admin),
             json={
                 "name": f"Protected Agent provider {secrets.token_hex(4)}",
-                "provider": "anthropic_compatible",
+                "provider": "openai_compatible",
                 "api_key": provider_api_key,
                 "base_url": provider_base_url or None,
                 "is_active": True,
@@ -195,7 +195,6 @@ async def test_real_provider_creation_uses_structured_knowledge_and_publishes_on
             headers=csrf_headers(user),
             json={
                 "mode": "write",
-                "model": model,
                 "instruction": (
                     "使用 character-lin-lan、event-quantum-beacon 和 constraint-no-corona "
                     "创作一个完整的中文科幻短篇。必须把大纲写入 outline.md，把正文写入 "
@@ -251,6 +250,11 @@ async def test_real_provider_creation_uses_structured_knowledge_and_publishes_on
             "event-quantum-beacon",
             "constraint-no-corona",
         } <= set(run["final_output"]["used_knowledge_ids"])
+        assert run["creative_plan"]["units"]
+        assert {
+            unit["id"] for unit in run["creative_plan"]["units"]
+        } == set(run["final_output"]["used_plan_unit_ids"])
+        assert all(step["plan_unit_ids"] for step in run["plan"]["steps"])
 
         change_response = await user.get(
             f"/api/projects/{project_id}/agent/runs/{run_id}/changes"

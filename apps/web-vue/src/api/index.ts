@@ -3,6 +3,17 @@ import router from '@/router'
 import { useToast } from '@/composables/useToast'
 
 function sanitizeErrorMessage(value: unknown, fallback: string): string {
+  if (Array.isArray(value)) {
+    const messages = value.map((item) => (
+      typeof item === 'object' && item !== null && 'msg' in item
+        ? String(item.msg)
+        : JSON.stringify(item)
+    ))
+    return messages.filter(Boolean).join('; ') || fallback
+  }
+  if (typeof value === 'object' && value !== null) {
+    return JSON.stringify(value)
+  }
   const raw = String(value || '').trim()
   if (!raw) return fallback
   const lowered = raw.toLowerCase()

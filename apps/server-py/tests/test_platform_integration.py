@@ -135,6 +135,78 @@ async def test_real_platform_security_skills_versions_and_tenant_isolation():
         )
         assert forbidden_write.status_code == 403
 
+        prompt_template = await owner.post(
+            "/api/users/me/prompt-templates",
+            headers=csrf_headers(owner),
+            json={
+                "name": "Novel writer voice",
+                "description": "Account-owned writer template",
+                "phase": "writer",
+                "content": (
+                    "为 {{project_title}} 写作，严格落实蓝图单元；"
+                    "当前目标是 {{instruction}}。"
+                ),
+            },
+        )
+        assert prompt_template.status_code == 201, prompt_template.text
+        template = prompt_template.json()
+        project_agent = await owner.post(
+            f"/api/projects/{project_id}/agents",
+            headers=csrf_headers(owner),
+            json={
+                "name": "Novel architect",
+                "description": "Project-bound creation Agent",
+                "model": None,
+                "effort": "high",
+                "prompt_template_ids": {"writer": template["id"]},
+            },
+        )
+        assert project_agent.status_code == 201, project_agent.text
+        configured_agent = project_agent.json()
+        activated = await owner.post(
+            f"/api/projects/{project_id}/agents/{configured_agent['id']}/activate",
+            headers=csrf_headers(owner),
+        )
+        assert activated.status_code == 200, activated.text
+        project = (await owner.get(f"/api/projects/{project_id}")).json()
+        assert project["active_agent_id"] == configured_agent["id"]
+        assert (await viewer.get(f"/api/projects/{project_id}/agents")).status_code == 200
+        forbidden_agent = await viewer.post(
+            f"/api/projects/{project_id}/agents",
+            headers=csrf_headers(viewer),
+            json={
+                "name": "Forbidden",
+                "description": "",
+                "model": None,
+                "effort": None,
+                "prompt_template_ids": {},
+            },
+        )
+        assert forbidden_agent.status_code == 403
+        bound_template_delete = await owner.delete(
+            f"/api/users/me/prompt-templates/{template['id']}",
+            headers=csrf_headers(owner),
+        )
+        assert bound_template_delete.status_code == 409
+        viewer_project_response = await viewer.post(
+            "/api/projects",
+            headers=csrf_headers(viewer),
+            json={"title": "Viewer-owned project", "pack_slug": "novel"},
+        )
+        assert viewer_project_response.status_code == 201, viewer_project_response.text
+        cross_account_template = await viewer.post(
+            f"/api/projects/{viewer_project_response.json()['id']}/agents",
+            headers=csrf_headers(viewer),
+            json={
+                "name": "Cross-account Agent",
+                "description": "",
+                "model": None,
+                "effort": None,
+                "prompt_template_ids": {"writer": template["id"]},
+            },
+        )
+        assert cross_account_template.status_code == 422
+
         custom_skill = {
             "slug": "project-voice",
             "name": "Project Voice",

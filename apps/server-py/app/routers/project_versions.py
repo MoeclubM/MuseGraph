@@ -28,6 +28,7 @@ from app.services.agent_workspace import (
     create_run_workspace,
     run_workspace_root,
 )
+from app.services.agent.configuration import resolve_project_agent
 from app.services.memory_client import list_knowledge_records
 from app.services.project_access import (
     PROJECT_PERMISSION_EDIT,
@@ -81,14 +82,23 @@ async def propose_version_restore(
             select(ProjectRevision).where(ProjectRevision.id == project.active_revision_id)
         )
     ).scalar_one()
+    project_agent, agent_snapshot = await resolve_project_agent(
+        db,
+        project=project,
+        mode="write",
+        requested_agent_id=None,
+        require_model=False,
+    )
     run = AgentRun(
         project_id=project_id,
         user_id=user.id,
         base_revision_id=current.id,
+        agent_id=project_agent.id,
         mode="write",
         status="awaiting_review",
         instruction=f"Restore project revision {target.id}",
         target_refs=[],
+        agent_snapshot=agent_snapshot.model_dump(mode="json"),
         skill_snapshot={"slug": "version-restore", "source": "project"},
         change_set={},
     )

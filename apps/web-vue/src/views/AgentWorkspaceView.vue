@@ -34,8 +34,6 @@ async function initialize(id: string) {
   if (requestedRunId && agentStore.runs.some((run) => run.id === requestedRunId)) {
     await agentStore.selectRun(id, requestedRunId)
   }
-  await agentStore.loadModels(projectStore.currentProject)
-  agentStore.applyDefaultModel(projectStore.currentProject)
 }
 
 watch(projectId, (id) => void initialize(id), { immediate: true })

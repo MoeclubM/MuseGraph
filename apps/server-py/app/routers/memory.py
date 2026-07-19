@@ -18,6 +18,7 @@ from app.schemas.runtime import (
     ValidationResult,
 )
 from app.services.agent_workspace import apply_knowledge_operations
+from app.services.agent.configuration import resolve_project_agent
 from app.services.memory_client import list_knowledge_records, recall_knowledge
 from app.services.memory_config import ensure_project_memory_instance
 from app.services.project_access import (
@@ -131,14 +132,23 @@ async def propose_knowledge_changes(
         used_knowledge_ids=[],
         unresolved_issues=[],
     )
+    project_agent, agent_snapshot = await resolve_project_agent(
+        db,
+        project=project,
+        mode="write",
+        requested_agent_id=None,
+        require_model=False,
+    )
     run = AgentRun(
         project_id=project_id,
         user_id=user.id,
         base_revision_id=revision.id,
+        agent_id=project_agent.id,
         mode="write",
         status="awaiting_review",
         instruction=body.instruction,
         target_refs=[],
+        agent_snapshot=agent_snapshot.model_dump(mode="json"),
         skill_snapshot={"slug": "manual-knowledge", "source": "project"},
         change_set=change_set.model_dump(mode="json"),
         final_output=finish.model_dump(mode="json"),

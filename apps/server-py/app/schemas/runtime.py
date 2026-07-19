@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 AgentRunMode = Literal["write", "analyze", "suggest"]
@@ -17,6 +17,7 @@ AgentRunStatus = Literal[
     "cancelled",
 ]
 AgentRole = Literal[
+    "architect",
     "planner",
     "composer",
     "writer",
@@ -157,14 +158,89 @@ class CreationPlanStep(StrictModel):
     goal: str = Field(min_length=1)
     role: ExecutionAgentRole
     tool: AgentToolName
+    plan_unit_ids: list[str] = Field(min_length=1)
     target_refs: list[str] = Field(default_factory=list)
     output_ref: str | None = None
+
+    @model_validator(mode="after")
+    def validate_output_ref(self) -> "CreationPlanStep":
+        if self.tool in {"write_file", "delete_file"} and not self.output_ref:
+            raise ValueError(f"{self.tool} plan step must declare output_ref")
+        if self.tool not in {"write_file", "delete_file"} and self.output_ref:
+            raise ValueError(f"{self.tool} plan step cannot declare output_ref")
+        return self
 
 
 class CreationPlan(StrictModel):
     objective: str = Field(min_length=1)
     steps: list[CreationPlanStep] = Field(min_length=1)
     required_knowledge_ids: list[str] = Field(default_factory=list)
+
+
+class CreativePlanUnit(StrictModel):
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    title: str = Field(min_length=1, max_length=255)
+    purpose: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    target_ref: str | None = Field(default=None, max_length=1024)
+    depends_on_ids: list[str] = Field(default_factory=list)
+    knowledge_ids: list[str] = Field(default_factory=list)
+    acceptance_criteria: list[str] = Field(min_length=1)
+
+
+class CreativePlanThread(StrictModel):
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    kind: Literal[
+        "theme",
+        "character_arc",
+        "argument",
+        "mystery",
+        "foreshadowing",
+        "constraint",
+    ]
+    description: str = Field(min_length=1)
+    introduced_in: list[str] = Field(default_factory=list)
+    developed_in: list[str] = Field(default_factory=list)
+    resolved_in: list[str] = Field(default_factory=list)
+
+
+class CreativeBlueprint(StrictModel):
+    objective: str = Field(min_length=1)
+    scope: str = Field(min_length=1)
+    strategy: str = Field(min_length=1)
+    units: list[CreativePlanUnit] = Field(min_length=1)
+    threads: list[CreativePlanThread] = Field(default_factory=list)
+    global_constraints: list[str] = Field(default_factory=list)
+    required_knowledge_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_references(self) -> "CreativeBlueprint":
+        unit_ids = [unit.id for unit in self.units]
+        if len(unit_ids) != len(set(unit_ids)):
+            raise ValueError("CreativeBlueprint unit IDs must be unique")
+        thread_ids = [thread.id for thread in self.threads]
+        if len(thread_ids) != len(set(thread_ids)):
+            raise ValueError("CreativeBlueprint thread IDs must be unique")
+        known = set(unit_ids)
+        for unit in self.units:
+            unknown = set(unit.depends_on_ids) - known
+            if unknown:
+                raise ValueError(
+                    f"CreativeBlueprint unit {unit.id} has unknown dependencies: {sorted(unknown)}"
+                )
+            if unit.id in unit.depends_on_ids:
+                raise ValueError(f"CreativeBlueprint unit {unit.id} cannot depend on itself")
+        for thread in self.threads:
+            unknown = (
+                set(thread.introduced_in)
+                | set(thread.developed_in)
+                | set(thread.resolved_in)
+            ) - known
+            if unknown:
+                raise ValueError(
+                    f"CreativeBlueprint thread {thread.id} references unknown units: {sorted(unknown)}"
+                )
+        return self
 
 
 class ContextItem(StrictModel):
@@ -211,14 +287,17 @@ class AgentFinish(StrictModel):
     changed_files: list[str] = Field(default_factory=list)
     knowledge_operations: int = 0
     used_knowledge_ids: list[str] = Field(default_factory=list)
+    used_plan_unit_ids: list[str] = Field(default_factory=list)
     unresolved_issues: list[str] = Field(default_factory=list)
 
 
 class AgentRunRequest(StrictModel):
     instruction: str = Field(min_length=1, max_length=100_000)
     mode: AgentRunMode = "write"
-    model: str | None = Field(default=None, max_length=160)
-    effort: Literal["low", "medium", "high"] | None = None
+    agent_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+    )
     skill_slug: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
     target_refs: list[str] = Field(default_factory=list, max_length=100)
 
@@ -236,15 +315,18 @@ class AgentRunResponse(StrictModel):
     user_id: str
     base_revision_id: str | None
     result_revision_id: str | None
+    agent_id: str
     mode: AgentRunMode
     status: AgentRunStatus
     instruction: str
     model: str | None
     effort: str | None
     target_refs: list[str]
+    creative_plan: dict[str, Any] | None
     plan: dict[str, Any] | None
     context_snapshot: dict[str, Any] | None
     skill_snapshot: dict[str, Any]
+    agent_snapshot: dict[str, Any]
     final_output: dict[str, Any] | None
     error: str | None
     cancel_requested: bool

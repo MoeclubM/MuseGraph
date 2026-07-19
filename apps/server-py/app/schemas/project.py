@@ -53,6 +53,7 @@ class ProjectResponse(BaseModel):
     visibility: Literal["private", "public"]
     component_models: dict[str, str] | None
     active_revision_id: str | None
+    active_agent_id: str | None
     memory_instance_id: str | None
     pack_slug: str
     created_at: datetime

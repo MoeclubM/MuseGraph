@@ -200,6 +200,9 @@ onMounted(() => {
           <h1 class="text-2xl muse-text-title">{{ t('settings.title') }}</h1>
           <p class="mt-2 muse-text-caption">{{ t('settings.subtitle') }}</p>
         </div>
+        <Button variant="secondary" @click="router.push('/settings/prompt-templates')">
+          <Key class="h-4 w-4" />Agent 提示词模板
+        </Button>
       </header>
 
       <div v-if="loading" class="flex items-center justify-center py-20">

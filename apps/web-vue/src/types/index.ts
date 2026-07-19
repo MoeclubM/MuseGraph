@@ -158,6 +158,7 @@ export interface Project {
   current_user_permissions?: string[]
   component_models?: ComponentModelConfig | null
   active_revision_id?: string | null
+  active_agent_id?: string | null
   memory_instance_id?: string | null
   pack_slug: string
   created_at: string
@@ -269,20 +270,24 @@ export interface AgentRun {
   user_id: string
   base_revision_id: string | null
   result_revision_id: string | null
+  agent_id: string
   mode: AgentRunMode
   status: AgentRunStatus
   instruction: string
   model: string | null
   effort: string | null
   target_refs: string[]
+  creative_plan: Record<string, unknown> | null
   plan: Record<string, unknown> | null
   context_snapshot: Record<string, unknown> | null
   skill_snapshot: Record<string, unknown>
+  agent_snapshot: Record<string, unknown>
   final_output: {
     summary: string
     changed_files: string[]
     knowledge_operations: number
     used_knowledge_ids: string[]
+    used_plan_unit_ids: string[]
     unresolved_issues: string[]
   } | null
   error: string | null
@@ -291,6 +296,35 @@ export interface AgentRun {
   updated_at: string
   started_at: string | null
   completed_at: string | null
+}
+
+export type PromptPhase = 'architect' | 'planner' | 'writer' | 'auditor' | 'reviser'
+
+export interface PromptTemplate {
+  id: string
+  user_id: string
+  name: string
+  description: string
+  phase: PromptPhase
+  content: string
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ProjectAgent {
+  id: string
+  project_id: string
+  created_by_user_id: string
+  name: string
+  description: string
+  model: string | null
+  effort: 'low' | 'medium' | 'high' | null
+  prompt_template_ids: Partial<Record<PromptPhase, string>>
+  version: number
+  enabled: boolean
+  created_at: string
+  updated_at: string
 }
 
 export interface AgentRunEvent {

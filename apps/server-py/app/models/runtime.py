@@ -120,15 +120,22 @@ class AgentRun(Base):
         ForeignKey("project_revisions.id", ondelete="SET NULL"),
         nullable=True,
     )
+    agent_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("project_agents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     mode: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
     instruction: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
     effort: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     target_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    creative_plan: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     plan: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     context_snapshot: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     skill_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    agent_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
     change_set: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     final_output: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     self_review: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
@@ -203,6 +210,83 @@ class ProjectSkill(Base):
     allowed_tools: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     params_schema: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     default_model_component: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class PromptTemplate(Base):
+    __tablename__ = "prompt_templates"
+    __table_args__ = (
+        CheckConstraint(
+            "phase IN ('architect','planner','writer','auditor','reviser')",
+            name="ck_prompt_templates_phase",
+        ),
+        UniqueConstraint("user_id", "name", name="uq_prompt_templates_user_name"),
+        Index("ix_prompt_templates_user_phase", "user_id", "phase"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    phase: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ProjectAgent(Base):
+    __tablename__ = "project_agents"
+    __table_args__ = (
+        UniqueConstraint("project_id", "name", name="uq_project_agents_project_name"),
+        Index("ix_project_agents_project_enabled", "project_id", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    project_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("text_projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by_user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    model: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    effort: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    prompt_template_ids: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(

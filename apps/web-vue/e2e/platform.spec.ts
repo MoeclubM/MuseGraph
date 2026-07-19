@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 
-test('cookie session, Git editor, immutable versions, Skill resolution, and XSS safety', async ({ page, context }) => {
+test('cookie session, project Agent, prompt template, Git versions, Skill resolution, and XSS safety', async ({ page, context }) => {
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
   const email = `browser-${suffix}@example.com`
   const password = 'Browser-E2E-Password-2026!'
@@ -48,6 +48,44 @@ test('cookie session, Git editor, immutable versions, Skill resolution, and XSS 
   const projectId = page.url().match(/\/projects\/([^/?#]+)/)?.[1]
   expect(projectId).toBeTruthy()
 
+  await page.goto('/settings/prompt-templates')
+  await page.getByPlaceholder('模板名称').fill(`Browser writer ${suffix}`)
+  await page.getByPlaceholder('用途说明').fill('Account-owned writer phase template')
+  await page.locator('select').selectOption('writer')
+  await page.getByPlaceholder(/阶段提示词/).fill(
+    '为 {{project_title}} 落实 CreativeBlueprint；目标：{{instruction}}。',
+  )
+  const templateResponse = page.waitForResponse(
+    (response) => response.url().endsWith('/api/users/me/prompt-templates')
+      && response.request().method() === 'POST',
+  )
+  await page.getByRole('button', { name: '保存' }).click()
+  const template = await (await templateResponse).json()
+
+  await page.goto(`/projects/${projectId}/agents`)
+  await expect(page.getByRole('heading', { name: '项目 Agents' })).toBeVisible()
+  await expect(page.getByText('默认创作 Agent', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '新建 Agent' }).click()
+  await page.getByPlaceholder('Agent 名称').fill(`Browser Agent ${suffix}`)
+  await page.getByPlaceholder('Agent 的职责与定位').fill('Project-bound browser Agent')
+  await page.locator('label').filter({ hasText: '推理强度' }).locator('select').selectOption('high')
+  await page.locator('label').filter({ hasText: 'writer' }).locator('select').selectOption(template.id)
+  const agentResponse = page.waitForResponse(
+    (response) => response.url().endsWith(`/api/projects/${projectId}/agents`)
+      && response.request().method() === 'POST',
+  )
+  await page.getByRole('button', { name: '保存' }).click()
+  expect((await agentResponse).status()).toBe(201)
+  const activateResponse = page.waitForResponse(
+    (response) => response.url().includes(`/api/projects/${projectId}/agents/`)
+      && response.url().endsWith('/activate')
+      && response.request().method() === 'POST',
+  )
+  await page.getByRole('button', { name: '设为活动 Agent' }).click()
+  expect((await activateResponse).status()).toBe(200)
+  await expect(page.getByText(`Browser Agent ${suffix}`, { exact: true })).toBeVisible()
+
+  await page.goto(`/projects/${projectId}`)
   const filePath = 'chapters/browser.md'
   await page.getByPlaceholder('drafts/chapter-01.md').fill(filePath)
   const createFileResponse = page.waitForResponse(
@@ -90,7 +128,9 @@ test('cookie session, Git editor, immutable versions, Skill resolution, and XSS 
   )
   await page.getByRole('button', { name: '整轮拒绝' }).click()
   expect((await rejectResponse).status()).toBe(200)
-  await expect(page.getByText('write · rejected · version-restore', { exact: true })).toBeVisible()
+  await expect(
+    page.getByText(`write · rejected · Browser Agent ${suffix} · version-restore`, { exact: true }),
+  ).toBeVisible()
 
   await page.getByTestId('agent-nav-settings').click()
   await expect(page.getByRole('heading', { name: '项目设置' })).toBeVisible()

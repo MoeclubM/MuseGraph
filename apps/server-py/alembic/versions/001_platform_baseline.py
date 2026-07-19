@@ -133,12 +133,29 @@ CREATE_STATEMENTS = (
         visibility VARCHAR(20) NOT NULL,
         component_models JSON NOT NULL,
         active_revision_id UUID,
+        active_agent_id UUID,
         memory_instance_id VARCHAR(255) NOT NULL UNIQUE,
         pack_slug VARCHAR(64) NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         CONSTRAINT ck_text_projects_visibility
             CHECK (visibility IN ('private', 'public'))
+    )
+    """,
+    """
+    CREATE TABLE prompt_templates (
+        id UUID PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name VARCHAR(120) NOT NULL,
+        description TEXT NOT NULL,
+        phase VARCHAR(20) NOT NULL,
+        content TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CONSTRAINT ck_prompt_templates_phase
+            CHECK (phase IN ('architect', 'planner', 'writer', 'auditor', 'reviser')),
+        CONSTRAINT uq_prompt_templates_user_name UNIQUE (user_id, name)
     )
     """,
     """
@@ -216,21 +233,41 @@ CREATE_STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE project_agents (
+        id UUID PRIMARY KEY,
+        project_id UUID NOT NULL REFERENCES text_projects(id) ON DELETE CASCADE,
+        created_by_user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        name VARCHAR(120) NOT NULL,
+        description TEXT NOT NULL,
+        model VARCHAR(160),
+        effort VARCHAR(20),
+        prompt_template_ids JSON NOT NULL,
+        version INTEGER NOT NULL,
+        enabled BOOLEAN NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CONSTRAINT uq_project_agents_project_name UNIQUE (project_id, name)
+    )
+    """,
+    """
     CREATE TABLE agent_runs (
         id VARCHAR(64) PRIMARY KEY,
         project_id UUID NOT NULL REFERENCES text_projects(id) ON DELETE CASCADE,
         user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         base_revision_id UUID REFERENCES project_revisions(id) ON DELETE SET NULL,
         result_revision_id UUID REFERENCES project_revisions(id) ON DELETE SET NULL,
+        agent_id UUID NOT NULL REFERENCES project_agents(id) ON DELETE CASCADE,
         mode VARCHAR(20) NOT NULL,
         status VARCHAR(24) NOT NULL,
         instruction TEXT NOT NULL,
         model VARCHAR(160),
         effort VARCHAR(20),
         target_refs JSON NOT NULL,
+        creative_plan JSON,
         plan JSON,
         context_snapshot JSON,
         skill_snapshot JSON NOT NULL,
+        agent_snapshot JSON NOT NULL,
         change_set JSON NOT NULL,
         final_output JSON,
         self_review JSON,
@@ -297,6 +334,8 @@ CREATE_STATEMENTS = (
         ON project_revisions (project_id) WHERE status = 'active'
     """,
     "CREATE INDEX ix_project_skills_project_enabled ON project_skills (project_id, enabled)",
+    "CREATE INDEX ix_prompt_templates_user_phase ON prompt_templates (user_id, phase)",
+    "CREATE INDEX ix_project_agents_project_enabled ON project_agents (project_id, enabled)",
     "CREATE INDEX ix_agent_runs_queue ON agent_runs (status, created_at)",
     "CREATE INDEX ix_agent_runs_project_created ON agent_runs (project_id, created_at)",
     "CREATE INDEX ix_agent_runs_lease ON agent_runs (status, lease_expires_at)",
@@ -306,6 +345,13 @@ CREATE_STATEMENTS = (
         ADD CONSTRAINT fk_text_projects_active_revision
         FOREIGN KEY (active_revision_id)
         REFERENCES project_revisions(id)
+        ON DELETE SET NULL
+    """,
+    """
+    ALTER TABLE text_projects
+        ADD CONSTRAINT fk_text_projects_active_agent
+        FOREIGN KEY (active_agent_id)
+        REFERENCES project_agents(id)
         ON DELETE SET NULL
     """,
 )
@@ -318,18 +364,23 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(
+        "ALTER TABLE text_projects DROP CONSTRAINT fk_text_projects_active_agent"
+    )
+    op.execute(
         "ALTER TABLE text_projects DROP CONSTRAINT fk_text_projects_active_revision"
     )
     for table in (
         "usages",
         "agent_events",
         "agent_runs",
+        "project_agents",
         "project_skills",
         "project_revisions",
         "project_members",
         "document_index",
         "audit_logs",
         "text_projects",
+        "prompt_templates",
         "sessions",
         "orders",
         "deposits",

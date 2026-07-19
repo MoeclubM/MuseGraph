@@ -102,15 +102,27 @@ from app.routers import (  # noqa: E402
     memory,
     payment,
     project_files,
+    project_agents,
     project_versions,
     projects,
+    prompt_templates,
     skills,
     users,
 )
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
+app.include_router(
+    prompt_templates.router,
+    prefix="/api/users/me/prompt-templates",
+    tags=["prompt-templates"],
+)
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
+app.include_router(
+    project_agents.router,
+    prefix="/api/projects/{project_id}/agents",
+    tags=["project-agents"],
+)
 app.include_router(project_files.router, prefix="/api/projects/{project_id}/files", tags=["project-files"])
 app.include_router(project_versions.router, prefix="/api/projects/{project_id}/versions", tags=["project-versions"])
 app.include_router(ai.router, prefix="/api/ai", tags=["ai"])

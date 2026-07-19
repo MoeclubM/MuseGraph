@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.project import ProjectMember, TextProject
-from app.models.runtime import ProjectRevision
+from app.models.runtime import ProjectAgent, ProjectRevision
 from app.models.user import User
 from app.schemas.project import (
     ProjectCreate,
@@ -97,6 +97,16 @@ async def create_project(
     )
     db.add(project)
     await db.flush()
+    agent = ProjectAgent(
+        project_id=project.id,
+        created_by_user_id=user.id,
+        name="默认创作 Agent",
+        description="继承项目对应运行模式的模型配置，使用内置阶段提示词。",
+        prompt_template_ids={},
+    )
+    db.add(agent)
+    await db.flush()
+    project.active_agent_id = agent.id
     db.add(ProjectMember(project_id=project.id, user_id=user.id, role="owner"))
     memory_started = False
     try:

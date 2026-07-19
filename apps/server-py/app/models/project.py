@@ -32,6 +32,15 @@ class TextProject(Base):
             ondelete="SET NULL",
         ),
     )
+    active_agent_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey(
+            "project_agents.id",
+            name="fk_text_projects_active_agent",
+            use_alter=True,
+            ondelete="SET NULL",
+        ),
+    )
     memory_instance_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     pack_slug: Mapped[str] = mapped_column(String(64), nullable=False, default="generic")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

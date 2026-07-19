@@ -29,6 +29,7 @@ from app.schemas.runtime import (
     ProjectRevisionResponse,
 )
 from app.services.agent.skills import resolve_project_skill
+from app.services.agent.configuration import resolve_project_agent
 from app.services.agent_engine import append_agent_event
 from app.services.agent_workspace import (
     apply_knowledge_operations,
@@ -101,6 +102,12 @@ async def start_agent_run(
         )
     role = {"write": "writer", "analyze": "auditor", "suggest": "writer"}[body.mode]
     try:
+        project_agent, agent_snapshot = await resolve_project_agent(
+            db,
+            project=project,
+            mode=body.mode,
+            requested_agent_id=body.agent_id,
+        )
         skill = await resolve_project_skill(
             db,
             project_id=project_id,
@@ -115,13 +122,15 @@ async def start_agent_run(
         project_id=project_id,
         user_id=user.id,
         base_revision_id=project.active_revision_id,
+        agent_id=project_agent.id,
         mode=body.mode,
         status="queued",
         instruction=body.instruction,
-        model=body.model,
-        effort=body.effort,
+        model=agent_snapshot.model,
+        effort=agent_snapshot.effort,
         target_refs=body.target_refs,
         skill_snapshot=skill.model_dump(mode="json"),
+        agent_snapshot=agent_snapshot.model_dump(mode="json"),
         change_set=ChangeSet().model_dump(mode="json"),
     )
     db.add(run)
@@ -135,11 +144,20 @@ async def start_agent_run(
             target_id=run.id,
             request_id=getattr(request.state, "request_id", None),
             ip_address=request.client.host if request.client else None,
-            detail={"mode": body.mode, "skill": skill.slug},
+            detail={
+                "mode": body.mode,
+                "skill": skill.slug,
+                "agent_id": project_agent.id,
+                "agent_version": project_agent.version,
+            },
         )
     )
     await db.commit()
-    await append_agent_event(run.id, "queued", {"mode": run.mode, "skill": skill.slug})
+    await append_agent_event(
+        run.id,
+        "queued",
+        {"mode": run.mode, "skill": skill.slug, "agent_id": project_agent.id},
+    )
     await db.refresh(run)
     return AgentRunResponse.model_validate(run)
 

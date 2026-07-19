@@ -139,6 +139,7 @@ watch(projectId, load, { immediate: true })
             <p class="mt-1 text-sm muse-text-muted">配置 Text Pack、Agent 模型、Cognee 模型与成员权限。</p>
           </div>
           <div class="flex gap-2">
+            <Button variant="secondary" @click="router.push(`/projects/${projectId}/agents`)">Agents</Button>
             <Button variant="secondary" @click="router.push(`/projects/${projectId}/skills`)">Skills</Button>
             <Button variant="secondary" @click="router.push(`/projects/${projectId}/versions`)">版本</Button>
           </div>

@@ -15,6 +15,7 @@ from app.services.agent.skill_catalog import (
 
 
 ROLE_NAMES = {
+    "architect",
     "planner",
     "composer",
     "writer",

@@ -1414,7 +1414,13 @@ async def create_provider(
             ),
         )
     provider_type = _normalize_provider_type(body.get("provider", ""))
-    base_url = await validate_provider_base_url(body.get("base_url"))
+    try:
+        base_url = await validate_provider_base_url(body.get("base_url"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     provider = AIProviderConfig(
         name=body["name"],
         provider=provider_type,
@@ -1455,7 +1461,13 @@ async def update_provider(
             elif key == "api_key":
                 setattr(provider, key, encrypt_secret(str(body[key])))
             elif key == "base_url":
-                setattr(provider, key, await validate_provider_base_url(body[key]))
+                try:
+                    provider.base_url = await validate_provider_base_url(body[key])
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=str(exc),
+                    ) from exc
             else:
                 setattr(provider, key, body[key])
     await db.flush()

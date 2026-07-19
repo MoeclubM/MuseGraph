@@ -39,6 +39,12 @@ const router = createRouter({
       meta: { auth: true },
     },
     {
+      path: '/settings/prompt-templates',
+      name: 'prompt-templates',
+      component: () => import('@/views/PromptTemplatesView.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/projects',
       name: 'projects',
       component: () => import('@/views/ProjectsView.vue'),
@@ -66,6 +72,12 @@ const router = createRouter({
       path: '/projects/:id/skills',
       name: 'project-skills',
       component: () => import('@/views/ProjectSkillsSettingsView.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/projects/:id/agents',
+      name: 'project-agents',
+      component: () => import('@/views/ProjectAgentsView.vue'),
       meta: { auth: true },
     },
     {
