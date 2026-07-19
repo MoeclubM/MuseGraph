@@ -91,6 +91,9 @@ async def ensure_project_memory_instance(
             "llm_endpoint": llm_provider.base_url or "",
             "llm_api_key": decrypt_secret(llm_provider.api_key),
             "llm_max_completion_tokens": settings.COGNEE_LLM_MAX_TOKENS,
+            "llm_args": {
+                "extra_body": {"thinking": {"type": "disabled"}},
+            },
         }
     await start_project_memory_instance(
         project.id,

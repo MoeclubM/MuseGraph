@@ -29,10 +29,21 @@ AgentRole = Literal[
 ]
 ExecutionAgentRole = Literal[
     "writer",
+    "reviser",
     "evaluator",
     "updater",
     "memory_builder",
     "graph_extractor",
+]
+AgentToolName = Literal[
+    "list_files",
+    "read_file",
+    "write_file",
+    "delete_file",
+    "knowledge_search",
+    "knowledge_get",
+    "knowledge_upsert",
+    "knowledge_delete",
 ]
 SkillScope = Literal["write", "analyze", "suggest"]
 KnowledgeKind = Literal["fact", "entity", "relation", "event", "constraint", "source"]
@@ -145,7 +156,9 @@ class ChangeSet(StrictModel):
 class CreationPlanStep(StrictModel):
     goal: str = Field(min_length=1)
     role: ExecutionAgentRole
+    tool: AgentToolName
     target_refs: list[str] = Field(default_factory=list)
+    output_ref: str | None = None
 
 
 class CreationPlan(StrictModel):

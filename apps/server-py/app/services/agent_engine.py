@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, RootModel, TypeAdapter, create_model
 from sqlalchemy import func, select
 
 from app.config import settings
@@ -16,6 +16,7 @@ from app.schemas.runtime import (
     ChangeSet,
     ContextItem,
     CreationPlan,
+    CreationPlanStep,
     CreativeContextBundle,
     SelfReview,
     SourceRef,
@@ -61,59 +62,59 @@ AgentRole = Literal[
     "memory_builder",
     "graph_extractor",
 ]
-EXECUTION_ROLES = {
+PLANNING_ROLES = {
     "writer",
     "evaluator",
     "updater",
     "memory_builder",
     "graph_extractor",
 }
+EXECUTION_ROLES = PLANNING_ROLES | {"reviser"}
 
 
-class ToolCallBase(BaseModel):
+class ToolActionBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["tool_call"]
     reason: str = ""
 
 
-class ListFilesAction(ToolCallBase):
-    tool: Literal["list_files"]
+class ListFilesAction(ToolActionBase):
+    action: Literal["list_files"]
     arguments: EmptyInput
 
 
-class ReadFileAction(ToolCallBase):
-    tool: Literal["read_file"]
+class ReadFileAction(ToolActionBase):
+    action: Literal["read_file"]
     arguments: ReadFileInput
 
 
-class WriteFileAction(ToolCallBase):
-    tool: Literal["write_file"]
+class WriteFileAction(ToolActionBase):
+    action: Literal["write_file"]
     arguments: WriteFileInput
 
 
-class DeleteFileAction(ToolCallBase):
-    tool: Literal["delete_file"]
+class DeleteFileAction(ToolActionBase):
+    action: Literal["delete_file"]
     arguments: DeleteFileInput
 
 
-class KnowledgeSearchAction(ToolCallBase):
-    tool: Literal["knowledge_search"]
+class KnowledgeSearchAction(ToolActionBase):
+    action: Literal["knowledge_search"]
     arguments: KnowledgeSearchInput
 
 
-class KnowledgeGetAction(ToolCallBase):
-    tool: Literal["knowledge_get"]
+class KnowledgeGetAction(ToolActionBase):
+    action: Literal["knowledge_get"]
     arguments: KnowledgeGetInput
 
 
-class KnowledgeUpsertAction(ToolCallBase):
-    tool: Literal["knowledge_upsert"]
+class KnowledgeUpsertAction(ToolActionBase):
+    action: Literal["knowledge_upsert"]
     arguments: KnowledgeUpsertInput
 
 
-class KnowledgeDeleteAction(ToolCallBase):
-    tool: Literal["knowledge_delete"]
+class KnowledgeDeleteAction(ToolActionBase):
+    action: Literal["knowledge_delete"]
     arguments: KnowledgeDeleteInput
 
 
@@ -126,7 +127,7 @@ ToolCallAction = Annotated[
     | KnowledgeGetAction
     | KnowledgeUpsertAction
     | KnowledgeDeleteAction,
-    Field(discriminator="tool"),
+    Field(discriminator="action"),
 ]
 TOOL_ACTION_MODELS = {
     "list_files": ListFilesAction,
@@ -140,17 +141,22 @@ TOOL_ACTION_MODELS = {
 }
 
 
-class FinishAction(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class FinishAction(AgentFinish):
     action: Literal["finish"]
-    output: AgentFinish
 
 
 class AgentAction(
     RootModel[
         Annotated[
-            ToolCallAction | FinishAction,
+            ListFilesAction
+            | ReadFileAction
+            | WriteFileAction
+            | DeleteFileAction
+            | KnowledgeSearchAction
+            | KnowledgeGetAction
+            | KnowledgeUpsertAction
+            | KnowledgeDeleteAction
+            | FinishAction,
             Field(discriminator="action"),
         ]
     ]
@@ -158,19 +164,50 @@ class AgentAction(
     pass
 
 
-def _agent_action_schema(tool_names: set[str]) -> type[RootModel[Any]]:
+def _agent_action_schema(
+    tool_names: set[str],
+    *,
+    include_finish: bool = True,
+) -> type[RootModel[Any]]:
     action_types = [TOOL_ACTION_MODELS[name] for name in sorted(tool_names)]
-    tool_action_type: Any = action_types[0]
+    combined_type: Any = action_types[0]
     for action_type in action_types[1:]:
-        tool_action_type |= action_type
-    if len(action_types) > 1:
-        tool_action_type = Annotated[tool_action_type, Field(discriminator="tool")]
+        combined_type |= action_type
+    if not include_finish:
+        if len(action_types) == 1:
+            return RootModel[combined_type]
+        return RootModel[
+            Annotated[
+                combined_type,
+                Field(discriminator="action"),
+            ]
+        ]
     return RootModel[
         Annotated[
-            tool_action_type | FinishAction,
+            combined_type | FinishAction,
             Field(discriminator="action"),
         ]
     ]
+
+
+def _creation_plan_schema(
+    roles: set[str],
+    tool_names: set[str],
+) -> type[BaseModel]:
+    role_type = Literal.__getitem__(tuple(sorted(roles)))
+    tool_type = Literal.__getitem__(tuple(sorted(tool_names)))
+    step_model = create_model(
+        "ResolvedCreationPlanStep",
+        __base__=CreationPlanStep,
+        role=(role_type, ...),
+        tool=(tool_type, ...),
+        output_ref=(str | None, ...),
+    )
+    return create_model(
+        "ResolvedCreationPlan",
+        __base__=CreationPlan,
+        steps=(list[step_model], Field(min_length=1)),
+    )
 
 
 class AuditIssue(BaseModel):
@@ -474,19 +511,42 @@ async def _create_plan(
         "每个计划步骤必须且只能对应一次实际工具调用。步骤只能使用当前 Skill.roles 中的"
         " writer、evaluator、updater、memory_builder、graph_extractor；planner、composer、"
         "auditor、reviser 已由引擎独立执行，禁止写入步骤。每个待写文件必须分别安排一个"
-        " writer 步骤；结构化知识变更使用 updater、memory_builder 或 graph_extractor。"
+        " tool=write_file 的 writer 步骤；结构化知识变更使用 updater、memory_builder 或"
+        " graph_extractor，并在 tool 字段填写该步骤唯一调用的工具。Composer 已将目标"
+        "文件、控制文档和知识载入上下文，禁止安排重复的读取或检索步骤。target_refs"
+        " 只填写该步骤依赖的输入引用；write_file/delete_file 的唯一输出路径必须填写"
+        " output_ref，其他工具的 output_ref 填 null。"
         "计划只描述动作、目标文件和验收意图，禁止在计划中创作正文、大纲或知识内容。"
         "\n\n用户目标：\n"
         f"{run.instruction}\n\nSkill：\n{json.dumps(planner_skill, ensure_ascii=False)}"
         f"\n\n项目清单：\n{json.dumps(manifest, ensure_ascii=False)}"
     )
-    return await _llm_json(
+    response = await _llm_json(
         run=run,
         model=model,
         prompt=prompt,
-        response_schema=CreationPlan,
+        response_schema=_creation_plan_schema(
+            set(skill["roles"]) & PLANNING_ROLES,
+            set(skill["allowed_tools"])
+            & (
+                {
+                    "write_file",
+                    "delete_file",
+                    "knowledge_upsert",
+                    "knowledge_delete",
+                }
+                if run.mode == "write"
+                else {
+                    "list_files",
+                    "read_file",
+                    "knowledge_search",
+                    "knowledge_get",
+                }
+            ),
+        ),
         max_tokens=4096,
     )
+    return CreationPlan.model_validate(response.model_dump())
 
 
 def _role_context(
@@ -531,44 +591,117 @@ async def _run_tool_loop(
     while True:
         await _check_cancelled(run.id)
         await _heartbeat(run.id, worker_id)
-        role = history[-1].get("next_role") if history else None
-        if role not in skill["roles"]:
-            role = next(
-                (step.role for step in plan.steps if step.role in skill["roles"]),
-                skill["roles"][0],
+        current_step = plan.steps[len(history)] if len(history) < len(plan.steps) else None
+        role = current_step.role if current_step else plan.steps[-1].role
+        if current_step:
+            if current_step.tool in {"write_file", "delete_file"} and not current_step.output_ref:
+                raise ValueError(
+                    f"Each {current_step.tool} plan step must declare output_ref"
+                )
+            if current_step.tool not in {"write_file", "delete_file"} and current_step.output_ref:
+                raise ValueError(
+                    f"Plan step {current_step.tool} cannot declare output_ref"
+                )
+        schemas = (
+            [
+                schema
+                for schema in tool_schemas(allowed_tools, role)
+                if schema["name"] == current_step.tool
+            ]
+            if current_step
+            else []
+        )
+        if current_step and not schemas:
+            raise PermissionError(
+                f"Role {role} cannot execute planned tool {current_step.tool}"
             )
-        schemas = tool_schemas(allowed_tools, role)
-        response_schema = _agent_action_schema(
-            {schema["name"] for schema in schemas}
+        response_schema = (
+            _agent_action_schema(
+                {current_step.tool},
+                include_finish=False,
+            )
+            if current_step
+            else RootModel[FinishAction]
+        )
+        protocol_instruction = (
+            "当前 write_file 步骤使用正文内容通道，直接创作计划指定的完整文件。"
+            if current_step and current_step.tool == "write_file"
+            else (
+                "一次只返回一个严格 JSON action。调用工具时 action 直接填写工具名，"
+                "并填写 arguments/reason；完成时 action=finish，并直接填写 AgentFinish"
+                " 的 summary、changed_files、knowledge_operations、"
+                "used_knowledge_ids 和 unresolved_issues 字段。"
+            )
         )
         prompt = (
-            "你是 MuseGraph 文本创作 Agent。一次只返回一个严格 JSON action。"
-            "tool_call 时填写 tool/arguments/reason；完成时 action=finish 并填写 output。"
+            f"你是 MuseGraph 文本创作 Agent。{protocol_instruction}"
+            "当前计划步骤存在时必须执行且只能执行一次工具调用，不得提前 finish；"
+            "当前计划步骤为空时所有步骤均已完成，只能 finish，不得继续调用工具。"
+            "finish.used_knowledge_ids 必须至少完整复制计划中的"
+            " required_knowledge_ids，并包含角色上下文中的全部 required constraint ID，"
+            "不得省略。finish.knowledge_operations 只统计实际执行的"
+            " knowledge_upsert 和 knowledge_delete，读取与检索不计入。"
             "所有写作必须实际调用 write_file，所有结构化知识必须调用 knowledge_upsert/delete。"
             "不得声称未执行的修改。输出语言与用户一致。"
             f"\n\n用户目标：{run.instruction}"
             f"\n\n修订要求：{correction or '无'}"
             f"\n\nSkill：{json.dumps(skill, ensure_ascii=False)}"
             f"\n\n计划：{plan.model_dump_json()}"
+            f"\n\n当前计划步骤：{current_step.model_dump_json() if current_step else '无'}"
             f"\n\n当前角色上下文：{json.dumps(_role_context(context, role, run.instruction), ensure_ascii=False)}"
             f"\n\n当前角色：{role}"
             f"\n\n可用工具：{json.dumps([{'name': schema['name'], 'description': schema['description']} for schema in schemas], ensure_ascii=False)}"
             f"\n\n执行历史：{json.dumps(history, ensure_ascii=False)}"
         )
-        action_envelope = await _llm_json(
-            run=run,
-            model=model,
-            prompt=prompt,
-            response_schema=response_schema,
-            max_tokens=settings.AGENT_PI_TOOL_LOOP_MAX_TOKENS,
-        )
-        action = action_envelope.root
+        if current_step and current_step.tool == "write_file":
+            async with async_session() as db:
+                response = await call_llm(
+                    model,
+                    (
+                        f"{prompt}\n\n直接返回要写入 {current_step.output_ref} 的完整"
+                        " UTF-8 Markdown 文件内容。首行必须是章节或文档标题；不得输出"
+                        "分析、JSON、代码围栏、工具说明或任何文件内容之外的前后缀。"
+                    ),
+                    db,
+                    max_tokens=settings.AGENT_PI_TOOL_LOOP_MAX_TOKENS,
+                    billing_user_id=run.user_id,
+                    billing_project_id=run.project_id,
+                    billing_operation_id=run.id,
+                    reasoning_effort_override=run.effort,
+                    prefer_stream_override=False,
+                )
+                await db.commit()
+            if response["content"].lstrip().startswith("```"):
+                raise ValueError("Writer returned a Markdown code fence instead of file content")
+            action: Any = WriteFileAction(
+                action="write_file",
+                reason=current_step.goal,
+                arguments=WriteFileInput(
+                    path=current_step.output_ref,
+                    content=response["content"],
+                ),
+            )
+        else:
+            action_envelope = await _llm_json(
+                run=run,
+                model=model,
+                prompt=prompt,
+                response_schema=response_schema,
+                max_tokens=settings.AGENT_PI_TOOL_LOOP_MAX_TOKENS,
+            )
+            action = action_envelope.root
         if isinstance(action, FinishAction):
-            return action.output
+            return AgentFinish.model_validate(action.model_dump(exclude={"action"}))
+        if (
+            current_step
+            and current_step.tool == "delete_file"
+            and action.arguments.path != current_step.output_ref
+        ):
+            raise ValueError("delete_file arguments.path must match the planned output_ref")
         tool_context.role = role
         result = await execute_tool(
             tool_context,
-            action.tool,
+            action.action,
             action.arguments.model_dump(mode="json"),
             allowed_tools,
         )
@@ -577,7 +710,7 @@ async def _run_tool_loop(
             "tool",
             {
                 "role": role,
-                "tool": action.tool,
+                "tool": action.action,
                 "reason": action.reason,
                 "result": result,
             },
@@ -585,16 +718,11 @@ async def _run_tool_loop(
         history.append(
             {
                 "role": role,
-                "tool": action.tool,
+                "tool": action.action,
                 "arguments": action.arguments.model_dump(mode="json"),
                 "result": result,
-                "next_role": _next_role(plan, len(history)),
             }
         )
-
-
-def _next_role(plan: CreationPlan, history_length: int) -> str:
-    return plan.steps[min(history_length + 1, len(plan.steps) - 1)].role
 
 
 async def _audit(
@@ -708,7 +836,7 @@ async def execute_agent_run(run_id: str, worker_id: str) -> None:
         plan = await _create_plan(run, model, context, run.skill_snapshot)
         plan_roles = {step.role for step in plan.steps}
         invalid_plan_roles = sorted(
-            plan_roles - (set(run.skill_snapshot["roles"]) & EXECUTION_ROLES)
+            plan_roles - (set(run.skill_snapshot["roles"]) & PLANNING_ROLES)
         )
         if invalid_plan_roles:
             raise ValueError(
@@ -763,6 +891,11 @@ async def execute_agent_run(run_id: str, worker_id: str) -> None:
                     )
                 audit = await _audit(run, model, context, finish, changes)
                 blockers = [issue for issue in audit.issues if issue.severity == "blocker"]
+                await append_agent_event(
+                    run.id,
+                    "audit",
+                    audit.model_dump(mode="json"),
+                )
                 if not blockers:
                     changes.validation = validation
                     changes.self_review = SelfReview(
@@ -775,10 +908,33 @@ async def execute_agent_run(run_id: str, worker_id: str) -> None:
                     [issue.model_dump(mode="json") for issue in blockers],
                     ensure_ascii=False,
                 )
+                revision_plan = CreationPlan(
+                    objective=f"修复 Auditor 阻塞项：{audit.summary}",
+                    steps=[
+                        CreationPlanStep(
+                            goal=f"根据 Auditor 阻塞项修订：{step.goal}",
+                            role="reviser" if step.role == "writer" else step.role,
+                            tool=step.tool,
+                            target_refs=step.target_refs,
+                            output_ref=step.output_ref,
+                        )
+                        for step in plan.steps
+                    ],
+                    required_knowledge_ids=plan.required_knowledge_ids,
+                )
+                revision_roles = {step.role for step in revision_plan.steps}
+                unavailable_revision_roles = sorted(
+                    revision_roles - set(run.skill_snapshot["roles"])
+                )
+                if unavailable_revision_roles:
+                    raise RuntimeError(
+                        "Resolved Skill cannot execute Auditor revisions with roles: "
+                        f"{unavailable_revision_roles}"
+                    )
                 finish = await _run_tool_loop(
                     run=run,
                     model=model,
-                    plan=plan,
+                    plan=revision_plan,
                     context=context,
                     tool_context=tool_context,
                     skill=run.skill_snapshot,

@@ -327,17 +327,18 @@ async def review_agent_run(
                         select(ProjectRevision).where(ProjectRevision.id == run.base_revision_id)
                     )
                 ).scalar_one()
+                await ensure_project_memory_instance(project, db)
                 base_git_commit = base_revision.git_commit
                 base_records = await list_knowledge_records(
                     project_id,
                     base_revision.knowledge_dataset,
                 )
+                if base_records:
+                    await ensure_project_memory_instance(project, db, require_models=True)
                 operations = knowledge_operations_adapter.validate_python(
                     run.change_set.get("knowledge") or []
                 )
                 records = apply_knowledge_operations(base_records, operations, revision_id)
-                if records:
-                    await ensure_project_memory_instance(project, db, require_models=True)
                 dataset_name = f"project:{project_id}:revision:{revision_id}"
                 await remember_knowledge_dataset(project_id, dataset_name, records)
                 dataset_created = True

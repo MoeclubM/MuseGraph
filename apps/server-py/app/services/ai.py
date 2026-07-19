@@ -166,6 +166,20 @@ def _response_content(response: Any) -> str:
     return str(content or "")
 
 
+def _tool_call_arguments(response: Any, tool_name: str) -> str:
+    calls = response.choices[0].message.tool_calls or []
+    if len(calls) != 1:
+        raise RuntimeError(
+            f'LLM must call structured output tool "{tool_name}" exactly once'
+        )
+    function = calls[0].function
+    if function.name != tool_name:
+        raise RuntimeError(
+            f'LLM called "{function.name}" instead of structured output tool "{tool_name}"'
+        )
+    return function.arguments
+
+
 def _usage_value(usage: Any, *names: str) -> int:
     for name in names:
         value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
@@ -252,6 +266,7 @@ async def call_llm(
         timeout = max(timeout, int(minimum_timeout_seconds))
 
     request_prompt = prompt
+    structured_tool_name: str | None = None
     kwargs: dict[str, Any] = {
         "model": selected_model,
         "messages": [{"role": "user", "content": request_prompt}],
@@ -267,13 +282,14 @@ async def call_llm(
             if is_anthropic_provider(provider)
             else api_base
         )
-    if (
-        is_anthropic_provider(provider)
-        and selected_model.startswith("deepseek-v4-")
-        and not reasoning_effort_override
+    if selected_model.startswith("deepseek-v4-") and (
+        response_schema is not None or not reasoning_effort_override
     ):
-        kwargs["thinking"] = {"type": "disabled"}
-        kwargs["allowed_openai_params"] = ["thinking"]
+        if is_anthropic_provider(provider):
+            kwargs["thinking"] = {"type": "disabled"}
+            kwargs["allowed_openai_params"] = ["thinking"]
+        else:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     if reasoning_effort_override:
         kwargs["reasoning_effort"] = reasoning_effort_override
         kwargs["allowed_openai_params"] = [
@@ -284,14 +300,36 @@ async def call_llm(
         schema_name = response_schema_name or _schema_name(response_schema)
         schema = _schema_payload(response_schema)
         if is_anthropic_provider(provider):
-            kwargs["messages"][0]["content"] = (
-                f"{prompt}\n\nReturn only JSON matching this schema:\n"
-                f"{json.dumps(schema, ensure_ascii=False)}"
-            )
+            kwargs["messages"] = [
+                {
+                    "role": "user",
+                    "content": (
+                        f"{prompt}\n\nReturn only JSON matching this schema:\n"
+                        f"{json.dumps(schema, ensure_ascii=False)}"
+                    ),
+                },
+                {"role": "assistant", "content": "{"},
+            ]
         else:
-            kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": schema_name, "schema": schema, "strict": True},
+            structured_tool_name = f"submit_{schema_name}"[:64]
+            parameters = (
+                schema
+                if schema.get("type") == "object"
+                else {"type": "object", **schema}
+            )
+            kwargs["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": structured_tool_name,
+                        "description": "Submit the response matching the required schema.",
+                        "parameters": parameters,
+                    },
+                }
+            ]
+            kwargs["tool_choice"] = {
+                "type": "function",
+                "function": {"name": structured_tool_name},
             }
 
     if is_anthropic_provider(provider):
@@ -308,7 +346,11 @@ async def call_llm(
                 max_retries=0,
             )
             response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=timeout)
-    content = _response_content(response)
+    content = (
+        _tool_call_arguments(response, structured_tool_name)
+        if structured_tool_name
+        else _response_content(response)
+    )
     if not content.strip():
         raise RuntimeError(f'LLM returned empty content for model "{selected_model}"')
     usage = getattr(response, "usage", None)

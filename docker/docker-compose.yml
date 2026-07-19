@@ -12,6 +12,9 @@ x-app-environment: &app-environment
   AUTO_SEED_DATA: "false"
   TELEMETRY_DISABLED: "true"
   ALLOW_PRIVATE_PROVIDER_URLS: ${ALLOW_PRIVATE_PROVIDER_URLS:-false}
+  HTTP_PROXY: ${HTTP_PROXY:-}
+  HTTPS_PROXY: ${HTTPS_PROXY:-}
+  NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1,postgres,redis,memory,server,worker}
 
 services:
   postgres:

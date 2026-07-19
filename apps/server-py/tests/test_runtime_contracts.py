@@ -1,6 +1,7 @@
 import inspect
 import json
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
@@ -8,6 +9,7 @@ from pydantic import ValidationError
 from app.schemas.runtime import (
     AgentFinish,
     AgentRunRequest,
+    AgentToolName,
     ChangeSet,
     ConstraintRecord,
     CreationPlan,
@@ -26,13 +28,19 @@ from app.services.agent.skills import (
     validate_skill_definition,
 )
 from app.services.agent.tool_registry import TOOL_REGISTRY
-from app.services.agent_engine import AgentAction, _agent_action_schema, _validate_changes
+from app.services.agent_engine import (
+    AgentAction,
+    _agent_action_schema,
+    _creation_plan_schema,
+    _validate_changes,
+)
 from app.services.agent_workspace import apply_knowledge_operations
 from app.services import ai, memory_client, memory_config
 
 
 def test_tool_registry_schema_handler_and_role_contracts_are_complete():
     assert set(TOOL_REGISTRY) == ALL_AGENT_TOOLS
+    assert set(get_args(AgentToolName)) == set(TOOL_REGISTRY)
     assert {"web_search", "fetch_url"}.isdisjoint(TOOL_REGISTRY)
     for name, definition in TOOL_REGISTRY.items():
         assert definition.name == name
@@ -105,7 +113,9 @@ def test_public_runtime_models_reject_unknown_fields():
                 CreationPlanStep(
                     goal="Draft",
                     role="writer",
+                    tool="write_file",
                     target_refs=["chapter.md"],
+                    output_ref="chapter.md",
                 )
             ],
             legacy_finish=True,
@@ -128,6 +138,25 @@ def test_public_runtime_models_reject_unknown_fields():
                 "arguments": {},
             }
         )
+    action = AgentAction.model_validate(
+        {
+            "action": "write_file",
+            "reason": "Draft the chapter",
+            "arguments": {"path": "chapter.md", "content": "text"},
+        }
+    )
+    assert action.root.action == "write_file"
+    finish = AgentAction.model_validate(
+        {
+            "action": "finish",
+            "summary": "Done",
+            "changed_files": ["chapter.md"],
+            "knowledge_operations": 0,
+            "used_knowledge_ids": ["character-liu-ruyan"],
+            "unresolved_issues": [],
+        }
+    )
+    assert finish.root.summary == "Done"
     schema = AgentAction.model_json_schema()
     assert schema["discriminator"]["propertyName"] == "action"
     writer_schema = json.dumps(
@@ -136,6 +165,58 @@ def test_public_runtime_models_reject_unknown_fields():
     assert '"write_file"' in writer_schema
     assert '"knowledge_upsert"' not in writer_schema
     assert '"role"' not in writer_schema
+    with pytest.raises(ValidationError):
+        _agent_action_schema(
+            {"write_file"},
+            include_finish=False,
+        ).model_validate(
+            {
+                "action": "finish",
+                "output": {
+                    "summary": "Skipped",
+                    "changed_files": [],
+                    "knowledge_operations": 0,
+                    "used_knowledge_ids": [],
+                    "unresolved_issues": [],
+                },
+            }
+        )
+
+
+def test_creation_plan_schema_only_accepts_resolved_skill_roles_and_tools():
+    schema = _creation_plan_schema({"writer"}, {"write_file"})
+    plan = schema.model_validate(
+        {
+            "objective": "Write the outline",
+            "steps": [
+                {
+                    "goal": "Draft",
+                    "role": "writer",
+                    "tool": "write_file",
+                    "target_refs": ["outline.md"],
+                    "output_ref": "outline.md",
+                }
+            ],
+            "required_knowledge_ids": [],
+        }
+    )
+    assert plan.steps[0].role == "writer"
+    with pytest.raises(ValidationError):
+        schema.model_validate(
+            {
+                "objective": "Expand memory",
+                "steps": [
+                    {
+                        "goal": "Store knowledge",
+                        "role": "memory_builder",
+                        "tool": "knowledge_upsert",
+                        "target_refs": [],
+                        "output_ref": None,
+                    }
+                ],
+                "required_knowledge_ids": [],
+            }
+        )
 
 
 def test_knowledge_union_requires_sources_and_relation_integrity():
@@ -271,6 +352,9 @@ async def test_cognee_uses_native_openai_compatible_embedding_engine(monkeypatch
         "llm_endpoint": "https://provider.example/v1",
         "llm_api_key": "plain:encrypted-chat-key",
         "llm_max_completion_tokens": memory_config.settings.COGNEE_LLM_MAX_TOKENS,
+        "llm_args": {
+            "extra_body": {"thinking": {"type": "disabled"}},
+        },
     }
     assert captured["embedding"] == {
         "embedding_provider": "openai_compatible",
@@ -545,6 +629,141 @@ async def test_anthropic_compatible_base_url_does_not_duplicate_v1(monkeypatch):
     assert request["thinking"] == {"type": "disabled"}
     assert request["allowed_openai_params"] == ["thinking"]
     assert "client" not in request
+
+
+@pytest.mark.asyncio
+async def test_anthropic_structured_output_uses_json_prefill(monkeypatch):
+    provider = SimpleNamespace(
+        name="Agent provider",
+        provider="anthropic_compatible",
+        base_url="https://provider.example/v1",
+        api_key="encrypted-chat-key",
+        models=["deepseek-v4-flash"],
+    )
+
+    class ProviderResult:
+        def scalars(self):
+            return [provider]
+
+    class EmptyResult:
+        def scalar_one_or_none(self):
+            return None
+
+    class Database:
+        def __init__(self):
+            self.results = iter([ProviderResult(), EmptyResult(), EmptyResult()])
+
+        async def execute(self, _statement):
+            return next(self.results)
+
+    request: dict[str, object] = {}
+    arguments = AgentFinish(
+        summary="done",
+        changed_files=["chapters/01.md"],
+        used_knowledge_ids=["character-liu-ruyan"],
+    ).model_dump_json()
+
+    async def completion(**kwargs):
+        request.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=arguments,
+                    )
+                )
+            ],
+            usage={},
+        )
+
+    monkeypatch.setattr(ai.litellm, "acompletion", completion)
+    monkeypatch.setattr(ai, "decrypt_secret", lambda _value: "private-key")
+
+    response = await ai.call_llm(
+        "deepseek-v4-flash",
+        "Finish the run.",
+        Database(),
+        response_schema=AgentFinish,
+    )
+
+    assert response["content"] == arguments
+    assert '"used_knowledge_ids"' in request["messages"][0]["content"]
+    assert request["messages"][1] == {"role": "assistant", "content": "{"}
+    assert "extra_body" not in request
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_structured_output_uses_forced_tool(monkeypatch):
+    provider = SimpleNamespace(
+        name="Agent provider",
+        provider="openai_compatible",
+        base_url="https://provider.example/v1",
+        api_key="encrypted-chat-key",
+        models=["deepseek-v4-flash"],
+    )
+
+    class ProviderResult:
+        def scalars(self):
+            return [provider]
+
+    class EmptyResult:
+        def scalar_one_or_none(self):
+            return None
+
+    class Database:
+        def __init__(self):
+            self.results = iter([ProviderResult(), EmptyResult(), EmptyResult()])
+
+        async def execute(self, _statement):
+            return next(self.results)
+
+    request: dict[str, object] = {}
+    arguments = AgentFinish(
+        summary="done",
+        changed_files=["chapters/01.md"],
+        used_knowledge_ids=["character-liu-ruyan"],
+    ).model_dump_json()
+
+    async def completion(**kwargs):
+        request.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                function=SimpleNamespace(
+                                    name="submit_AgentFinish",
+                                    arguments=arguments,
+                                )
+                            )
+                        ],
+                    )
+                )
+            ],
+            usage={},
+        )
+
+    monkeypatch.setattr(ai.litellm, "acompletion", completion)
+    monkeypatch.setattr(ai, "decrypt_secret", lambda _value: "private-key")
+    monkeypatch.setattr(ai, "AsyncOpenAI", lambda **_kwargs: object())
+
+    response = await ai.call_llm(
+        "deepseek-v4-flash",
+        "Finish the run.",
+        Database(),
+        response_schema=AgentFinish,
+    )
+
+    assert response["content"] == arguments
+    assert request["tools"][0]["function"]["parameters"] == AgentFinish.model_json_schema()
+    assert request["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert request["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "submit_AgentFinish"},
+    }
+    assert "response_format" not in request
 
 
 @pytest.mark.asyncio
