@@ -14,13 +14,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.config import AIProviderConfig, PaymentConfig, PricingRule
+from app.models.config import PaymentConfig, PricingRule
 from app.models.user import User
 from app.services.llm_runtime import default_llm_runtime_config, normalize_llm_runtime_config
-from app.services.provider_models import (
-    get_provider_chat_models,
-    get_provider_embedding_models,
-    get_provider_reranker_models,
+from app.services.provider_resolution import (
+    list_available_provider_models,
+    resolve_provider_model,
 )
 from app.services.provider_type import is_anthropic_provider
 from app.services.secret_crypto import decrypt_secret
@@ -41,64 +40,44 @@ def _money(value: Any) -> Decimal:
     return Decimal(str(value or 0)).quantize(MONEY_SCALE)
 
 
-async def _collect_available_models(db: AsyncSession, kind: str) -> list[dict[str, str]]:
-    providers = (
-        await db.execute(
-            select(AIProviderConfig)
-            .where(AIProviderConfig.is_active.is_(True))
-            .order_by(AIProviderConfig.priority.desc(), AIProviderConfig.name)
-        )
-    ).scalars()
-    result: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for provider in providers:
-        if kind == "embedding":
-            models = get_provider_embedding_models(provider)
-        elif kind == "reranker":
-            models = get_provider_reranker_models(provider)
-        else:
-            models = get_provider_chat_models(provider)
-        for model in models:
-            if model not in seen:
-                seen.add(model)
-                result.append({"id": model, "provider": provider.name, "name": model})
-    return result
+async def get_available_models(db: AsyncSession, owner_user_id: str) -> list[dict[str, str]]:
+    return await list_available_provider_models(
+        db,
+        owner_user_id=owner_user_id,
+        kind="chat",
+    )
 
 
-async def get_available_models(db: AsyncSession) -> list[dict[str, str]]:
-    return await _collect_available_models(db, "chat")
+async def get_available_embedding_models(db: AsyncSession, owner_user_id: str) -> list[dict[str, str]]:
+    return await list_available_provider_models(
+        db,
+        owner_user_id=owner_user_id,
+        kind="embedding",
+    )
 
 
-async def get_available_embedding_models(db: AsyncSession) -> list[dict[str, str]]:
-    return await _collect_available_models(db, "embedding")
-
-
-async def get_available_reranker_models(db: AsyncSession) -> list[dict[str, str]]:
-    return await _collect_available_models(db, "reranker")
+async def get_available_reranker_models(db: AsyncSession, owner_user_id: str) -> list[dict[str, str]]:
+    return await list_available_provider_models(
+        db,
+        owner_user_id=owner_user_id,
+        kind="reranker",
+    )
 
 
 async def rerank_knowledge_records(
-    model: str,
+    model_reference: str,
     query: str,
     records: list[dict[str, Any]],
     db: AsyncSession,
+    *,
+    provider_owner_user_id: str,
 ) -> list[tuple[dict[str, Any], float]]:
-    provider_config = next(
-        (
-            provider
-            for provider in (
-                await db.execute(
-                    select(AIProviderConfig)
-                    .where(AIProviderConfig.is_active.is_(True))
-                    .order_by(AIProviderConfig.priority.desc(), AIProviderConfig.name)
-                )
-            ).scalars()
-            if model in get_provider_reranker_models(provider)
-        ),
-        None,
+    provider_config, model = await resolve_provider_model(
+        db,
+        model_reference,
+        owner_user_id=provider_owner_user_id,
+        kind="reranker",
     )
-    if provider_config is None:
-        raise ValueError(f'No active provider has registered reranker model "{model}"')
     if provider_config.provider != "openai_compatible":
         raise ValueError("Knowledge reranker provider must be OpenAI-compatible")
 
@@ -214,11 +193,12 @@ async def calculate_cost(
 
 
 async def call_llm(
-    model: str,
+    model_reference: str,
     prompt: str,
     db: AsyncSession,
     max_tokens: int = 1024,
     *,
+    provider_owner_user_id: str,
     billing_user_id: str | None = None,
     billing_project_id: str | None = None,
     billing_operation_id: str | None = None,
@@ -231,29 +211,15 @@ async def call_llm(
     reasoning_effort_override: str | None = None,
 ) -> dict[str, Any]:
     del stream_callback, thinking_stream_callback
-    selected_model = model.strip()
-    if not selected_model:
+    selected_reference = model_reference.strip()
+    if not selected_reference:
         raise ValueError("A model must be selected for this Agent run")
-
-    providers = list(
-        (
-            await db.execute(
-                select(AIProviderConfig)
-                .where(AIProviderConfig.is_active.is_(True))
-                .order_by(AIProviderConfig.priority.desc(), AIProviderConfig.name)
-            )
-        ).scalars()
+    provider_config, selected_model = await resolve_provider_model(
+        db,
+        selected_reference,
+        owner_user_id=provider_owner_user_id,
+        kind="chat",
     )
-    provider_config = next(
-        (
-            provider
-            for provider in providers
-            if selected_model in get_provider_chat_models(provider)
-        ),
-        None,
-    )
-    if provider_config is None:
-        raise ValueError(f'No active provider has registered model "{selected_model}"')
     provider = provider_config.provider.strip().lower()
     if provider not in SUPPORTED_LLM_PROVIDERS:
         raise ValueError(f"Unsupported provider: {provider}")
@@ -376,7 +342,13 @@ async def call_llm(
     usage = getattr(response, "usage", None)
     input_tokens = _usage_value(usage, "prompt_tokens", "input_tokens")
     output_tokens = _usage_value(usage, "completion_tokens", "output_tokens")
-    cost = await calculate_cost(selected_model, input_tokens, output_tokens, db)
+    is_byo_provider = provider_config.user_id is not None
+    cost = _money(0) if is_byo_provider else await calculate_cost(
+        selected_model,
+        input_tokens,
+        output_tokens,
+        db,
+    )
 
     if billing_user_id:
         from app.services.usage_records import create_usage_record, resolve_billing_mode
@@ -393,8 +365,12 @@ async def call_llm(
             cost=cost,
             project_id=billing_project_id,
             operation_id=billing_operation_id,
-            provider=provider,
-            billing_mode=await resolve_billing_mode(selected_model, db),
+            provider=provider_config.name,
+            billing_mode=(
+                "BYO"
+                if is_byo_provider
+                else await resolve_billing_mode(selected_model, db)
+            ),
             source="llm",
             user_balance_holder=user,
         )

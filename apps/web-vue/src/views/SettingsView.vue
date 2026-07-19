@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -9,11 +9,18 @@ import Input from '@/components/ui/Input.vue'
 import { getBalance } from '@/api/billing'
 import { getUserUsage } from '@/api/users'
 import { getMyUsageDetails } from '@/api/usage'
+import {
+  createMyProvider,
+  deleteMyProvider,
+  getMyProviders,
+  updateMyProvider,
+  type UserProviderPayload,
+} from '@/api/providers'
 import UsageRecordsTable from '@/components/usage/UsageRecordsTable.vue'
-import type { UsageRecordListResponse } from '@/types'
+import type { UsageRecordListResponse, UserProvider } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
-import { CreditCard, User, Wallet, Edit3, Save, X, Lock, Key } from '@lucide/vue'
+import { CreditCard, User, Wallet, Edit3, Save, X, Lock, Key, Plus, Server, Trash2 } from '@lucide/vue'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -46,6 +53,21 @@ const currentPassword = ref('')
 const newPassword = ref('')
 const confirmPassword = ref('')
 const changingPassword = ref(false)
+const providers = ref<UserProvider[]>([])
+const providerSaving = ref(false)
+const providerFormOpen = ref(false)
+const providerForm = reactive({
+  id: '',
+  name: '',
+  provider: 'openai_compatible',
+  api_key: '',
+  base_url: '',
+  models: '',
+  embedding_models: '',
+  reranker_models: '',
+  is_active: true,
+  priority: 0,
+})
 
 const displayName = computed(() => authStore.user?.nickname || authStore.user?.email || '—')
 
@@ -55,6 +77,92 @@ function formatUsd(value: number): string {
 
 function formatTokens(value: number): string {
   return Number(value || 0).toLocaleString()
+}
+
+function splitModels(value: string): string[] {
+  return [...new Set(value.split(/[,\n]/).map((item) => item.trim()).filter(Boolean))]
+}
+
+function newProvider() {
+  Object.assign(providerForm, {
+    id: '',
+    name: '',
+    provider: 'openai_compatible',
+    api_key: '',
+    base_url: '',
+    models: '',
+    embedding_models: '',
+    reranker_models: '',
+    is_active: true,
+    priority: 0,
+  })
+  providerFormOpen.value = true
+}
+
+function editProvider(provider: UserProvider) {
+  Object.assign(providerForm, {
+    id: provider.id,
+    name: provider.name,
+    provider: provider.provider,
+    api_key: '',
+    base_url: provider.base_url || '',
+    models: (provider.models || []).join('\n'),
+    embedding_models: (provider.embedding_models || []).join('\n'),
+    reranker_models: (provider.reranker_models || []).join('\n'),
+    is_active: provider.is_active,
+    priority: provider.priority,
+  })
+  providerFormOpen.value = true
+}
+
+async function saveProvider() {
+  if (!providerForm.name.trim() || (!providerForm.id && !providerForm.api_key)) {
+    toast.error('名称和 API Key 不能为空')
+    return
+  }
+  providerSaving.value = true
+  try {
+    const payload: UserProviderPayload = {
+      name: providerForm.name.trim(),
+      provider: providerForm.provider,
+      api_key: providerForm.api_key || undefined,
+      base_url: providerForm.base_url.trim() || null,
+      models: splitModels(providerForm.models),
+      embedding_models: splitModels(providerForm.embedding_models),
+      reranker_models: splitModels(providerForm.reranker_models),
+      is_active: providerForm.is_active,
+      priority: providerForm.priority,
+    }
+    if (providerForm.id) {
+      await updateMyProvider(providerForm.id, payload)
+    } else {
+      await createMyProvider({ ...payload, api_key: providerForm.api_key })
+    }
+    providers.value = await getMyProviders()
+    providerFormOpen.value = false
+    toast.success('自定义 API 已保存')
+  } catch (e: any) {
+    toast.error(e?.response?.data?.detail || e?.message || '保存自定义 API 失败')
+  } finally {
+    providerSaving.value = false
+  }
+}
+
+async function removeProvider(provider: UserProvider) {
+  if (!window.confirm(`确认删除自定义 API「${provider.name}」？`)) return
+  try {
+    await deleteMyProvider(provider.id)
+    providers.value = providers.value.filter((item) => item.id !== provider.id)
+    if (providerForm.id === provider.id) providerFormOpen.value = false
+    toast.success('自定义 API 已删除')
+  } catch (e: any) {
+    toast.error(e?.response?.data?.detail || e?.message || '删除自定义 API 失败')
+  }
+}
+
+async function removeSelectedProvider() {
+  const provider = providers.value.find((item) => item.id === providerForm.id)
+  if (provider) await removeProvider(provider)
 }
 
 function startEditing() {
@@ -149,13 +257,18 @@ async function loadSettings() {
     if (!userId) {
       throw new Error(t('settings.errors.noUser'))
     }
-    const [balanceData, usageData] = await Promise.all([getBalance(), getUserUsage(userId)])
+    const [balanceData, usageData, accountProviders] = await Promise.all([
+      getBalance(),
+      getUserUsage(userId),
+      getMyProviders(),
+    ])
     balance.value = balanceData.balance || 0
     dailyUsage.value = balanceData.daily_usage || 0
     monthlyUsage.value = balanceData.monthly_usage || 0
     totalTokens.value = usageData.total_tokens || 0
     totalCost.value = usageData.total_cost || 0
     totalRequests.value = usageData.total_requests || 0
+    providers.value = accountProviders
     authStore.setBalance(balance.value)
   } catch (e: any) {
     loadError.value = e?.response?.data?.detail || e?.message || t('settings.errors.loadFailed')
@@ -262,6 +375,97 @@ onMounted(() => {
                 </div>
               </div>
             </template>
+          </Card>
+
+          <Card>
+            <div class="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <div class="flex items-center gap-2">
+                  <Server class="h-4 w-4 muse-text-muted" />
+                  <h2 class="text-base font-semibold muse-text-heading">我的 API</h2>
+                </div>
+                <p class="mt-1 text-sm muse-text-muted">添加 OpenAI 或 Anthropic 兼容 API。密钥加密保存，保存后不会回显。</p>
+              </div>
+              <Button variant="secondary" size="sm" @click="newProvider">
+                <Plus class="h-4 w-4" />添加 API
+              </Button>
+            </div>
+
+            <div v-if="providers.length" class="grid gap-3 md:grid-cols-2">
+              <button
+                v-for="provider in providers"
+                :key="provider.id"
+                type="button"
+                class="rounded-lg border border-[color:var(--muse-border)] p-3 text-left"
+                @click="editProvider(provider)"
+              >
+                <span class="flex items-center justify-between gap-2">
+                  <span class="font-medium muse-text-heading">{{ provider.name }}</span>
+                  <span class="text-xs" :class="provider.is_active ? 'text-emerald-500' : 'muse-text-faint'">
+                    {{ provider.is_active ? '启用' : '停用' }}
+                  </span>
+                </span>
+                <span class="mt-1 block truncate text-xs muse-text-faint">{{ provider.base_url || provider.provider }}</span>
+                <span class="mt-2 block text-xs muse-text-muted">
+                  LLM {{ provider.models?.length || 0 }} · Embedding {{ provider.embedding_models?.length || 0 }} · Reranker {{ provider.reranker_models?.length || 0 }}
+                </span>
+              </button>
+            </div>
+            <p v-else class="rounded-lg bg-[color:var(--muse-surface-muted)] p-3 text-sm muse-text-muted">尚未添加账号自定义 API。</p>
+
+            <div v-if="providerFormOpen" class="mt-4 space-y-4 border-t border-[color:var(--muse-border)] pt-4">
+              <div class="grid gap-3 sm:grid-cols-2">
+                <label class="text-xs muse-text-muted">名称
+                  <Input v-model="providerForm.name" class="mt-1" placeholder="例如：我的 DeepSeek" />
+                </label>
+                <label class="text-xs muse-text-muted">兼容协议
+                  <select v-model="providerForm.provider" class="muse-input mt-1 w-full">
+                    <option value="openai_compatible">OpenAI Compatible</option>
+                    <option value="anthropic_compatible">Anthropic Compatible</option>
+                  </select>
+                </label>
+                <label class="text-xs muse-text-muted sm:col-span-2">API 地址
+                  <Input v-model="providerForm.base_url" class="mt-1" placeholder="https://example.com/v1" />
+                </label>
+                <label class="text-xs muse-text-muted sm:col-span-2">API Key
+                  <Input
+                    v-model="providerForm.api_key"
+                    type="password"
+                    class="mt-1"
+                    :placeholder="providerForm.id ? '留空则保持当前密钥' : '输入 API Key'"
+                    autocomplete="new-password"
+                  />
+                </label>
+              </div>
+              <div class="grid gap-3 lg:grid-cols-3">
+                <label class="text-xs muse-text-muted">LLM 模型（每行一个）
+                  <textarea v-model="providerForm.models" class="muse-input mt-1 min-h-28 w-full" placeholder="deepseek-v4-flash" />
+                </label>
+                <label class="text-xs muse-text-muted">Embedding 模型
+                  <textarea v-model="providerForm.embedding_models" class="muse-input mt-1 min-h-28 w-full" placeholder="Qwen3-Embedding-0.6B" />
+                </label>
+                <label class="text-xs muse-text-muted">Reranker 模型
+                  <textarea v-model="providerForm.reranker_models" class="muse-input mt-1 min-h-28 w-full" placeholder="Qwen3-Reranker-0.6B" />
+                </label>
+              </div>
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <label class="flex items-center gap-2 text-sm">
+                  <input v-model="providerForm.is_active" type="checkbox" />启用此 API
+                </label>
+                <div class="flex gap-2">
+                  <Button
+                    v-if="providerForm.id"
+                    variant="danger"
+                    size="sm"
+                    @click="removeSelectedProvider"
+                  >
+                    <Trash2 class="h-4 w-4" />删除
+                  </Button>
+                  <Button variant="secondary" size="sm" @click="providerFormOpen = false"><X class="h-4 w-4" />取消</Button>
+                  <Button size="sm" :loading="providerSaving" @click="saveProvider"><Save class="h-4 w-4" />保存</Button>
+                </div>
+              </div>
+            </div>
           </Card>
 
           <Card>

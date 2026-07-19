@@ -18,6 +18,7 @@ from app.services.project_access import (
     PROJECT_PERMISSION_VIEW,
     require_project_permission,
 )
+from app.services.provider_resolution import resolve_provider_model
 
 router = APIRouter()
 
@@ -44,7 +45,12 @@ async def create_project_agent(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await require_project_permission(project_id, user, db, PROJECT_PERMISSION_MANAGE)
+    project = await require_project_permission(
+        project_id,
+        user,
+        db,
+        PROJECT_PERMISSION_MANAGE,
+    )
     try:
         await validate_prompt_template_bindings(
             db,
@@ -56,6 +62,19 @@ async def create_project_agent(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
+    if body.model:
+        try:
+            await resolve_provider_model(
+                db,
+                body.model,
+                owner_user_id=project.user_id,
+                kind="chat",
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
     agent = ProjectAgent(
         project_id=project_id,
         created_by_user_id=user.id,
@@ -105,6 +124,19 @@ async def update_project_agent(
                 db,
                 user_id=user.id,
                 prompt_template_ids=updates["prompt_template_ids"],
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+    if updates.get("model"):
+        try:
+            await resolve_provider_model(
+                db,
+                updates["model"],
+                owner_user_id=project.user_id,
+                kind="chat",
             )
         except ValueError as exc:
             raise HTTPException(

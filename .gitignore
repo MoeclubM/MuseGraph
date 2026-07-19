@@ -58,6 +58,7 @@ Thumbs.db
 # Local development tools and scratch space
 /.codex-secret-scan/
 /.golutra/
+/.playwright-cli/
 /.playwright-mcp/
 /.docker_tmp/
 docker/.env

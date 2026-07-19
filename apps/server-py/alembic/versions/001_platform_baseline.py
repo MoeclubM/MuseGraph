@@ -17,22 +17,6 @@ depends_on: str | Sequence[str] | None = None
 
 CREATE_STATEMENTS = (
     """
-    CREATE TABLE ai_provider_configs (
-        id UUID PRIMARY KEY,
-        name VARCHAR(100) NOT NULL UNIQUE,
-        provider VARCHAR(50) NOT NULL,
-        api_key VARCHAR(500) NOT NULL,
-        base_url VARCHAR(500),
-        models JSON,
-        embedding_models JSON,
-        reranker_models JSON,
-        is_active BOOLEAN NOT NULL,
-        priority INTEGER NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    )
-    """,
-    """
     CREATE TABLE payment_adapters (
         id UUID PRIMARY KEY,
         adapter_type VARCHAR(50) NOT NULL,
@@ -83,6 +67,22 @@ CREATE_STATEMENTS = (
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         CONSTRAINT ck_users_status
             CHECK (status IN ('ACTIVE', 'SUSPENDED', 'DELETED'))
+    )
+    """,
+    """
+    CREATE TABLE ai_provider_configs (
+        id UUID PRIMARY KEY,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        name VARCHAR(100) NOT NULL,
+        provider VARCHAR(50) NOT NULL,
+        api_key VARCHAR(500) NOT NULL,
+        base_url VARCHAR(500),
+        models JSON,
+        is_active BOOLEAN NOT NULL,
+        priority INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CONSTRAINT uq_ai_provider_configs_user_name UNIQUE (user_id, name)
     )
     """,
     """
@@ -239,7 +239,7 @@ CREATE_STATEMENTS = (
         created_by_user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
         name VARCHAR(120) NOT NULL,
         description TEXT NOT NULL,
-        model VARCHAR(160),
+        model VARCHAR(700),
         effort VARCHAR(20),
         prompt_template_ids JSON NOT NULL,
         version INTEGER NOT NULL,
@@ -260,7 +260,7 @@ CREATE_STATEMENTS = (
         mode VARCHAR(20) NOT NULL,
         status VARCHAR(24) NOT NULL,
         instruction TEXT NOT NULL,
-        model VARCHAR(160),
+        model VARCHAR(700),
         effort VARCHAR(20),
         target_refs JSON NOT NULL,
         creative_plan JSON,
@@ -321,6 +321,11 @@ CREATE_STATEMENTS = (
     )
     """,
     "CREATE INDEX ix_sessions_user_id ON sessions (user_id)",
+    "CREATE INDEX ix_ai_provider_configs_user_id ON ai_provider_configs (user_id)",
+    """
+    CREATE UNIQUE INDEX uq_ai_provider_configs_platform_name
+        ON ai_provider_configs (name) WHERE user_id IS NULL
+    """,
     "CREATE INDEX ix_text_projects_user_id ON text_projects (user_id)",
     "CREATE INDEX ix_text_projects_visibility_updated ON text_projects (visibility, updated_at)",
     "CREATE INDEX ix_audit_logs_project_created ON audit_logs (project_id, created_at)",
@@ -384,10 +389,10 @@ def downgrade() -> None:
         "sessions",
         "orders",
         "deposits",
+        "ai_provider_configs",
         "users",
         "pricing_rules",
         "payment_configs",
         "payment_adapters",
-        "ai_provider_configs",
     ):
         op.execute(f'DROP TABLE "{table}"')

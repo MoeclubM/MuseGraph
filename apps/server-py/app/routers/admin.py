@@ -29,6 +29,7 @@ from app.services.payment_adapters.registry import (
 )
 from app.services.pricing_catalog import collect_pricing_catalog
 from app.services.provider_models import (
+    build_provider_model_ref,
     dump_provider_models,
     get_chat_models,
     get_provider_chat_models,
@@ -41,6 +42,7 @@ from app.services.provider_type import (
     normalize_provider_type,
     parse_supported_provider_types,
 )
+from app.services.provider_usage import provider_model_references_in_use
 from app.services.provider_security import validate_provider_base_url
 from app.services.secret_crypto import (
     decrypt_secret,
@@ -244,7 +246,9 @@ async def _propagate_pricing_model_rename(db: AsyncSession, old_model: str, new_
     if old_model == new_model:
         return
 
-    provider_result = await db.execute(select(AIProviderConfig))
+    provider_result = await db.execute(
+        select(AIProviderConfig).where(AIProviderConfig.user_id.is_(None))
+    )
     providers = provider_result.scalars().all()
     for provider in providers:
         changed = False
@@ -295,7 +299,7 @@ async def _prune_orphan_model_references(
     if not removed_models:
         return
 
-    provider_query = select(AIProviderConfig)
+    provider_query = select(AIProviderConfig).where(AIProviderConfig.user_id.is_(None))
     if excluding_provider_id:
         provider_query = provider_query.where(AIProviderConfig.id != excluding_provider_id)
 
@@ -1113,7 +1117,12 @@ def _discovered_model_matches_kind(entry: dict[str, Any], kind: str) -> bool:
 
 
 async def _get_provider_or_404(provider_id: str, db: AsyncSession) -> AIProviderConfig:
-    result = await db.execute(select(AIProviderConfig).where(AIProviderConfig.id == provider_id))
+    result = await db.execute(
+        select(AIProviderConfig).where(
+            AIProviderConfig.id == provider_id,
+            AIProviderConfig.user_id.is_(None),
+        )
+    )
     provider = result.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
@@ -1177,7 +1186,11 @@ async def _discover_models_for_provider(provider: AIProviderConfig) -> list[dict
 
 @router.get("/providers")
 async def list_providers(admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(AIProviderConfig).order_by(AIProviderConfig.priority.desc()))
+    result = await db.execute(
+        select(AIProviderConfig)
+        .where(AIProviderConfig.user_id.is_(None))
+        .order_by(AIProviderConfig.priority.desc())
+    )
     providers = result.scalars().all()
     return [_serialize_provider(p) for p in providers]
 
@@ -1238,6 +1251,15 @@ async def _remove_provider_model_by_kind(
     provider = await _get_provider_or_404(provider_id, db)
     current = get_provider_models(provider, kind)
     next_models = [item for item in current if item != model]
+    if (
+        model in current
+        and build_provider_model_ref(provider.id, model)
+        in await provider_model_references_in_use(db, provider.id)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Provider model is still selected by a project or Agent",
+        )
     set_provider_models(provider, kind, next_models)
     if model in current and model not in next_models:
         await _prune_orphan_model_references(db, removed_models={model}, excluding_provider_id=provider.id)
@@ -1422,6 +1444,7 @@ async def create_provider(
             detail=str(exc),
         ) from exc
     provider = AIProviderConfig(
+        user_id=None,
         name=body["name"],
         provider=provider_type,
         api_key=encrypt_secret(str(body["api_key"])),
@@ -1450,7 +1473,12 @@ async def update_provider(
                 "/api/admin/providers/{provider_id}/models, /embedding-models, or /reranker-models"
             ),
         )
-    result = await db.execute(select(AIProviderConfig).where(AIProviderConfig.id == provider_id))
+    result = await db.execute(
+        select(AIProviderConfig).where(
+            AIProviderConfig.id == provider_id,
+            AIProviderConfig.user_id.is_(None),
+        )
+    )
     provider = result.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
@@ -1480,10 +1508,20 @@ async def delete_provider(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(AIProviderConfig).where(AIProviderConfig.id == provider_id))
+    result = await db.execute(
+        select(AIProviderConfig).where(
+            AIProviderConfig.id == provider_id,
+            AIProviderConfig.user_id.is_(None),
+        )
+    )
     provider = result.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+    if await provider_model_references_in_use(db, provider.id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Provider is still selected by a project or Agent",
+        )
     await _prune_deleted_provider_model_references(db, provider=provider)
     await db.delete(provider)
     return None

@@ -54,6 +54,34 @@ async def test_real_platform_security_skills_versions_and_tenant_isolation():
         owner_user = await register(owner, "owner")
         viewer_user = await register(viewer, "viewer")
 
+        byo_provider_response = await owner.post(
+            "/api/users/me/providers",
+            headers=csrf_headers(owner),
+            json={
+                "name": "Owner BYO API",
+                "provider": "openai_compatible",
+                "api_key": f"integration-{secrets.token_hex(16)}",
+                "base_url": "https://1.1.1.1/v1",
+                "models": ["owner-chat-model"],
+                "embedding_models": ["owner-embedding-model"],
+                "reranker_models": ["owner-reranker-model"],
+                "is_active": True,
+                "priority": 10,
+            },
+        )
+        assert byo_provider_response.status_code == 201, byo_provider_response.text
+        byo_provider = byo_provider_response.json()
+        assert byo_provider["has_api_key"] is True
+        assert "api_key" not in byo_provider
+        assert (await viewer.get("/api/users/me/providers")).json() == []
+
+        owner_models = (await owner.get("/api/ai/models")).json()["models"]
+        owner_model = next(item for item in owner_models if item["name"] == "owner-chat-model")
+        assert owner_model["provider"] == "Owner BYO API"
+        assert owner_model["scope"] == "account"
+        assert owner_model["id"] == f"{byo_provider['id']}::owner-chat-model"
+        assert all(item["name"] != "owner-chat-model" for item in (await viewer.get("/api/ai/models")).json()["models"])
+
         missing_csrf = await owner.post(
             "/api/projects",
             json={"title": "Must fail without CSRF"},
@@ -67,13 +95,22 @@ async def test_real_platform_security_skills_versions_and_tenant_isolation():
                 "title": "Integration project",
                 "description": "Real PostgreSQL, Redis, Git, and Cognee",
                 "pack_slug": "novel",
-                "component_models": {},
+                "component_models": {
+                    "operation_agent_task": owner_model["id"],
+                },
             },
         )
         assert created.status_code == 201, created.text
         project = created.json()
         project_id = project["id"]
         initial_revision_id = project["active_revision_id"]
+        updated = await owner.patch(
+            f"/api/projects/{project_id}",
+            headers=csrf_headers(owner),
+            json={"description": "Updated with an account-owned provider model"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["description"] == "Updated with an account-owned provider model"
 
         knowledge = await owner.get(f"/api/projects/{project_id}/memory")
         assert knowledge.status_code == 200, knowledge.text
@@ -128,6 +165,21 @@ async def test_real_platform_security_skills_versions_and_tenant_isolation():
         )
         assert add_viewer.status_code == 201, add_viewer.text
         assert (await viewer.get(f"/api/projects/{project_id}")).status_code == 200
+        project_models = (
+            await viewer.get("/api/ai/models", params={"project_id": project_id})
+        ).json()["models"]
+        assert any(item["id"] == owner_model["id"] for item in project_models)
+        forbidden_provider_update = await viewer.patch(
+            f"/api/users/me/providers/{byo_provider['id']}",
+            headers=csrf_headers(viewer),
+            json={"name": "Stolen"},
+        )
+        assert forbidden_provider_update.status_code == 404
+        provider_in_use = await owner.delete(
+            f"/api/users/me/providers/{byo_provider['id']}",
+            headers=csrf_headers(owner),
+        )
+        assert provider_in_use.status_code == 409
         forbidden_write = await viewer.post(
             f"/api/projects/{project_id}/files/manual",
             headers=csrf_headers(viewer),

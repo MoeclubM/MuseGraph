@@ -19,7 +19,7 @@ async def collect_pricing_catalog(
     provider_active_only: bool,
     pricing_active_only: bool,
 ) -> list[dict[str, Any]]:
-    provider_query = select(AIProviderConfig)
+    provider_query = select(AIProviderConfig).where(AIProviderConfig.user_id.is_(None))
     if provider_active_only:
         provider_query = provider_query.where(AIProviderConfig.is_active == True)
     provider_result = await db.execute(provider_query)

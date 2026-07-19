@@ -40,6 +40,7 @@ from app.services.project_git import (
     delete_project_git_storage,
     initialize_project_git_repo,
 )
+from app.services.provider_resolution import validate_project_component_models
 from app.services.agent_workspace import current_project_commit
 
 router = APIRouter()
@@ -84,6 +85,17 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
 ):
     load_pack(body.pack_slug)
+    try:
+        await validate_project_component_models(
+            db,
+            owner_user_id=user.id,
+            component_models=body.component_models,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     project_id = str(uuid.uuid4())
     project = TextProject(
         id=project_id,
@@ -197,9 +209,22 @@ async def update_project(
     updates = body.model_dump(exclude_unset=True)
     if "pack_slug" in updates:
         load_pack(updates["pack_slug"])
+    if "component_models" in updates:
+        try:
+            await validate_project_component_models(
+                db,
+                owner_user_id=project.user_id,
+                component_models=updates["component_models"],
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
     for key, value in updates.items():
         setattr(project, key, value)
     await db.flush()
+    await db.refresh(project)
     _attach_access(project, user)
     return ProjectResponse.model_validate(project)
 
@@ -214,6 +239,7 @@ async def update_visibility(
     project = await require_project_permission(project_id, user, db, PROJECT_PERMISSION_MANAGE)
     project.visibility = body.visibility
     await db.flush()
+    await db.refresh(project)
     _attach_access(project, user)
     return ProjectResponse.model_validate(project)
 

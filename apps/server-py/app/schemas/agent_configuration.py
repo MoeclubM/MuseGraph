@@ -78,7 +78,7 @@ class PromptTemplateSnapshot(StrictModel):
 class ProjectAgentCreate(StrictModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2000)
-    model: str | None = Field(default=None, max_length=160)
+    model: str | None = Field(default=None, max_length=700)
     effort: Literal["low", "medium", "high"] | None = None
     prompt_template_ids: dict[PromptPhase, str] = Field(default_factory=dict)
 
@@ -91,7 +91,7 @@ class ProjectAgentCreate(StrictModel):
 class ProjectAgentUpdate(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=2000)
-    model: str | None = Field(default=None, max_length=160)
+    model: str | None = Field(default=None, max_length=700)
     effort: Literal["low", "medium", "high"] | None = None
     prompt_template_ids: dict[PromptPhase, str] | None = None
     enabled: bool | None = None

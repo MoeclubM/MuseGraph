@@ -4,7 +4,9 @@ import type { Project, ProjectVisibility, PublicProject } from '@/types'
 export interface ModelInfo {
   id: string
   provider: string
+  provider_id: string
   name: string
+  scope: 'account' | 'platform'
 }
 
 export interface ProjectMember {
@@ -16,16 +18,22 @@ export interface ProjectMember {
   updated_at: string
 }
 
-export async function getModels(): Promise<ModelInfo[]> {
-  return (await api.get<{ models: ModelInfo[] }>('/api/ai/models')).data.models
+export async function getModels(projectId?: string): Promise<ModelInfo[]> {
+  return (await api.get<{ models: ModelInfo[] }>('/api/ai/models', {
+    params: projectId ? { project_id: projectId } : undefined,
+  })).data.models
 }
 
-export async function getEmbeddingModels(): Promise<ModelInfo[]> {
-  return (await api.get<{ models: ModelInfo[] }>('/api/ai/embedding-models')).data.models
+export async function getEmbeddingModels(projectId?: string): Promise<ModelInfo[]> {
+  return (await api.get<{ models: ModelInfo[] }>('/api/ai/embedding-models', {
+    params: projectId ? { project_id: projectId } : undefined,
+  })).data.models
 }
 
-export async function getRerankerModels(): Promise<ModelInfo[]> {
-  return (await api.get<{ models: ModelInfo[] }>('/api/ai/reranker-models')).data.models
+export async function getRerankerModels(projectId?: string): Promise<ModelInfo[]> {
+  return (await api.get<{ models: ModelInfo[] }>('/api/ai/reranker-models', {
+    params: projectId ? { project_id: projectId } : undefined,
+  })).data.models
 }
 
 export async function getProjects(): Promise<Project[]> {

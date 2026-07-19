@@ -153,8 +153,11 @@ Memory Supervisor 使用 Cognee 1.4 正式接口：
 
 项目分别配置 `memory_llm`、`memory_embedding`、`memory_embedding_dimensions` 和
 `memory_reranker`。Embedding 与 Reranker 使用 OpenAI 兼容端点；Cognee LLM 可使用
-OpenAI 兼容端点，也可通过 LiteLLM `custom` 适配器使用 Anthropic 兼容端点。Provider
-优先级决定同名模型的实际路由，运行中不进行静默 fallback。
+OpenAI 兼容端点，也可通过 LiteLLM `custom` 适配器使用 Anthropic 兼容端点。平台
+Provider 由管理员维护；账号可以通过 BYO API 添加仅该账号和其项目可用的私有 Provider。
+项目和 Agent 保存 `provider_id::model` 精确引用，模型列表按 Provider 分组，因此同名模型
+不会串到其他端点，运行中也不进行优先级猜测或静默 fallback。项目成员运行 Agent 时使用
+项目所有者选定的 Provider；BYO 调用记录 token 用量但平台计费为零。
 
 `CreativeContextBundle` 携带知识 ID 和来源，Recall 证据只保存稳定 ID，Reranker 证据保存
 模型、稳定 ID 和相关性分数。`CreativeBlueprint` 与执行计划都只能引用当前上下文中的
@@ -181,6 +184,7 @@ Agent Accept 同时产生：
 - 密码变更、封禁和删除撤销会话
 - owner/editor/viewer 项目权限覆盖文件、知识、Skill、版本和 Agent API
 - Provider、支付和邮件密钥使用 AES-256-GCM 环境主密钥加密
+- 用户 BYO API 只返回 `has_api_key`，不回显密钥；跨账号访问按 404 隐藏资源存在性
 - Provider 地址做 DNS/IP 校验，默认拒绝回环、云元数据和内网 SSRF
 - 50 MiB 流式上传，校验扩展名、MIME、魔数、压缩路径、压缩比和展开大小
 - DOMPurify 清洗 Markdown

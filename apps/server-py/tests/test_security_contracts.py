@@ -6,6 +6,7 @@ import pytest
 from app.config import settings
 from app.services.auth import hash_password, verify_password
 from app.services.project_files import validate_project_upload
+from app.services.provider_models import build_provider_model_ref, parse_provider_model_ref
 from app.services.provider_security import validate_provider_base_url
 from app.services.secret_crypto import decrypt_secret, encrypt_secret
 
@@ -23,6 +24,15 @@ def test_secret_encryption_never_stores_plaintext(monkeypatch):
     encrypted = encrypt_secret("provider-secret")
     assert "provider-secret" not in encrypted
     assert decrypt_secret(encrypted) == "provider-secret"
+
+
+def test_provider_model_reference_preserves_exact_provider_and_model():
+    provider_id = "00000000-0000-0000-0000-000000000001"
+    reference = build_provider_model_ref(provider_id, "vendor/model:latest")
+    assert reference == f"{provider_id}::vendor/model:latest"
+    assert parse_provider_model_ref(reference) == (provider_id, "vendor/model:latest")
+    with pytest.raises(ValueError, match="specific provider"):
+        parse_provider_model_ref("vendor/model:latest")
 
 
 @pytest.mark.asyncio

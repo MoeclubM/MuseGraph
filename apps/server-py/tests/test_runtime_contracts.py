@@ -2,6 +2,7 @@ import inspect
 import json
 from types import SimpleNamespace
 from typing import get_args
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
@@ -251,6 +252,7 @@ async def test_llm_json_returns_schema_error_to_model_until_valid(monkeypatch):
             project_id="project-1",
             effort="high",
         ),
+        provider_owner_user_id="user-1",
         model="deepseek-v4-flash",
         prompt="Finish.",
         response_schema=AgentFinish,
@@ -519,7 +521,8 @@ async def test_cognee_uses_native_openai_compatible_embedding_engine(monkeypatch
     }
     captured: dict[str, object] = {}
 
-    async def provider_for_model(_db, _model, *, embedding):
+    async def provider_for_model(_db, _model, *, owner_user_id, embedding):
+        assert owner_user_id == "user-1"
         return providers[embedding]
 
     async def start_instance(project_id, *, llm, embedding):
@@ -530,11 +533,12 @@ async def test_cognee_uses_native_openai_compatible_embedding_engine(monkeypatch
     monkeypatch.setattr(memory_config, "decrypt_secret", lambda value: f"plain:{value}")
 
     await memory_config.ensure_project_memory_instance(
-        SimpleNamespace(
-            id="project-1",
-            component_models={
-                "memory_llm": "deepseek-v4-flash",
-                "memory_embedding": "Qwen3-Embedding-0.6B",
+            SimpleNamespace(
+                id="project-1",
+                user_id="user-1",
+                component_models={
+                    "memory_llm": "00000000-0000-0000-0000-000000000001::deepseek-v4-flash",
+                    "memory_embedding": "00000000-0000-0000-0000-000000000002::Qwen3-Embedding-0.6B",
                 "memory_embedding_dimensions": "1024",
             },
         ),
@@ -562,7 +566,7 @@ async def test_cognee_uses_native_openai_compatible_embedding_engine(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_cognee_model_resolution_uses_highest_priority_chat_provider():
+async def test_cognee_model_resolution_uses_exact_scoped_provider(monkeypatch):
     anthropic = SimpleNamespace(
         provider="anthropic_compatible",
         models=["deepseek-v4-flash"],
@@ -572,19 +576,20 @@ async def test_cognee_model_resolution_uses_highest_priority_chat_provider():
         models=["deepseek-v4-flash"],
     )
 
-    class Result:
-        def scalars(self):
-            return [anthropic, openai]
+    async def resolve_provider_model(_db, reference, *, owner_user_id, kind):
+        assert reference == "00000000-0000-0000-0000-000000000001::deepseek-v4-flash"
+        assert owner_user_id == "user-1"
+        assert kind == "chat"
+        return anthropic, "deepseek-v4-flash"
 
-    class Database:
-        async def execute(self, _statement):
-            return Result()
+    monkeypatch.setattr(memory_config, "resolve_provider_model", resolve_provider_model)
 
     assert (
-        await memory_config._provider_for_model(
-            Database(),
-            "deepseek-v4-flash",
-            embedding=False,
+            await memory_config._provider_for_model(
+                SimpleNamespace(),
+                "00000000-0000-0000-0000-000000000001::deepseek-v4-flash",
+                owner_user_id="user-1",
+                embedding=False,
         )
         is anthropic
     )
@@ -606,7 +611,8 @@ async def test_cognee_routes_anthropic_compatible_llm_through_custom_endpoint(mo
     }
     captured: dict[str, object] = {}
 
-    async def provider_for_model(_db, _model, *, embedding):
+    async def provider_for_model(_db, _model, *, owner_user_id, embedding):
+        assert owner_user_id == "user-1"
         return providers[embedding]
 
     async def start_instance(project_id, *, llm, embedding):
@@ -617,11 +623,12 @@ async def test_cognee_routes_anthropic_compatible_llm_through_custom_endpoint(mo
     monkeypatch.setattr(memory_config, "decrypt_secret", lambda value: f"plain:{value}")
 
     await memory_config.ensure_project_memory_instance(
-        SimpleNamespace(
-            id="project-1",
-            component_models={
-                "memory_llm": "deepseek-v4-flash",
-                "memory_embedding": "Qwen3-Embedding-0.6B",
+            SimpleNamespace(
+                id="project-1",
+                user_id="user-1",
+                component_models={
+                    "memory_llm": "00000000-0000-0000-0000-000000000001::deepseek-v4-flash",
+                    "memory_embedding": "00000000-0000-0000-0000-000000000002::Qwen3-Embedding-0.6B",
                 "memory_embedding_dimensions": "1024",
             },
         ),
@@ -697,6 +704,11 @@ async def test_reranker_orders_traceable_knowledge_records(monkeypatch):
     monkeypatch.setattr(ai, "_runtime_config", runtime_config)
     monkeypatch.setattr(ai.httpx, "AsyncClient", Client)
     monkeypatch.setattr(ai, "decrypt_secret", lambda _value: "private-key")
+    monkeypatch.setattr(
+        ai,
+        "resolve_provider_model",
+        AsyncMock(return_value=(provider, "Qwen3-Reranker-0.6B")),
+    )
 
     records = [
         {"id": "fact:first", "title": "First", "content": "Less relevant"},
@@ -707,6 +719,7 @@ async def test_reranker_orders_traceable_knowledge_records(monkeypatch):
         "Find the most relevant fact",
         records,
         Database(),
+        provider_owner_user_id="user-1",
     )
 
     assert [record["id"] for record, _score in ranked] == [
@@ -728,6 +741,7 @@ async def test_reranker_orders_traceable_knowledge_records(monkeypatch):
 @pytest.mark.asyncio
 async def test_openai_compatible_model_receives_explicit_reasoning_effort(monkeypatch):
     provider = SimpleNamespace(
+        user_id=None,
         name="Protected provider",
         provider="openai_compatible",
         base_url="https://provider.example/v1",
@@ -745,7 +759,7 @@ async def test_openai_compatible_model_receives_explicit_reasoning_effort(monkey
 
     class Database:
         def __init__(self):
-            self.results = iter([ProviderResult(), EmptyResult(), EmptyResult()])
+            self.results = iter([EmptyResult(), EmptyResult()])
 
         async def execute(self, _statement):
             return next(self.results)
@@ -761,11 +775,17 @@ async def test_openai_compatible_model_receives_explicit_reasoning_effort(monkey
 
     monkeypatch.setattr(ai.litellm, "acompletion", completion)
     monkeypatch.setattr(ai, "decrypt_secret", lambda _value: "private-key")
+    monkeypatch.setattr(
+        ai,
+        "resolve_provider_model",
+        AsyncMock(return_value=(provider, "deepseek-v4-flash")),
+    )
 
     response = await ai.call_llm(
         "deepseek-v4-flash",
         "Reply with OK.",
         Database(),
+        provider_owner_user_id="user-1",
         reasoning_effort_override="low",
     )
 
@@ -779,6 +799,7 @@ async def test_openai_compatible_model_receives_explicit_reasoning_effort(monkey
 @pytest.mark.asyncio
 async def test_anthropic_compatible_base_url_does_not_duplicate_v1(monkeypatch):
     provider = SimpleNamespace(
+        user_id=None,
         name="Agent provider",
         provider="anthropic_compatible",
         base_url="https://provider.example/v1",
@@ -796,7 +817,7 @@ async def test_anthropic_compatible_base_url_does_not_duplicate_v1(monkeypatch):
 
     class Database:
         def __init__(self):
-            self.results = iter([ProviderResult(), EmptyResult(), EmptyResult()])
+            self.results = iter([EmptyResult(), EmptyResult()])
 
         async def execute(self, _statement):
             return next(self.results)
@@ -812,11 +833,17 @@ async def test_anthropic_compatible_base_url_does_not_duplicate_v1(monkeypatch):
 
     monkeypatch.setattr(ai.litellm, "acompletion", completion)
     monkeypatch.setattr(ai, "decrypt_secret", lambda _value: "private-key")
+    monkeypatch.setattr(
+        ai,
+        "resolve_provider_model",
+        AsyncMock(return_value=(provider, "deepseek-v4-flash")),
+    )
 
     response = await ai.call_llm(
         "deepseek-v4-flash",
         "Reply with OK.",
         Database(),
+        provider_owner_user_id="user-1",
     )
 
     assert response["content"] == "OK"
@@ -830,6 +857,7 @@ async def test_anthropic_compatible_base_url_does_not_duplicate_v1(monkeypatch):
 @pytest.mark.asyncio
 async def test_anthropic_structured_output_uses_json_prefill(monkeypatch):
     provider = SimpleNamespace(
+        user_id=None,
         name="Agent provider",
         provider="anthropic_compatible",
         base_url="https://provider.example/v1",
@@ -847,7 +875,7 @@ async def test_anthropic_structured_output_uses_json_prefill(monkeypatch):
 
     class Database:
         def __init__(self):
-            self.results = iter([ProviderResult(), EmptyResult(), EmptyResult()])
+            self.results = iter([EmptyResult(), EmptyResult()])
 
         async def execute(self, _statement):
             return next(self.results)
@@ -874,11 +902,17 @@ async def test_anthropic_structured_output_uses_json_prefill(monkeypatch):
 
     monkeypatch.setattr(ai.litellm, "acompletion", completion)
     monkeypatch.setattr(ai, "decrypt_secret", lambda _value: "private-key")
+    monkeypatch.setattr(
+        ai,
+        "resolve_provider_model",
+        AsyncMock(return_value=(provider, "deepseek-v4-flash")),
+    )
 
     response = await ai.call_llm(
         "deepseek-v4-flash",
         "Finish the run.",
         Database(),
+        provider_owner_user_id="user-1",
         response_schema=AgentFinish,
     )
 
@@ -891,6 +925,7 @@ async def test_anthropic_structured_output_uses_json_prefill(monkeypatch):
 @pytest.mark.asyncio
 async def test_openai_compatible_structured_output_uses_forced_tool(monkeypatch):
     provider = SimpleNamespace(
+        user_id=None,
         name="Agent provider",
         provider="openai_compatible",
         base_url="https://provider.example/v1",
@@ -908,7 +943,7 @@ async def test_openai_compatible_structured_output_uses_forced_tool(monkeypatch)
 
     class Database:
         def __init__(self):
-            self.results = iter([ProviderResult(), EmptyResult(), EmptyResult()])
+            self.results = iter([EmptyResult(), EmptyResult()])
 
         async def execute(self, _statement):
             return next(self.results)
@@ -944,11 +979,17 @@ async def test_openai_compatible_structured_output_uses_forced_tool(monkeypatch)
     monkeypatch.setattr(ai.litellm, "acompletion", completion)
     monkeypatch.setattr(ai, "decrypt_secret", lambda _value: "private-key")
     monkeypatch.setattr(ai, "AsyncOpenAI", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        ai,
+        "resolve_provider_model",
+        AsyncMock(return_value=(provider, "deepseek-v4-flash")),
+    )
 
     response = await ai.call_llm(
         "deepseek-v4-flash",
         "Finish the run.",
         Database(),
+        provider_owner_user_id="user-1",
         response_schema=AgentFinish,
     )
 
@@ -966,6 +1007,7 @@ async def test_openai_compatible_structured_output_uses_forced_tool(monkeypatch)
 @pytest.mark.asyncio
 async def test_openai_compatible_writer_stream_is_aggregated(monkeypatch):
     provider = SimpleNamespace(
+        user_id=None,
         name="Agent provider",
         provider="openai_compatible",
         base_url="https://provider.example/v1",
@@ -983,7 +1025,7 @@ async def test_openai_compatible_writer_stream_is_aggregated(monkeypatch):
 
     class Database:
         def __init__(self):
-            self.results = iter([ProviderResult(), EmptyResult(), EmptyResult()])
+            self.results = iter([EmptyResult(), EmptyResult()])
 
         async def execute(self, _statement):
             return next(self.results)
@@ -1016,11 +1058,17 @@ async def test_openai_compatible_writer_stream_is_aggregated(monkeypatch):
     )
     monkeypatch.setattr(ai, "decrypt_secret", lambda _value: "private-key")
     monkeypatch.setattr(ai, "AsyncOpenAI", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        ai,
+        "resolve_provider_model",
+        AsyncMock(return_value=(provider, "deepseek-v4-flash")),
+    )
 
     response = await ai.call_llm(
         "deepseek-v4-flash",
         "Write the document.",
         Database(),
+        provider_owner_user_id="user-1",
         prefer_stream_override=True,
     )
 

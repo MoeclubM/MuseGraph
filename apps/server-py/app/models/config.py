@@ -2,7 +2,19 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -11,19 +23,43 @@ from app.database import Base
 
 class AIProviderConfig(Base):
     __tablename__ = "ai_provider_configs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_ai_provider_configs_user_name"),
+        Index(
+            "uq_ai_provider_configs_platform_name",
+            "name",
+            unique=True,
+            postgresql_where=text("user_id IS NULL"),
+        ),
+        Index("ix_ai_provider_configs_user_id", "user_id"),
+    )
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
-    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    user_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     api_key: Mapped[str] = mapped_column(String(500), nullable=False)
     base_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     models: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
-    embedding_models: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
-    reranker_models: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 class PricingRule(Base):

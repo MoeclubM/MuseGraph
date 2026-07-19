@@ -461,6 +461,12 @@ export interface LlmRuntimeConfig {
   llm_request_timeout_seconds: number
 }
 
+export interface UserProvider extends Provider {
+  has_api_key: boolean
+  created_at: string
+  updated_at: string
+}
+
 export interface PaymentOrder {
   id?: string
   order_no: string

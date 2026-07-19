@@ -425,6 +425,7 @@ async def _build_context(
                     run.instruction,
                     selected_knowledge,
                     db,
+                    provider_owner_user_id=project.user_id,
                 )
             selected_knowledge = [record for record, _score in ranked]
             items.append(
@@ -504,6 +505,7 @@ async def _build_context(
 async def _llm_json(
     *,
     run: AgentRun,
+    provider_owner_user_id: str,
     model: str,
     prompt: str,
     response_schema: type[BaseModel],
@@ -521,6 +523,7 @@ async def _llm_json(
                 ),
                 db,
                 max_tokens=max_tokens,
+                provider_owner_user_id=provider_owner_user_id,
                 billing_user_id=run.user_id,
                 billing_project_id=run.project_id,
                 billing_operation_id=run.id,
@@ -607,6 +610,7 @@ async def _create_plan(
     )
     response = await _llm_json(
         run=run,
+        provider_owner_user_id=project.user_id,
         model=model,
         prompt=prompt,
         response_schema=_creation_plan_schema(
@@ -745,6 +749,7 @@ async def _create_blueprint(
     while True:
         blueprint = await _llm_json(
             run=run,
+            provider_owner_user_id=project.user_id,
             model=model,
             prompt=request_prompt,
             response_schema=CreativeBlueprint,
@@ -932,6 +937,7 @@ async def _run_tool_loop(
                     ),
                     db,
                     max_tokens=settings.AGENT_PI_TOOL_LOOP_MAX_TOKENS,
+                    provider_owner_user_id=project.user_id,
                     billing_user_id=run.user_id,
                     billing_project_id=run.project_id,
                     billing_operation_id=run.id,
@@ -952,6 +958,7 @@ async def _run_tool_loop(
         else:
             action_envelope = await _llm_json(
                 run=run,
+                provider_owner_user_id=project.user_id,
                 model=model,
                 prompt=prompt,
                 response_schema=response_schema,
@@ -1024,6 +1031,7 @@ async def _audit(
     )
     return await _llm_json(
         run=run,
+        provider_owner_user_id=project.user_id,
         model=model,
         prompt=prompt,
         response_schema=AuditResult,

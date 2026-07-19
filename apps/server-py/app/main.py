@@ -107,11 +107,17 @@ from app.routers import (  # noqa: E402
     projects,
     prompt_templates,
     skills,
+    user_providers,
     users,
 )
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
+app.include_router(
+    user_providers.router,
+    prefix="/api/users/me/providers",
+    tags=["user-providers"],
+)
 app.include_router(
     prompt_templates.router,
     prefix="/api/users/me/prompt-templates",

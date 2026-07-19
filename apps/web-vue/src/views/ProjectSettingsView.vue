@@ -49,9 +49,9 @@ async function load() {
   try {
     const [project, chats, embeddings, rerankers, snapshot, projectMembers] = await Promise.all([
       projects.fetchProject(projectId.value),
-      getModels(),
-      getEmbeddingModels(),
-      getRerankerModels(),
+      getModels(projectId.value),
+      getEmbeddingModels(projectId.value),
+      getRerankerModels(projectId.value),
       listKnowledge(projectId.value),
       listProjectMembers(projectId.value),
     ])
@@ -127,6 +127,15 @@ function setModel(key: string, value: string) {
   form.component_models = next
 }
 
+function modelGroups(models: ModelInfo[]) {
+  const groups = new Map<string, ModelInfo[]>()
+  for (const model of models) {
+    const label = `${model.provider} · ${model.scope === 'account' ? '我的 API' : '平台'}`
+    groups.set(label, [...(groups.get(label) || []), model])
+  }
+  return Array.from(groups)
+}
+
 watch(projectId, load, { immediate: true })
 </script>
 
@@ -174,14 +183,18 @@ watch(projectId, load, { immediate: true })
             <span>{{ label }}</span>
             <select :value="form.component_models[key] || ''" class="muse-input" :disabled="!canManage" @change="setModel(key, ($event.target as HTMLSelectElement).value)">
               <option value="">未配置</option>
-              <option v-for="model in chatModels" :key="model.id" :value="model.id">{{ model.id }}</option>
+              <optgroup v-for="[provider, models] in modelGroups(chatModels)" :key="provider" :label="provider">
+                <option v-for="model in models" :key="model.id" :value="model.id">{{ model.name }}</option>
+              </optgroup>
             </select>
           </label>
           <label class="grid gap-2 text-xs sm:grid-cols-[180px_1fr] sm:items-center">
             <span>Cognee Embedding</span>
             <select :value="form.component_models.memory_embedding || ''" class="muse-input" :disabled="!canManage" @change="setModel('memory_embedding', ($event.target as HTMLSelectElement).value)">
               <option value="">未配置</option>
-              <option v-for="model in embeddingModels" :key="model.id" :value="model.id">{{ model.id }}</option>
+              <optgroup v-for="[provider, models] in modelGroups(embeddingModels)" :key="provider" :label="provider">
+                <option v-for="model in models" :key="model.id" :value="model.id">{{ model.name }}</option>
+              </optgroup>
             </select>
           </label>
           <label class="grid gap-2 text-xs sm:grid-cols-[180px_1fr] sm:items-center">
@@ -192,7 +205,9 @@ watch(projectId, load, { immediate: true })
             <span>知识 Reranker</span>
             <select :value="form.component_models.memory_reranker || ''" class="muse-input" :disabled="!canManage" @change="setModel('memory_reranker', ($event.target as HTMLSelectElement).value)">
               <option value="">未配置</option>
-              <option v-for="model in rerankerModels" :key="model.id" :value="model.id">{{ model.id }}</option>
+              <optgroup v-for="[provider, models] in modelGroups(rerankerModels)" :key="provider" :label="provider">
+                <option v-for="model in models" :key="model.id" :value="model.id">{{ model.name }}</option>
+              </optgroup>
             </select>
           </label>
           <div class="rounded-lg bg-[color:var(--muse-surface-muted)] p-3 text-xs">

@@ -1,8 +1,28 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any, Literal
 
 from app.models.config import AIProviderConfig
+
+
+MODEL_REFERENCE_SEPARATOR = "::"
+
+
+def build_provider_model_ref(provider_id: str, model: str) -> str:
+    uuid.UUID(provider_id)
+    normalized = model.strip()
+    if not normalized:
+        raise ValueError("Provider model cannot be empty")
+    return f"{provider_id}{MODEL_REFERENCE_SEPARATOR}{normalized}"
+
+
+def parse_provider_model_ref(reference: str) -> tuple[str, str]:
+    provider_id, separator, model = reference.strip().partition(MODEL_REFERENCE_SEPARATOR)
+    if not separator or not model.strip():
+        raise ValueError("Model must be selected from a specific provider")
+    uuid.UUID(provider_id)
+    return provider_id, model.strip()
 
 
 def _normalize_string_list(raw: Any) -> list[str]:

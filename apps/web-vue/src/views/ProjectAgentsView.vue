@@ -41,7 +41,7 @@ async function load() {
   const [projectAgents, accountTemplates, availableModels] = await Promise.all([
     listProjectAgents(projectId.value),
     listPromptTemplates(),
-    getModels(),
+    getModels(projectId.value),
   ])
   agents.value = projectAgents
   templates.value = accountTemplates
@@ -66,6 +66,21 @@ function setTemplate(phase: PromptPhase, id: string) {
   if (id) next[phase] = id
   else delete next[phase]
   form.prompt_template_ids = next
+}
+
+const modelGroups = computed(() => {
+  const groups = new Map<string, ModelInfo[]>()
+  for (const model of models.value) {
+    const label = `${model.provider} · ${model.scope === 'account' ? '我的 API' : '平台'}`
+    groups.set(label, [...(groups.get(label) || []), model])
+  }
+  return Array.from(groups)
+})
+
+function modelLabel(reference: string | null) {
+  if (!reference) return '继承项目模型'
+  const model = models.value.find((item) => item.id === reference)
+  return model ? `${model.provider} / ${model.name}` : '模型已不可用'
 }
 
 async function save() {
@@ -138,7 +153,7 @@ onMounted(async () => {
             <span class="flex items-center gap-1 font-semibold muse-text-heading">
               <Check v-if="item.id === activeId" class="h-3.5 w-3.5" />{{ item.name }}
             </span>
-            <span class="mt-1 block muse-text-faint">{{ item.model || '继承项目模型' }} · v{{ item.version }} · {{ item.enabled ? 'enabled' : 'disabled' }}</span>
+            <span class="mt-1 block muse-text-faint">{{ modelLabel(item.model) }} · v{{ item.version }} · {{ item.enabled ? 'enabled' : 'disabled' }}</span>
           </button>
         </Card>
         <Card class="space-y-4 p-5">
@@ -148,7 +163,9 @@ onMounted(async () => {
             <label class="text-xs muse-text-muted">模型
               <select v-model="form.model" class="muse-input mt-1 w-full" :disabled="!canManage">
                 <option value="">继承项目运行模式模型</option>
-                <option v-for="model in models" :key="model.id" :value="model.id">{{ model.id }}</option>
+                <optgroup v-for="[provider, providerModels] in modelGroups" :key="provider" :label="provider">
+                  <option v-for="model in providerModels" :key="model.id" :value="model.id">{{ model.name }}</option>
+                </optgroup>
               </select>
             </label>
             <label class="text-xs muse-text-muted">推理强度
